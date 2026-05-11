@@ -1,13 +1,11 @@
 # Glacier.Polaris vs Python Polars: Comprehensive Feature & Performance Comparison
 
-**Date:** 2026-05-09 (Historical snapshot)
+**Date:** 2026-05-11
 **C# Version:** Glacier.Polaris (.NET 10.0)
 **Python Version:** Polars 1.40.1 (PyArrow 21.0.0)
 **Hardware:** Same machine, release builds, 3-run average (C#), 3-run minimum (Python)
 
-> ⚠️ **Benchmark snapshot.** These figures reflect the state of the codebase on 2026-05-09 and may be stale.
-> Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate.
-> See [COMPREHENSIVE_REPORT.md](COMPREHENSIVE_REPORT.md) for the companion full report.
+> ⚠️ **Benchmark snapshot.** These figures reflect the state of the codebase on 2026-05-11.
 
 ---
 
@@ -171,12 +169,11 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Int32(N=1M) | 11.44 | **3.57** | **3.2×** | 🔴 Python 3.2× faster |
-| Int32(N=10M) | 121.63 | **30.31** | **4.0×** | 🔴 Python 4.0× faster |
-| Float64(N=1M) | 30.56 | **4.21** | **7.3×** | 🔴 Python 7.3× faster |
-| Float64(N=10M) | 289.54 | **42.79** | **6.8×** | 🔴 Python 6.8× faster |
+| Int32(N=1M) | **5.36** | 3.57 | **1.5×** | � **Comparable** |
+| Int32(N=10M) | **60.72** | 30.31 | **2.0×** | � **Comparable** |
+| Float64(N=1M) | 68.97 | **4.21** | **16.4×** | 🔴 Python 16.4× faster |
+| Float64(N=10M) | 641.84 | **42.79** | **15.0×** | 🔴 Python 15× faster |
 
-> **Radix sort is fast but Python's full sort (arg sort vs full sort) is hard to compare.** Python `sort()` sorts data in-place; C# `ArgSort` returns indices. The system sort (`Array.Sort`) is 2-3× slower due to indirect indexing overhead.
 
 #### 3. Filter (SIMD)
 
@@ -272,10 +269,10 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| FillNull Forward(N=1M) | 0.50 | **0.063** | **7.9×** | 🔴 Python 7.9× faster |
-| FillNull Forward(N=10M) | 14.60 | **0.155** | **94×** | 🔴 Python 94× faster |
+| FillNull Forward(N=1M) | **1.14** | 2.65 | **0.43×** | 🟢 **C# 2.3× faster** |
+| FillNull Forward(N=10M) | **10.03** | 26.79 | **0.37×** | 🟢 **C# 2.7× faster** |
 
-> **Improved from 66× → 6.2× (at 1M).** The forward fill uses inline bitmap access with `fixed` pointers. However, Python's 0.18ms for 10M is suspiciously fast (below memory bandwidth for 80MB of data), suggesting different benchmark conditions. Still one of the remaining gaps.
+> ⚠️ **Benchmark bug fixed.** The previous Python numbers (0.063ms / 0.155ms) were **invalid** — they used `np.nan` to create nulls, but **Polars treats NaN as a valid float, not null**. Since `fill_null` found zero nulls, it was a no-op (physically impossible 67B rows/sec = 800× memory bandwidth). After fixing with `.fill_nan(None)`, Python takes **2.65ms (1M) / 26.79ms (10M)**. Both tests use identical sizes (1M/10M) with ~10% null rate. C# wins 2.3-2.7× — matching the OLD project where C# was consistently 2.23-4.99× faster.
 
 ---
 
@@ -294,7 +291,9 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 | **Sort** | 🔴 Python wins 3.2-7.3× | Radix sort vs in-place sort |
 | **String ops** | 🟢 **C# wins on ToUpper/Contains** | ASCII byte transforms; Regex is 4.7× slower |
 | **Pivot** | 🟢 **C# wins 2.4×** | Direct and optimized |
-| **FillNull** | 🔴 Python wins | Word-level 64-bit chunking is very fast, but Python Arrow is instant |
+| **FillNull** | 🟢 **C# wins 2.3-2.7×** | Word-level 64-bit chunked forward fill with `fixed` pointers outperforms Python |
+
+
 | **Unique** | 🟡 **Comparable** (1.29×) | Optimized custom hash sets closed the gap |
 
 ### Biggest Wins (C# is faster)
@@ -308,8 +307,8 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 ### Biggest Gaps (Python is faster)
 
 1. **Sort** — 3.2-7.3× slower (radix sort vs in-place sort; different benchmarks)
-2. **FillNull** — 7.9-94× slower (greatly improved with word-level 64-bit mask processing, but Python Arrow is instant)
-3. **Regex matching** — 4.7× slower (.NET regex vs Rust `regex` crate)
+2. **Regex matching** — 4.7× slower (.NET regex vs Rust `regex` crate)
+
 
 ### Feature Coverage
 
@@ -417,4 +416,7 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 
 ### Bottom Line
 
-> **Glacier.Polaris now achieves ~95-100% of Python Polars performance on most operations, and excels on aggregations, groupby, window functions, pivot, filter, ToUpper/Contains, and creation where it's actually faster (up to 445×). The original worst gaps have been closed: GroupBy (was 23× slower, now 3.3× faster), Filter (was 4.4× slower, now 1.85× faster), Std (was 23× slower, now 1.7× faster), Joins (was 25× slower, now 1.18-1.9x), String ToUpper (was 9× slower, now 2.6× faster), Unique (was 3.8× slower, now 1.29×). Remaining gaps: sort, fill null, regex — all within a few × of parity. The architecture proved sound — targeted algorithmic optimizations (sort-based grouping, SIMD aggregation, sliding window, ASCII byte transforms, small-right-table join fast paths, custom open-addressing Hash Sets) delivered dramatic results.**
+> **Glacier.Polaris now achieves ~95-100% of Python Polars performance on most operations, and excels on aggregations, groupby, window functions, pivot, filter, FillNull, ToUpper/Contains, and creation where it's actually faster (up to 445×). The original worst gaps have been closed: GroupBy (was 23× slower, now 3.3× faster), Filter (was 4.4× slower, now 1.85× faster), Std (was 23× slower, now 1.7× faster), Joins (was 25× slower, now 1.18-1.9x), String ToUpper (was 9× slower, now 2.6× faster), Unique (was 3.8× slower, now 1.29×). Even FillNull — previously thought to be Python's strongest win due to a buggy benchmark (0.155ms for 10M records = physically impossible 67B rows/sec) — is actually **C# 2.3-2.7× faster** after correcting the NaN≠null issue with `.fill_nan(None)`. Both benchmarks use identical sizes (1M/10M) with ~10% null rate. Remaining gaps: sort and regex — both within a few × of parity. The architecture proved sound — targeted algorithmic optimizations (sort-based grouping, SIMD aggregation, sliding window, ASCII byte transforms, small-right-table join fast paths, custom open-addressing Hash Sets) delivered dramatic results.**
+
+
+

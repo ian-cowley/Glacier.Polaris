@@ -365,11 +365,12 @@ def bench_arrow_roundtrip(n: int) -> float:
 
 
 def bench_fill_null_forward(n: int, null_fraction: float = 0.1) -> float:
-    """Forward fill nulls"""
+    """Forward fill nulls — uses NaN->null conversion because Polars treats NaN != null"""
     data = rng.random(n)
     null_mask = rng.random(n) < null_fraction
     data[null_mask] = np.nan
-    df = pl.DataFrame({"a": pl.Series("a", data)})
+    # Polars treats NaN as a valid float, not null. Convert NaN to actual nulls first.
+    df = pl.DataFrame({"a": pl.Series("a", data).fill_nan(None)})
     start = time.perf_counter()
     result = df.select(pl.col("a").fill_null(strategy="forward"))
     end = time.perf_counter()
