@@ -8,14 +8,13 @@ namespace Glacier.Polaris.Tests
 {
     public class LazyTests
     {
-        [Fact]
+    [Fact]
         public async Task TestProjectionPushdown()
         {
             var csv = "A,B,C,D,E\n1,2,3,4,5\n6,7,8,9,10";
-            var path = "test_large.csv";
+            var path = "test_proj_pushdown.csv";
             await System.IO.File.WriteAllTextAsync(path, csv);
 
-            // test_large.csv has A,B,C,D,E
             var lf = LazyFrame.ScanCsv(path);
             
             var result = await lf.Select(Expr.Col("C"))
@@ -31,8 +30,10 @@ namespace Glacier.Polaris.Tests
         [Fact]
         public async Task TestPredicatePushdown()
         {
-            var path = "test_large.csv";
-            // Filter after Select should be pushed down
+            var csv = "A,B,C,D,E\n1,2,3,4,5\n6,7,8,9,10";
+            var path = "test_pred_pushdown.csv";
+            await System.IO.File.WriteAllTextAsync(path, csv);
+
             var lf = LazyFrame.ScanCsv(path);
             
             var result = await lf.Select(Expr.Col("A"), Expr.Col("B"))
@@ -47,7 +48,10 @@ namespace Glacier.Polaris.Tests
         [Fact]
         public async Task TestSelectMerging()
         {
-            var path = "test_large.csv";
+            var csv = "A,B,C,D,E\n1,2,3,4,5\n6,7,8,9,10";
+            var path = "test_select_merge.csv";
+            await System.IO.File.WriteAllTextAsync(path, csv);
+
             var lf = LazyFrame.ScanCsv(path);
             
             // Select(Select(Scan)) -> Should merge into one Select
