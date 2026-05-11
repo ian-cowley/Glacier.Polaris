@@ -1047,7 +1047,17 @@ namespace Glacier.Polaris
 
             return table;
         }
+        /// <summary>Compute a histogram of the specified column with the given number of bins.</summary>
+        public DataFrame Hist(string column, int bins)
+        {
+            return Compute.AnalyticalKernels.Histogram(GetColumn(column), bins);
+        }
 
+/// <summary>Compute Kernel Density Estimation (KDE) of the specified column.</summary>
+public DataFrame Kde(string column, double bandwidth, int gridPoints = 100)
+{
+    return Compute.AnalyticalKernels.Kde(GetColumn(column), bandwidth, gridPoints);
+}
         /// <summary>
         /// Creates a deep copy of the DataFrame with independent column data.
         /// Matching Polars' DataFrame.clone() behavior.
@@ -1087,23 +1097,24 @@ namespace Glacier.Polaris
             return new DataFrame(newCols);
         }
 
-/// <summary>
-/// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
-/// </summary>
-public DataFrame ShrinkToFit()
-{
-// For now, ShrinkToFit is a no-op since our columns are already single-chunk.
-// In the future, this could call Compact/TrimExcess on internal buffers.
-return this;
-}
+        /// <summary>
+        /// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
+        /// </summary>
+        public DataFrame ShrinkToFit()
+        {
+            // For now, ShrinkToFit is a no-op since our columns are already single-chunk.
+            // In the future, this could call Compact/TrimExcess on internal buffers.
+            return this;
+        }
 
-/// <summary>
-/// Apply a user-defined function to the DataFrame. Polars API: map()
-/// </summary>
-public DataFrame Map(Func<DataFrame, DataFrame> func)
-{
-return func(this);
-}    }
+        /// <summary>
+        /// Apply a user-defined function to the DataFrame. Polars API: map()
+        /// </summary>
+        public DataFrame Map(Func<DataFrame, DataFrame> func)
+        {
+            return func(this);
+        }
+    }
 
     public interface ISeries : IDisposable
     {
