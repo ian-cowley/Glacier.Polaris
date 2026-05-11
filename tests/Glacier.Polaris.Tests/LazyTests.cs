@@ -32,7 +32,6 @@ namespace Glacier.Polaris.Tests
             Assert.Equal("b", resultGroup.GetString(4));
             Assert.Equal(5, resultVal.Memory.Span[4]);
         }
-
         [Fact]
         public void MapGroups_FilterEachGroup()
         {
@@ -40,19 +39,15 @@ namespace Glacier.Polaris.Tests
             var valCol = new Data.Int32Series("val", new[] { 10, 20, 30, 5, 15 });
             var df = new DataFrame(new ISeries[] { groupCol, valCol });
 
-            // Filter each group: keep only rows where val > 10
             var gb = new GroupByBuilder(df, "group");
-            var result = gb.MapGroups(g => g.Filter(Expr.Col("val").Gt(Expr.Lit(10))));
+            var result = gb.MapGroups(g => g.Filter(Expr.Col("val") > 10));
 
-            // Group a: 20, 30 (10 removed)
-            // Group b: 15 (5 removed)
             Assert.Equal(3, result.RowCount);
             var resultVal = (Data.Int32Series)result.GetColumn("val");
             Assert.Equal(20, resultVal.Memory.Span[0]);
             Assert.Equal(30, resultVal.Memory.Span[1]);
             Assert.Equal(15, resultVal.Memory.Span[2]);
         }
-
         [Fact]
         public void MapGroups_SelectColumn()
         {
