@@ -303,5 +303,44 @@ namespace Glacier.Polaris.Compute
                 _mask = newMask;
             }
         }
+        public static ISeries IsFirst(ISeries series)
+        {
+            var result = new Data.BooleanSeries(series.Name, series.Length);
+            var resultSpan = result.Memory.Span;
+
+            if (series is Int32Series i32)
+            {
+                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                var span = i32.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    resultSpan[i] = set.Add(span[i]);
+            }
+            else if (series is Float64Series f64)
+            {
+                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                var span = f64.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    resultSpan[i] = set.Add(span[i]);
+            }
+            else if (series is Utf8StringSeries u8)
+            {
+                var set = new HashSet<string>();
+                for (int i = 0; i < u8.Length; i++)
+                {
+                    if (u8.ValidityMask.IsValid(i))
+                        resultSpan[i] = set.Add(u8.GetString(i)!);
+                    else
+                        resultSpan[i] = set.Add("\0__NULL__\0");
+                }
+            }
+            else
+            {
+                var set = new HashSet<object?>();
+                for (int i = 0; i < series.Length; i++)
+                    resultSpan[i] = set.Add(series.Get(i));
+            }
+
+            return result;
+        }
     }
 }
