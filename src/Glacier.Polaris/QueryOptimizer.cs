@@ -9,28 +9,28 @@ namespace Glacier.Polaris
 {
     public class QueryOptimizer : ExpressionVisitor
     {
-    public Expression Optimize(Expression plan)
-    {
-        // 1. Analyze: Find all columns used in the entire query
-        var tracker = new ColumnTrackerVisitor();
-        tracker.Visit(plan);
-
-        // 2. Transform: Predicate Pushdown (re-order filters)
-        var transformed = Visit(plan);
-
-        // 3. Join Reordering: Apply cost-based join reordering
-        transformed = new JoinReorderingVisitor().Visit(transformed);
-
-        // 4. Inject: Projection Pushdown (tell scanners what columns to load)
-        // Only push down if we have a Select node that restricts columns.
-        // Otherwise, we must load all columns.
-        if (tracker.HasGlobalSelect && tracker.Columns.Count > 0)
+        public Expression Optimize(Expression plan)
         {
-            transformed = new ProjectionPushdownVisitor(tracker.Columns.ToArray()).Visit(transformed);
-        }
+            // 1. Analyze: Find all columns used in the entire query
+            var tracker = new ColumnTrackerVisitor();
+            tracker.Visit(plan);
 
-        return transformed;
-    }
+            // 2. Transform: Predicate Pushdown (re-order filters)
+            var transformed = Visit(plan);
+
+            // 3. Join Reordering: Apply cost-based join reordering
+            transformed = new JoinReorderingVisitor().Visit(transformed);
+
+            // 4. Inject: Projection Pushdown (tell scanners what columns to load)
+            // Only push down if we have a Select node that restricts columns.
+            // Otherwise, we must load all columns.
+            if (tracker.HasGlobalSelect && tracker.Columns.Count > 0)
+            {
+                transformed = new ProjectionPushdownVisitor(tracker.Columns.ToArray()).Visit(transformed);
+            }
+
+            return transformed;
+        }
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
@@ -461,44 +461,44 @@ namespace Glacier.Polaris
                     return ApplyAggGroups(source2, columns);
                 }
                 else if (methodCall.Method.Name == nameof(LazyFrame.ShiftColumnsOp))
-            {
-                var source2 = Evaluate(methodCall.Arguments[0]);
-                var n = (int)((ConstantExpression)methodCall.Arguments[1]).Value!;
-                return ApplyShiftColumns(source2, n);
-            }
-            else if (methodCall.Method.Name == nameof(LazyFrame.AggOp))
-            {
-                // AggOp(GroupByOp(source, columns), aggregations)
-                var groupByExpr = methodCall.Arguments[0];
-                if (groupByExpr is MethodCallExpression groupByCall && groupByCall.Method.Name == nameof(LazyFrame.GroupByOp))
                 {
-                    var groupColumns = ExtractStringArrayFromExpr(groupByCall.Arguments[1]);
-                    var source = Evaluate(groupByCall.Arguments[0]);
-                    var aggregations = methodCall.Arguments[1];
+                    var source2 = Evaluate(methodCall.Arguments[0]);
+                    var n = (int)((ConstantExpression)methodCall.Arguments[1]).Value!;
+                    return ApplyShiftColumns(source2, n);
+                }
+                else if (methodCall.Method.Name == nameof(LazyFrame.AggOp))
+                {
+                    // AggOp(GroupByOp(source, columns), aggregations)
+                    var groupByExpr = methodCall.Arguments[0];
+                    if (groupByExpr is MethodCallExpression groupByCall && groupByCall.Method.Name == nameof(LazyFrame.GroupByOp))
+                    {
+                        var groupColumns = ExtractStringArrayFromExpr(groupByCall.Arguments[1]);
+                        var source = Evaluate(groupByCall.Arguments[0]);
+                        var aggregations = methodCall.Arguments[1];
+                        return ApplyAgg(source, groupColumns, aggregations);
+                    }
+                    throw new NotSupportedException("AggOp must follow GroupByOp.");
+                }
+                else if (methodCall.Method.Name == "GroupByAggOp")
+                {
+                    // GroupByAggOp(source, columns[], aggregations[])
+                    var source = Evaluate(methodCall.Arguments[0]);
+                    var groupColumns = ExtractStringArrayFromExpr(methodCall.Arguments[1]);
+                    var aggregations = methodCall.Arguments[2];
                     return ApplyAgg(source, groupColumns, aggregations);
                 }
-                throw new NotSupportedException("AggOp must follow GroupByOp.");
+                else if (methodCall.Method.Name == nameof(LazyFrame.GroupByOp))
+                {
+                    // Just pass-through: evaluate the source
+                    return Evaluate(methodCall.Arguments[0]);
+                }
+                else if (methodCall.Method.Name == nameof(LazyFrame.ScanSqlOp))
+                {
+                    var connection = (System.Data.IDbConnection)((ConstantExpression)methodCall.Arguments[0]).Value!;
+                    var sql = (string)((ConstantExpression)methodCall.Arguments[1]).Value!;
+                    return ApplyScanSql(connection, sql);
+                }
             }
-            else if (methodCall.Method.Name == "GroupByAggOp")
-            {
-                // GroupByAggOp(source, columns[], aggregations[])
-                var source = Evaluate(methodCall.Arguments[0]);
-                var groupColumns = ExtractStringArrayFromExpr(methodCall.Arguments[1]);
-                var aggregations = methodCall.Arguments[2];
-                return ApplyAgg(source, groupColumns, aggregations);
-            }
-            else if (methodCall.Method.Name == nameof(LazyFrame.GroupByOp))
-            {
-                // Just pass-through: evaluate the source
-                return Evaluate(methodCall.Arguments[0]);
-            }
-            else if (methodCall.Method.Name == nameof(LazyFrame.ScanSqlOp))
-            {
-                var connection = (System.Data.IDbConnection)((ConstantExpression)methodCall.Arguments[0]).Value!;
-                var sql = (string)((ConstantExpression)methodCall.Arguments[1]).Value!;
-                return ApplyScanSql(connection, sql);
-            }
-        }
 
             throw new NotSupportedException($"Execution engine cannot evaluate node: {node}");
         }
@@ -3504,7 +3504,39 @@ namespace Glacier.Polaris
             var gb = new GroupByBuilder(df, columns);
             yield return gb.AggGroups();
         }
-    }
+        private async IAsyncEnumerable<DataFrame> ApplyClear(IAsyncEnumerable<DataFrame> source)
+        {
+            await foreach (var df in source)
+            {
+                yield return df.Clear();
+            }
+        }
+
+        private async IAsyncEnumerable<DataFrame> ApplyShrinkToFit(IAsyncEnumerable<DataFrame> source)
+        {
+            await foreach (var df in source)
+            {
+                df.ShrinkToFit();
+                yield return df;
+            }
+        }
+
+        private async IAsyncEnumerable<DataFrame> ApplyRechunk(IAsyncEnumerable<DataFrame> source)
+        {
+            // Rechunk is a no-op for now since columns are single-chunk
+            await foreach (var df in source)
+            {
+                yield return df;
+            }
+        }
+
+        private async IAsyncEnumerable<DataFrame> ApplyMap(IAsyncEnumerable<DataFrame> source, Func<DataFrame, DataFrame> func)
+        {
+            await foreach (var df in source)
+            {
+                yield return func(df);
+            }
+        }    }
 
     /// <summary>
     /// Applies cost-based join reordering to minimize intermediate result sizes.
