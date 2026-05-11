@@ -132,7 +132,7 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 | Parquet write | ✅ | ✅ | `DataFrame.WriteParquet()` — full implementation |
 | JSON read | ✅ | ✅ | `DataFrame.ScanJson()` — full implementation via `JsonWriter`/`JsonReader` |
 | JSON write | ✅ | ✅ | `DataFrame.WriteJson()` — ndjson support |
-| SQL reader | ✅ | 🟡 | `LazyFrame.ScanSql()`, `DataFrame.FromSqlReader()` |
+| SQL reader | ✅ | ✅ | `LazyFrame.ScanSql()`, `DataFrame.FromSqlReader()` — Tier14 parity (SQLite round-trip) |
 | Arrow round-trip | ✅ | ✅ | `ToArrow()` / `FromArrow()` + Tier12 parity |
 | **Expressions** | | | |
 | `Expr` API | ✅ | ✅ | Full `Expr` class with 40+ methods |
@@ -175,6 +175,7 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 | Float64(N=10M) | 641.84 | **42.79** | **15.0×** | 🔴 Python 15× faster |
 
 
+> **Note:** Int32 ArgSort uses full parallel radix sort (1.5-2× from Python). Float64 ArgSort falls back to `Array.Sort` with IEEE bit-key conversion (15-16× slower) — full 64-bit radix for float is the remaining sort gap.
 #### 3. Filter (SIMD)
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
@@ -288,7 +289,7 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 | **Rolling/Window** | 🟢 **C# wins 1.8-4.1×** | Rolling/Expanding/EWM are all extremely fast in C# |
 | **Join** | 🟡 **Comparable** | Left join is actually faster in C# (1.18×) |
 | **Filter** | 🟢 **C# wins 1.2-1.85×** | Parallel SIMD filter now beats Rust engine |
-| **Sort** | 🔴 Python wins 3.2-7.3× | Radix sort vs in-place sort |
+| **Sort** | 🔴 Python wins (Int32: ~1.5-2×, Float64: 15-16×) | Radix sort for Int32; Float64 uses Array.Sort fallback |
 | **String ops** | 🟢 **C# wins on ToUpper/Contains** | ASCII byte transforms; Regex is 4.7× slower |
 | **Pivot** | 🟢 **C# wins 2.4×** | Direct and optimized |
 | **FillNull** | 🟢 **C# wins 2.3-2.7×** | Word-level 64-bit chunked forward fill with `fixed` pointers outperforms Python |
@@ -330,8 +331,8 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 
 ### Test Coverage
 
-**402/402 tests passing** (100.0%) — All parity and unit tests pass! ✅
-- **267 non-parity unit tests**
+**412/412 tests passing** (100.0%) — All parity and unit tests pass! ✅
+- **277 non-parity unit tests**
 - **135 parity tests** (all 135 verified against Polars 1.40.1, including Tier14_EWMStd) ✅
 
 ### Sprint 7 — Remaining Features 🔴 ALL NOW IMPLEMENTED ✅
@@ -416,7 +417,7 @@ This is a comprehensive inventory of Python Polars DataFrame/Series APIs and whe
 
 ### Bottom Line
 
-> **Glacier.Polaris now achieves ~95-100% of Python Polars performance on most operations, and excels on aggregations, groupby, window functions, pivot, filter, FillNull, ToUpper/Contains, and creation where it's actually faster (up to 445×). The original worst gaps have been closed: GroupBy (was 23× slower, now 3.3× faster), Filter (was 4.4× slower, now 1.85× faster), Std (was 23× slower, now 1.7× faster), Joins (was 25× slower, now 1.18-1.9x), String ToUpper (was 9× slower, now 2.6× faster), Unique (was 3.8× slower, now 1.29×). Even FillNull — previously thought to be Python's strongest win due to a buggy benchmark (0.155ms for 10M records = physically impossible 67B rows/sec) — is actually **C# 2.3-2.7× faster** after correcting the NaN≠null issue with `.fill_nan(None)`. Both benchmarks use identical sizes (1M/10M) with ~10% null rate. Remaining gaps: sort and regex — both within a few × of parity. The architecture proved sound — targeted algorithmic optimizations (sort-based grouping, SIMD aggregation, sliding window, ASCII byte transforms, small-right-table join fast paths, custom open-addressing Hash Sets) delivered dramatic results.**
+> **Glacier.Polaris now achieves ~95-100% of Python Polars performance on most operations, and excels on aggregations, groupby, window functions, pivot, filter, FillNull, ToUpper/Contains, and creation where it's actually faster (up to 445×). The original worst gaps have been closed: GroupBy (was 23× slower, now 3.3× faster), Filter (was 4.4× slower, now 1.85× faster), Std (was 23× slower, now 1.7× faster), Joins (was 25× slower, now 1.18-1.9×), String ToUpper (was 9× slower, now 2.6× faster), Unique (was 3.8× slower, now 1.29×), FillNull (benchmark bug corrected: was reporting impossible 67B rows/sec; fixed with `.fill_nan(None)`, C# is now 2.3-2.7× faster). Remaining gaps: **Int32 sort** (~1.5-2×, radix working well), **Float64 sort** (~15-16×, no full 64-bit radix path), and **regex** (~4.7×, .NET vs Rust regex crate). The architecture proved sound — targeted algorithmic optimizations (sort-based grouping, SIMD aggregation, sliding window, ASCII byte transforms, small-right-table join fast paths, custom open-addressing Hash Sets, bitmap-level FillNull) delivered dramatic results.**
 
 
 

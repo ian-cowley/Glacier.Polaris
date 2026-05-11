@@ -2176,4 +2176,38 @@ public class ParityTests
                 System.IO.File.Delete(tempPath);
         }
     }
+
+    // ==================================================================
+    // TIER 14 — Reinterpret (bit-cast)
+    // Parity with: pl.Series([1.0,2.0,-1.0,0.0]).cast(pl.Int64, strict=False)
+    // and          pl.Series([4607182418800017408,4611686018427387904,0,-4616189618054758400]).cast(pl.Float64, strict=False)
+    // ==================================================================
+
+    [Fact]
+    public void Tier14_Reinterpret()
+    {
+        var golden = LoadGolden("tier14_reinterpret");
+
+        // Float64 → Int64 (bit-cast)
+        var dfF = new DataFrame(new ISeries[]
+        {
+            Float64Series.FromValues("v", [1.0, 2.0, -1.0, 0.0]),
+        });
+        var f64ToI64 = dfF.Select(Expr.Col("v").Reinterpret(typeof(long)).Alias("f64_as_i64"));
+        AssertColumn("f64_as_i64", f64ToI64.GetColumn("f64_as_i64"), golden["f64_as_i64"]);
+
+        // Int64 → Float64 (bit-cast)
+        var dfI = new DataFrame(new ISeries[]
+        {
+            new Int64Series("v", new long[]
+            {
+                4607182418800017408L,   // bits of 1.0
+                4611686018427387904L,   // bits of 2.0
+                0L,                     // bits of 0.0
+                -4616189618054758400L,  // bits of -1.0
+            }),
+        });
+        var i64ToF64 = dfI.Select(Expr.Col("v").Reinterpret(typeof(double)).Alias("i64_as_f64"));
+        AssertColumn("i64_as_f64", i64ToF64.GetColumn("i64_as_f64"), golden["i64_as_f64"]);
+    }
 }

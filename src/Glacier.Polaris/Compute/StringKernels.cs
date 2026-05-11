@@ -12,6 +12,12 @@ namespace Glacier.Polaris.Compute
     /// </summary>
     public static class StringKernels
     {
+        private static readonly ConcurrentDictionary<string, Regex> _regexCache =
+            new ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
+
+        private static Regex GetOrAddRegex(string pattern) =>
+            _regexCache.GetOrAdd(pattern, static p =>
+                new Regex(p, RegexOptions.Compiled | RegexOptions.NonBacktracking));
         /// <summary>
         /// Compares a column of UTF-8 strings against a literal for equality.
         /// Returns a mask of matching indices.

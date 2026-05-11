@@ -171,39 +171,114 @@ namespace Glacier.Polaris.Compute
             }
         }
 
-        /// <summary>ArgSort for Float64 — returns new int[]. Uses full 64-bit corrected IEEE key with Array.Sort on LongIndexPair.</summary>
-        public static int[] ArgSort(ReadOnlySpan<double> data)
+        /// <summary>ArgSort for Float64 — returns new int[]. Parallel 8-bit LSD radix on IEEE-transformed ulong keys.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public static unsafe int[] ArgSort(ReadOnlySpan<double> data)
         {
             if (data.Length == 0) return Array.Empty<int>();
             int n = data.Length;
-            var pairs = new LongIndexPair[n];
-            for (int i = 0; i < n; i++)
+
+            int[] indices = new int[n];
+            int[] buffer  = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+            long[] keys   = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+
+            try
             {
-                long val = BitConverter.DoubleToInt64Bits(data[i]);
-                pairs[i] = new LongIndexPair(val < 0 ? ~val : val ^ long.MinValue, i);
+                // Build sortable IEEE key: positive doubles flip sign bit; negatives flip all bits.
+                fixed (double* pData = data)
+                fixed (long* pKeys = keys)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        long bits = BitConverter.DoubleToInt64Bits(pData[i]);
+                        pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                    }
+                }
+
+                // Initialise indices
+                for (int i = 0; i < n; i++) indices[i] = i;
+
+                fixed (int* pIdx = indices)
+                fixed (int* pBuf = buffer)
+                fixed (long* pKeys2 = keys)
+                {
+                    int* src = pIdx;
+                    int* dst = pBuf;
+
+                    // 8 passes × 8 bits = 64-bit key
+                    for (int shift = 0; shift < 64; shift += 8)
+                    {
+                        DoRadixPass64(src, dst, pKeys2, n, shift);
+                        int* t = src; src = dst; dst = t;
+                    }
+
+                    // After 8 passes (even number) result is back in pIdx
+                    if (src != pIdx)
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, src, (uint)(n * sizeof(int)));
+                }
             }
-            Array.Sort(pairs);
-            var result = new int[n];
-            for (int i = 0; i < n; i++) result[i] = pairs[i].Index;
-            return result;
+            finally
+            {
+                System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+                System.Buffers.ArrayPool<long>.Shared.Return(keys);
+            }
+
+            return indices;
         }
 
-        /// <summary>In-place ArgSort for Float64 (re-sorts existing indices). Uses full 64-bit corrected IEEE key with Array.Sort on LongIndexPair.</summary>
-        public static void ArgSort(ReadOnlySpan<double> data, Span<int> indices, bool descending = false)
+        /// <summary>In-place ArgSort for Float64 (re-sorts existing indices). Parallel 8-bit LSD radix on IEEE-transformed ulong keys.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public static unsafe void ArgSort(ReadOnlySpan<double> data, Span<int> indices, bool descending = false)
         {
             if (data.Length == 0) return;
             int n = data.Length;
-            var pairs = new LongIndexPair[n];
-            var oldIndices = indices.ToArray();
-            for (int i = 0; i < n; i++)
+
+            int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+            long[] keys  = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+
+            try
             {
-                long val = BitConverter.DoubleToInt64Bits(data[oldIndices[i]]);
-                pairs[i] = new LongIndexPair(val < 0 ? ~val : val ^ long.MinValue, i);
+                // Build IEEE sortable keys indexed via existing indices
+                fixed (double* pData = data)
+                fixed (int* pIdx = indices)
+                fixed (long* pKeys = keys)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        long bits = BitConverter.DoubleToInt64Bits(pData[pIdx[i]]);
+                        pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                    }
+                }
+
+                // Re-initialise indices as 0..n-1 (radix will produce final permutation)
+                for (int i = 0; i < n; i++) indices[i] = i;
+
+                fixed (int* pIdx = indices)
+                fixed (int* pBuf = buffer)
+                fixed (long* pKeys2 = keys)
+                {
+                    int* src = pIdx;
+                    int* dst = pBuf;
+                    for (int shift = 0; shift < 64; shift += 8)
+                    {
+                        DoRadixPass64(src, dst, pKeys2, n, shift);
+                        int* t = src; src = dst; dst = t;
+                    }
+                    if (src != pIdx)
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, src, (uint)(n * sizeof(int)));
+                }
+
+                if (descending)
+                    for (int i = 0, j = n - 1; i < j; i++, j--)
+                    {
+                        int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                    }
             }
-            Array.Sort(pairs);
-            for (int i = 0; i < n; i++) indices[i] = pairs[i].Index;
-            if (descending)
-                for (int i = 0; i < n / 2; i++) { int t = indices[i]; indices[i] = indices[n - 1 - i]; indices[n - 1 - i] = t; }
+            finally
+            {
+                System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+                System.Buffers.ArrayPool<long>.Shared.Return(keys);
+            }
         }
 
         /// <summary>
@@ -264,7 +339,7 @@ namespace Glacier.Polaris.Compute
             int* counts = stackalloc int[BucketCount];
             for (int j = 0; j < BucketCount; j++) counts[j] = 0;
 
-            int numThreads = ComputeThreadCount(length);
+            int numThreads = ParallelThresholds.GetSortThreadCount(length, sizeof(int));
 
             if (numThreads <= 1)
             {
@@ -430,7 +505,7 @@ namespace Glacier.Polaris.Compute
             int* counts = stackalloc int[BucketCount];
             for (int j = 0; j < BucketCount; j++) counts[j] = 0;
 
-            int numThreads = ComputeThreadCount(length);
+            int numThreads = ParallelThresholds.GetSortThreadCount(length, sizeof(long));
 
             if (numThreads <= 1)
             {
@@ -526,13 +601,7 @@ namespace Glacier.Polaris.Compute
                 }
             });
         }
-        private static int ComputeThreadCount(int length)
-        {
-            // Sequential for <= 1M (fits L3, avoids parallel overhead of thread-local histograms + barriers)
-            if (length <= 1_000_000) return 1;
-            if (length < 5_000_000) return 2;
-            return Math.Max(2, Environment.ProcessorCount / 2);
-        }
+
         private class Utf8IndexComparer : IComparer<int>
         {
             private readonly Data.Utf8StringSeries _series;

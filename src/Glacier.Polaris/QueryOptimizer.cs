@@ -1873,6 +1873,14 @@ namespace Glacier.Polaris
                     disposables.Add(result);
                     return result;
                 }
+                else if (mce.Method.Name == "ReinterpretOp")
+                {
+                    ISeries series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    Type targetType = (Type)((ConstantExpression)mce.Arguments[1]).Value!;
+                    var result = Compute.ArrayKernels.Reinterpret(series, targetType);
+                    disposables.Add(result);
+                    return result;
+                }
                 else if (mce.Method.Name == "ClipOp")
                 {
                     ISeries series = EvaluateExpression(mce.Arguments[0], df, disposables);
