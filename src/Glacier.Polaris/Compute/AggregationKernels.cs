@@ -606,5 +606,48 @@ namespace Glacier.Polaris.Compute
             }
             return new NullSeries(series.Name + "_arg_max", 1);
         }
+        /// <summary>Computes Shannon entropy of the series (using natural log, base e).</summary>
+        public static double Entropy(ISeries series)
+        {
+            var frequencies = new Dictionary<double, int>();
+            int validCount = 0;
+
+            if (series is Float64Series f64)
+            {
+                var span = f64.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                {
+                    if (f64.ValidityMask.IsValid(i))
+                    {
+                        double val = span[i];
+                        frequencies.TryGetValue(val, out int c);
+                        frequencies[val] = c + 1;
+                        validCount++;
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (series.ValidityMask.IsValid(i))
+                    {
+                        double val = Convert.ToDouble(series.Get(i));
+                        frequencies.TryGetValue(val, out int c);
+                        frequencies[val] = c + 1;
+                        validCount++;
+                    }
+                }
+            }
+
+            double entropy = 0.0;
+            foreach (var kvp in frequencies)
+            {
+                double p = (double)kvp.Value / validCount;
+                entropy -= p * Math.Log(p);
+            }
+
+            return entropy;
+        }
     }
 }

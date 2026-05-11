@@ -7,6 +7,81 @@ namespace Glacier.Polaris
 {
     public sealed class GroupByBuilder
     {
+        /// <summary>
+        /// Apply a user-defined function to each group independently and combine the results.
+        /// Polars API: map_groups()
+        /// Example: gb.MapGroups(group => group.Sort("val"))
+        /// </summary>
+        public DataFrame MapGroups(Func<DataFrame, DataFrame> func)
+        {
+            var results = new List<DataFrame>();
+            foreach (var group in _groups)
+            {
+                // Build sub-DataFrame for this group
+                var subCols = new List<ISeries>();
+                foreach (var col in _source.Columns)
+                {
+                    int n = group.Count;
+                    ISeries subCol;
+                    if (col is Data.Int32Series i32)
+                    {
+                        subCol = new Data.Int32Series(col.Name, n);
+                        for (int i = 0; i < n; i++) ((Data.Int32Series)subCol).Memory.Span[i] = i32.Memory.Span[group[i]];
+                    }
+                    else if (col is Data.Float64Series f64)
+                    {
+                        subCol = new Data.Float64Series(col.Name, n);
+                        for (int i = 0; i < n; i++) ((Data.Float64Series)subCol).Memory.Span[i] = f64.Memory.Span[group[i]];
+                    }
+                    else if (col is Data.Utf8StringSeries u8)
+                    {
+                        int totalBytes = 0;
+                        for (int i = 0; i < n; i++) totalBytes += u8.GetStringSpan(group[i]).Length;
+                        subCol = new Data.Utf8StringSeries(col.Name, n, totalBytes);
+                        int offset = 0;
+                        for (int i = 0; i < n; i++)
+                        {
+                            var span = u8.GetStringSpan(group[i]);
+                            span.CopyTo(((Data.Utf8StringSeries)subCol).DataBytes.Span.Slice(offset));
+                            offset += span.Length;
+                            ((Data.Utf8StringSeries)subCol).Offsets.Span[i + 1] = offset;
+                        }
+                    }
+                    else if (col is Data.Int64Series i64)
+                    {
+                        subCol = new Data.Int64Series(col.Name, n);
+                        for (int i = 0; i < n; i++) ((Data.Int64Series)subCol).Memory.Span[i] = i64.Memory.Span[group[i]];
+                    }
+                    else if (col is Data.BooleanSeries bs)
+                    {
+                        subCol = new Data.BooleanSeries(col.Name, n);
+                        for (int i = 0; i < n; i++) ((Data.BooleanSeries)subCol).Memory.Span[i] = bs.Memory.Span[group[i]];
+                    }
+                    else
+                    {
+                        subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
+                        for (int i = 0; i < n; i++) col.Take(subCol, group[i], i);
+                    }
+
+                    // Copy validity masks
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (col.ValidityMask.IsNull(group[i]))
+                            subCol.ValidityMask.SetNull(i);
+                    }
+                    subCols.Add(subCol);
+                }
+
+                var subDf = new DataFrame(subCols);
+                var result = func(subDf);
+                if (result.RowCount > 0)
+                    results.Add(result);
+            }
+
+            if (results.Count == 0) return new DataFrame();
+            if (results.Count == 1) return results[0];
+            return DataFrame.Concat(results.ToArray());
+        }
         private readonly DataFrame _source;
         private readonly string[] _columns;
         private readonly List<List<int>> _groups;

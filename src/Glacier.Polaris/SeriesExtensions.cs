@@ -85,5 +85,17 @@ public static ISeries ArgMax(this ISeries series) => AggregationKernels.ArgMax(s
             }
             throw new InvalidOperationException("EndsWith only supported for Utf8StringSeries.");
         }
+
+        /// <summary>Compute a histogram of the series with the specified number of bins.</summary>
+        public static DataFrame Hist(this ISeries series, int bins)
+        {
+            return Compute.AnalyticalKernels.Histogram(series, bins);
+        }
+
+        /// <summary>Compute Kernel Density Estimation (KDE) of the series.</summary>
+        public static DataFrame Kde(this ISeries series, double bandwidth, int gridPoints = 100)
+        {
+            return Compute.AnalyticalKernels.Kde(series, bandwidth, gridPoints);
+        }
     }
 }

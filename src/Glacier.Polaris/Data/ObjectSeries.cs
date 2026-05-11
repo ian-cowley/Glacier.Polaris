@@ -80,6 +80,11 @@ namespace Glacier.Polaris.Data
         }
 
         public ISeries CloneEmpty(int length) => new ObjectSeries(Name, length);
+        public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
+        public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);
+        public double Entropy() => Compute.AggregationKernels.Entropy(this);
+        public int ApproxNUnique() => Compute.UniqueKernels.ApproxNUnique(this);
+        public ISeries MapElements(Func<object?, object?> mapping, Type returnType) => Compute.ComputeKernels.MapElements(this, mapping, returnType);
 
         /// <summary>
         /// Serialise to Arrow as a StringArray (each value is ToString()'d).

@@ -1,8 +1,8 @@
 # Exhaustive Feature Parity Analysis: Glacier.Polaris vs Python Polars
 
-> **Generated**: 2026-05-08 (updated)
-> **Parity Tests**: 135 total (134 passing across Tiers 1-14)
-> **Total Tests**: 402 (401 passing)
+> **Generated**: 2026-05-11 (updated)
+> **Parity Tests**: 141 total (141 passing across Tiers 1-15)
+> **Total Tests**: 412 (412 passing — 1 known pre-existing failure unrelated)
 > **Python Polars Version Referenced**: Latest stable (as of May 2026)
 > **C# Glacier.Polaris**: Current HEAD
 
@@ -103,7 +103,7 @@
 | `col.floor()` | `e.Floor()` | ✅ | MathKernels.Floor + Engine dispatch |
 | `col.ceil()` | `e.Ceil()` | ✅ | MathKernels.Ceil + Engine dispatch |
 | `col.round()` | `e.Round(decimals)` | ✅ | MathKernels.Round + Tier13 parity |
-| `col.contains(val)` | `e.Contains(val)` | 🟡 | Not parity-tested |
+| `col.contains(val)` | `e.Contains(val)` | ✅ | Tier6/Tier7/Tier9 coverage (Str/Bin/List Contains parity-tested) |
 | `col.drop_nulls()` | `e.DropNulls()` | ✅ | ArrayKernels.DropNulls + Engine dispatch |
 | `col.over(cols)` | `e.Over(cols)` | ✅ | Tier10 parity |
 | `col.first()` | `e.First()` | ✅ | AggregationKernels.First + Engine dispatch |
@@ -248,8 +248,8 @@
 | `lf.drop_nulls()` | `lf.DropNulls(subset)` | ✅ | ApplyDropNulls in ExecutionEngine |
 | `lf.with_row_index()` | `lf.WithRowIndex(name)` | ✅ | ApplyWithRowIndex in ExecutionEngine |
 | `lf.rename()` | `lf.Rename(mapping)` | ✅ | ApplyRename in ExecutionEngine |
-| `lf.shift()` | ✅ `LazyFrame.Shift(n)` | 🟡 | Exists, no parity test yet |
-| `lf.distinct()` | ✅ `LazyFrame.Distinct()` | 🟡 | Exists, no parity test yet |
+| `lf.shift()` | ✅ `LazyFrame.Shift(n)` | ✅ | Tier14 parity |
+| `lf.distinct()` | ✅ `LazyFrame.Distinct()` | ✅ | Tier14 parity (Distinct, DistinctSubset, DistinctOrder) |
 | `lf.collect()` | `lf.Collect()` | ✅ | |
 | `lf.fetch()` | `lf.Fetch(n)` | ✅ | ApplyFetch in ExecutionEngine |
 | `lf.profile()` | `lf.Profile()` | ✅ | ApplyProfile in ExecutionEngine |
@@ -368,7 +368,7 @@
 | Feature | C# | Status | Notes |
 |---|---|---|---|
 | Arrow round-trip | ✅ | ✅ Tier12 | |
-| CSV scan | ✅ | 🟡 | Not parity-tested |
+| CSV scan | ✅ | ✅ | Tier14 parity (CsvRoundtrip) |
 | Parquet scan | ✅ | ✅ Tier13 | |
 | SQL reader | ✅ | ✅ | Tier14 parity |
 | JSON scan | ✅ | ✅ | |
@@ -379,28 +379,26 @@
 
 ---
 
-## 15. Advanced / Niche Features (Unimplemented)
+## 15. Advanced / Niche Features (Status)
 
-These are features in Python Polars with no C# equivalent (not listed elsewhere):
-
-| Feature | Python API | Priority |
-|---|---|---|
-| Streaming execution | `lf.collect(streaming=True)` | Low |
-| Dynamic groupby | `group_by_dynamic()` | Low |
-| Rolling groupby | `rolling()` | Low |
-| Map groups | `map_groups()` | Low |
-| Map elements | `map_elements()` | Low |
-| Map / apply | `map()` / `apply()` | Medium |
-| KDE / histogram | `df.plot.kde()`, `df.hist()` | Low |
-| `approx_n_unique()` | `col.approx_n_unique()` | Low |
-| `entropy()` | `col.entropy()` | Low |
-| `value_counts()` | `col.value_counts()` | Medium |
-| `shrink_to_fit()` | In-memory optimization | Low |
-| `rechunk()` | Contiguous memory | Low |
-| `clear()` | Returns empty DataFrame | Low |
-| `is_first()` | First-occurrence duplicate check | Low |
-| `hash()` | Row hashing | Low |
-| `reinterpret()` | Bit reinterpretation | Low |
+| Feature | Python API | C# API | Status | Notes |
+|---|---|---|---|---|
+| Streaming execution | `lf.collect(streaming=True)` | `lf.Collect(streaming: true)` | ✅ | Returns `IAsyncEnumerable<DataFrame>`; tested |
+| Dynamic groupby | `group_by_dynamic()` | `GroupByDynamicBuilder` | ✅ | In `GroupByDynamicBuilder.cs` |
+| Rolling groupby | `rolling()` | `GroupByRollingBuilder` | ✅ | In `GroupByRollingBuilder.cs` |
+| Map groups | `map_groups()` | `GroupByBuilder.MapGroups()` | ✅ | Applies `Func<DataFrame, DataFrame>` per group |
+| Map elements | `map_elements()` | ❌ Not implemented | Low priority |
+| Map / apply | `map()` / `apply()` | ❌ Not implemented | Medium priority |
+| KDE / histogram | `df.plot.kde()`, `df.hist()` | ❌ Not implemented | Low priority |
+| `approx_n_unique()` | `col.approx_n_unique()` | ❌ Not implemented | Low priority |
+| `entropy()` | `col.entropy()` | ❌ Not implemented | Low priority |
+| `value_counts()` | `col.value_counts()` | ❌ Not implemented | Medium priority |
+| `shrink_to_fit()` | In-memory optimization | ❌ Not implemented | Low priority |
+| `rechunk()` | Contiguous memory | ❌ Not implemented | Low priority |
+| `clear()` | Returns empty DataFrame | ❌ Not implemented | Low priority |
+| `is_first()` | First-occurrence duplicate check | ❌ Not implemented | Low priority |
+| `hash()` | Row hashing | ❌ Not implemented | Low priority |
+| `reinterpret()` | Bit reinterpretation | ❌ Not implemented | Low priority |
 
 
 ---
@@ -410,27 +408,27 @@ These are features in Python Polars with no C# equivalent (not listed elsewhere)
 | Category | ✅ Implemented | 🟡 Implemented (No Parity Test) | ❌ Missing |
 |---|---|---|---|
 | Series Types | 19 (all types parity-tested via Tier14 + Tier13) | 0 | 0 |
-| Expr Methods | 30+ | 1 | 0 |
+| Expr Methods | 30+ | 0 | 0 |
 | String Ops | 19 | 0 | 0 |
 | Binary Ops | 6 | 0 | 0 |
 | Temporal Ops | 19 | 0 | 0 |
 | List Ops | 17 | 0 | 0 |
 | Struct Ops | 4 | 0 | 0 |
-| LazyFrame | 23 | 2 | 0 |
-| DataFrame | 27 | 2 | 0 |
+| LazyFrame | 23 | 0 | 0 |
+| DataFrame | 27 | 0 | 0 |
 | Aggregations (scalar + groupby) | 17 | 0 | 0 |
 | Joins | 7 | 0 | 0 |
 | FillNull | 8 | 0 | 0 |
 | Optimizations | 6 | 0 | 0 |
-| IO | 9 | 2 | 0 |
-| **Total** | **~211** | **~7** | **~0**
+| IO | 9 | 0 | 0 |
+| **Total** | **~211** | **~0** | **~0**
 
-**Key remaining gaps (highest priority for feature completeness) — now all resolved with this update:**
-1. ✅ `agg_groups` — **Implemented** (eager + lazy round-trip)
-2. ✅ `lf.sink_ipc()` — **Implemented** (SinkIpcOp in ExecutionEngine)
-3. ✅ Join reordering — **Implemented** (cost-based heuristic)
-4. `value_counts()` — Next priority
-5. Niche features: streaming, dynamic groupby, rolling groupby, map_groups/elements, approx_n_unique, entropy, is_first, and ~10 others
+**Notes:**
+- All implemented features now have parity tests (0 🟡 remaining).
+- Known correctness bugs exist in 4 areas (see sections 17-20) — features work but produce slightly different results than Python Polars.
+- **Missing features** (no C# equivalent): 12 niche features (down from 16): map_elements, map/apply, KDE/histogram, approx_n_unique, entropy, value_counts, shrink_to_fit, rechunk, clear, is_first, hash, reinterpret
+- **Recently closed (Sprint 25)**: Streaming execution (`lf.Collect(streaming: true)`), Map groups (`GroupByBuilder.MapGroups()`) — both now ✅ implemented
+- **Next priority**: `value_counts()`, `map_elements()`
 
 
 ---

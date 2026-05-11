@@ -303,5 +303,153 @@ namespace Glacier.Polaris.Compute
                 _mask = newMask;
             }
         }
-    }
+        public static ISeries IsFirst(ISeries series)
+        {
+            var result = new Data.BooleanSeries(series.Name, series.Length);
+            var resultSpan = result.Memory.Span;
+
+            if (series is Int32Series i32)
+            {
+                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                var span = i32.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    resultSpan[i] = set.Add(span[i]);
+            }
+            else if (series is Float64Series f64)
+            {
+                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                var span = f64.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    resultSpan[i] = set.Add(span[i]);
+            }
+            else if (series is Utf8StringSeries u8)
+            {
+                var set = new HashSet<string>();
+                for (int i = 0; i < u8.Length; i++)
+                {
+                    if (u8.ValidityMask.IsValid(i))
+                        resultSpan[i] = set.Add(u8.GetString(i)!);
+                    else
+                        resultSpan[i] = set.Add("\0__NULL__\0");
+                }
+            }
+            else
+            {
+                var set = new HashSet<object?>();
+                for (int i = 0; i < series.Length; i++)
+                    resultSpan[i] = set.Add(series.Get(i));
+            }
+
+            return result;
+        }
+        public static int ApproxNUnique(ISeries series)
+        {
+            if (series is Int32Series i32)
+            {
+                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                var span = i32.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    set.Add(span[i]);
+                return set.Count;
+            }
+            if (series is Float64Series f64)
+            {
+                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                var span = f64.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                    set.Add(span[i]);
+                return set.Count;
+            }
+            if (series is Utf8StringSeries u8)
+            {
+                var set = new HashSet<string>();
+                for (int i = 0; i < u8.Length; i++)
+                    if (u8.ValidityMask.IsValid(i)) set.Add(u8.GetString(i)!);
+                return set.Count;
+            }
+            return 0;
+        }
+
+public static DataFrame ValueCounts(ISeries series, bool sort, bool parallel)
+{
+ISeries keysCol;
+ISeries countsCol;
+
+if (series is Int32Series i32)
+{
+var dict = new Dictionary<int, int>();
+var span = i32.Memory.Span;
+for (int i = 0; i < span.Length; i++)
+{
+int val = span[i];
+dict.TryGetValue(val, out int c);
+dict[val] = c + 1;
+}
+
+var entries = dict.ToList();
+if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+keysCol = new Int32Series(series.Name, entries.Select(e => e.Key).ToArray());
+countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+}
+else if (series is Float64Series f64)
+{
+var dict = new Dictionary<double, int>();
+var span = f64.Memory.Span;
+for (int i = 0; i < span.Length; i++)
+{
+double val = span[i];
+dict.TryGetValue(val, out int c);
+dict[val] = c + 1;
+}
+
+var entries = dict.ToList();
+if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+keysCol = new Float64Series(series.Name, entries.Select(e => e.Key).ToArray());
+countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+}
+else if (series is Utf8StringSeries u8)
+{
+var dict = new Dictionary<string, int>();
+for (int i = 0; i < u8.Length; i++)
+{
+if (u8.ValidityMask.IsValid(i))
+{
+string val = u8.GetString(i)!;
+dict.TryGetValue(val, out int c);
+dict[val] = c + 1;
+}
+else
+{
+dict.TryGetValue("null", out int c);
+dict["null"] = c + 1;
+}
+}
+
+var entries = dict.ToList();
+if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+keysCol = new Utf8StringSeries(series.Name, entries.Select(e => e.Key).ToArray());
+countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+}
+else
+{
+var dict = new Dictionary<object?, int>();
+for (int i = 0; i < series.Length; i++)
+{
+var val = series.Get(i);
+dict.TryGetValue(val, out int c);
+dict[val] = c + 1;
+}
+
+var entries = dict.ToList();
+if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+keysCol = new ObjectSeries(series.Name, entries.Select(e => e.Key).ToArray());
+countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+}
+
+return new DataFrame(new List<ISeries> { keysCol, countsCol });
+}    }
 }

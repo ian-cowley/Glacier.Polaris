@@ -86,7 +86,58 @@ namespace Glacier.Polaris
             var methodCall = Expression.Call(null, method, Expression.Constant(connection), Expression.Constant(sql));
             return new LazyFrame(methodCall);
         }
-
+        /// <summary>
+        /// Collect and optionally stream results.
+        /// When streaming=false (default): materialize into a single DataFrame (existing behavior).
+        /// When streaming=true: return each batch as a separate yield, useful for large datasets.
+        /// Polars API: collect(streaming=True)
+        /// </summary>
+        public async IAsyncEnumerable<DataFrame> Collect(bool streaming)
+        {
+            if (!streaming)
+            {
+                var df = await Collect();
+                yield return df;
+                yield break;
+            }
+            await foreach (var df in CollectAsync())
+            {
+                yield return df;
+            }
+        }        /// <summary>
+                 /// Collect the plan in batches of the specified size (streaming).
+                 /// Each batch is a DataFrame with at most batchSize rows.
+                 /// </summary>
+        public async IAsyncEnumerable<DataFrame> CollectStreaming(int batchSize = 65536)
+        {
+            await foreach (var df in CollectAsync())
+            {
+                int rowCount = df.RowCount;
+                if (rowCount <= batchSize)
+                {
+                    yield return df;
+                }
+                else
+                {
+                    int offset = 0;
+                    while (offset < rowCount)
+                    {
+                        int length = Math.Min(batchSize, rowCount - offset);
+                        var sliceCols = new List<ISeries>();
+                        foreach (var col in df.Columns)
+                        {
+                            var sliceCol = col.CloneEmpty(length);
+                            var indices = new int[length];
+                            for (int i = 0; i < length; i++) indices[i] = offset + i;
+                            col.Take(sliceCol, indices);
+                            sliceCols.Add(sliceCol);
+                        }
+                        yield return new DataFrame(sliceCols);
+                        offset += length;
+                    }
+                }
+            }
+        }
         public LazyFrame Join(LazyFrame other, string on, JoinType type = JoinType.Inner)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(JoinOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
@@ -283,6 +334,12 @@ namespace Glacier.Polaris
         internal static LazyFrame SinkCsvOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame SinkParquetOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame ShiftColumnsOp(LazyFrame source, int n) => null!;
+        internal static LazyFrame GroupByDynamicOp(LazyFrame source, string indexColumn, string every, string? period, string? offset, string closed, string startBy) => null!;
+        internal static LazyFrame GroupByRollingOp(LazyFrame source, string indexColumn, string period, string? offset, string closed) => null!;
+        internal static LazyFrame ClearOp(LazyFrame source) => null!;
+        internal static LazyFrame ShrinkToFitOp(LazyFrame source) => null!;
+        internal static LazyFrame RechunkOp(LazyFrame source) => null!;
+        internal static LazyFrame MapOp(LazyFrame source, Func<DataFrame, DataFrame> func) => null!;
 
         public static LazyFrame FromDataFrame(DataFrame df)
         {
@@ -419,5 +476,66 @@ namespace Glacier.Polaris
         }
         internal static LazyFrame SinkIpcOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame AggGroupsOp(LazyFrame source, string[] columns) => null!;
+        /// <summary>
+        /// Group-by dynamic (time-window-based grouping). Ported from Glacier.Polaris_OLD.
+        /// </summary>
+        public LazyFrame GroupByDynamic(string indexColumn, string every, string? period = null, string? offset = null, string closed = "left", string startBy = "window")
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(GroupByDynamicOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(every), Expression.Constant(period, typeof(string)), Expression.Constant(offset, typeof(string)), Expression.Constant(closed), Expression.Constant(startBy));
+            return new LazyFrame(methodCall);
+        }
+
+        /// <summary>
+        /// Group-by rolling (sliding-window-based grouping). Ported from Glacier.Polaris_OLD.
+        /// </summary>
+        public LazyFrame GroupByRolling(string indexColumn, string period, string? offset = null, string closed = "right")
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(GroupByRollingOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(period), Expression.Constant(offset, typeof(string)), Expression.Constant(closed));
+            return new LazyFrame(methodCall);
+        }
+
+        /// <summary>
+        /// Remove all rows from the DataFrame while preserving the schema. Polars API: clear()
+        /// </summary>
+        public LazyFrame Clear()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(ClearOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
+
+        /// <summary>
+        /// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
+        /// </summary>
+        public LazyFrame ShrinkToFit()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(ShrinkToFitOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
+
+        /// <summary>
+        /// Rechunk the DataFrame, consolidating into a single contiguous memory chunk per column.
+        /// Polars API: rechunk()
+        /// </summary>
+        public LazyFrame Rechunk()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(RechunkOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
+
+        /// <summary>
+        /// Apply a user-defined function to each batch/chunk of the DataFrame.
+        /// Polars API: map()
+        /// </summary>
+        public LazyFrame Map(Func<DataFrame, DataFrame> func)
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(MapOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(func));
+            return new LazyFrame(methodCall);
+        }
     }
 }

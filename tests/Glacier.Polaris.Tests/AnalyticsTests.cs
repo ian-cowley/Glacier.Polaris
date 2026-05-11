@@ -12,6 +12,111 @@ namespace Glacier.Polaris.Tests
     public class AnalyticsTests
     {
         [Fact]
+        public void Histogram_BasicIntegerSeries()
+        {
+            var series = new Float64Series("x", new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 10.0 });
+
+            // Histogram with 5 buckets (bins)
+            var histDf = series.Hist(5);
+            Assert.Equal(5, histDf.RowCount);
+            var startCol = (Float64Series)histDf.GetColumn("bin_start");
+            var endCol = (Float64Series)histDf.GetColumn("bin_end");
+            var countCol = (Int32Series)histDf.GetColumn("count");
+
+            // Min = 1.0, Max = 10.0. Bin size = (10 - 1) / 5 = 1.8.
+            // Bins:
+            // [1.0, 2.8) -> 1.0, 2.0 -> count = 2
+            // [2.8, 4.6) -> 3.0, 4.0 -> count = 2
+            // [4.6, 6.4) -> 5.0 -> count = 1
+            // [6.4, 8.2) -> count = 0
+            // [8.2, 10.0] -> 10.0 -> count = 1
+            Assert.Equal(1.0, startCol.Memory.Span[0]);
+            Assert.Equal(2.8, endCol.Memory.Span[0], 4);
+            Assert.Equal(2, countCol.Memory.Span[0]);
+            Assert.Equal(2, countCol.Memory.Span[1]);
+            Assert.Equal(1, countCol.Memory.Span[2]);
+            Assert.Equal(0, countCol.Memory.Span[3]);
+            Assert.Equal(1, countCol.Memory.Span[4]);
+        }
+
+[Fact]
+public void Histogram_DataFrameApi()
+{
+    var df = new DataFrame(new ISeries[] {
+        new Float64Series("x", new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 10.0 })
+    });
+
+    var histDf = df.Hist("x", 5);
+    Assert.Equal(5, histDf.RowCount);
+    var countCol = (Int32Series)histDf.GetColumn("count");
+    Assert.Equal(2, countCol.Memory.Span[0]);
+}
+
+[Fact]
+public void Kde_Basic()
+{
+    var series = new Float64Series("x", new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 10.0 });
+
+    // KDE evaluation with bandwidth=1.0 and 3 grid points
+    var kdeDf = series.Kde(1.0, 3);
+    Assert.Equal(3, kdeDf.RowCount);
+    var gridCol = (Float64Series)kdeDf.GetColumn("grid");
+    var densityCol = (Float64Series)kdeDf.GetColumn("density");
+
+    // Grid bounds: min - 3h = 1 - 3 = -2. max + 3h = 10 + 3 = 13.
+    // step = 15 / 2 = 7.5. Grid points: -2.0, 5.5, 13.0
+    Assert.Equal(-2.0, gridCol.Memory.Span[0]);
+    Assert.Equal(5.5, gridCol.Memory.Span[1], 4);
+    Assert.Equal(13.0, gridCol.Memory.Span[2]);
+
+    // Density must be positive at all grid points
+    Assert.True(densityCol.Memory.Span[0] > 0);
+    Assert.True(densityCol.Memory.Span[1] > 0);
+    Assert.True(densityCol.Memory.Span[2] > 0);
+}
+
+[Fact]
+public void Kde_DataFrameApi()
+{
+    var df = new DataFrame(new ISeries[] {
+        new Float64Series("x", new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 10.0 })
+    });
+
+    var kdeDf = df.Kde("x", 1.0, 3);
+    Assert.Equal(3, kdeDf.RowCount);
+    var densityCol = (Float64Series)kdeDf.GetColumn("density");
+    Assert.True(densityCol.Memory.Span[0] > 0);
+}
+
+[Fact]
+public async Task CollectStreaming_SlicesDataFrameCorrectly()
+{
+    // Set up a large DataFrame
+    var data = Enumerable.Range(1, 100).Select(x => (double)x).ToArray();
+    var timeCol = new Float64Series("time", data);
+    var df = new DataFrame(new ISeries[] { timeCol });
+
+    // Collect streaming with batchSize = 15
+    var lazy = df.Lazy();
+    var batches = new List<DataFrame>();
+    await foreach (var batch in lazy.CollectStreaming(15))
+    {
+        batches.Add(batch);
+    }
+
+    // 100 elements divided by batchSize 15 yields 7 batches
+    Assert.Equal(7, batches.Count);
+    Assert.Equal(15, batches[0].RowCount);
+    Assert.Equal(15, batches[1].RowCount);
+    Assert.Equal(10, batches[6].RowCount);
+
+    // Reconstruct and check equivalence
+    var combined = DataFrame.Concat(batches);
+    Assert.Equal(100, combined.RowCount);
+    var combinedTime = (Float64Series)combined.GetColumn("time");
+    Assert.Equal(1.0, combinedTime.Memory.Span[0]);
+    Assert.Equal(100.0, combinedTime.Memory.Span[99]);
+}        [Fact]
         public async Task TestRollingMeanIntegration()
         {
             var df = new DataFrame(new ISeries[] {

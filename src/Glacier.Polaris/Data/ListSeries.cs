@@ -127,5 +127,10 @@ namespace Glacier.Polaris.Data
                 valueArray,
                 nullBitmapBuilder.Build());
         }
+        public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
+        public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);
+        public double Entropy() => Compute.AggregationKernels.Entropy(this);
+        public int ApproxNUnique() => Compute.UniqueKernels.ApproxNUnique(this);
+        public ISeries MapElements(Func<object?, object?> mapping, Type returnType) => Compute.ComputeKernels.MapElements(this, mapping, returnType);
     }
 }

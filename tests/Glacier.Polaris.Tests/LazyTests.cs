@@ -8,7 +8,103 @@ namespace Glacier.Polaris.Tests
 {
     public class LazyTests
     {
-    [Fact]
+        [Fact]
+        public void MapGroups_SortEachGroup()
+        {
+            var groupCol = new Data.Utf8StringSeries("group", new[] { "a", "a", "a", "b", "b" });
+            var valCol = new Data.Int32Series("val", new[] { 3, 1, 2, 5, 4 });
+            var df = new DataFrame(new ISeries[] { groupCol, valCol });
+
+            var gb = new GroupByBuilder(df, "group");
+            var result = gb.MapGroups(g => g.Sort("val"));
+
+            Assert.Equal(5, result.RowCount);
+            var resultGroup = (Data.Utf8StringSeries)result.GetColumn("group");
+            var resultVal = (Data.Int32Series)result.GetColumn("val");
+            Assert.Equal("a", resultGroup.GetString(0));
+            Assert.Equal(1, resultVal.Memory.Span[0]);
+            Assert.Equal("a", resultGroup.GetString(1));
+            Assert.Equal(2, resultVal.Memory.Span[1]);
+            Assert.Equal("a", resultGroup.GetString(2));
+            Assert.Equal(3, resultVal.Memory.Span[2]);
+            Assert.Equal("b", resultGroup.GetString(3));
+            Assert.Equal(4, resultVal.Memory.Span[3]);
+            Assert.Equal("b", resultGroup.GetString(4));
+            Assert.Equal(5, resultVal.Memory.Span[4]);
+        }
+        [Fact]
+        public void MapGroups_FilterEachGroup()
+        {
+            var groupCol = new Data.Utf8StringSeries("group", new[] { "a", "a", "a", "b", "b" });
+            var valCol = new Data.Int32Series("val", new[] { 10, 20, 30, 5, 15 });
+            var df = new DataFrame(new ISeries[] { groupCol, valCol });
+
+            var gb = new GroupByBuilder(df, "group");
+            var result = gb.MapGroups(g => g.Filter(Expr.Col("val") > 10));
+
+            Assert.Equal(3, result.RowCount);
+            var resultVal = (Data.Int32Series)result.GetColumn("val");
+            Assert.Equal(20, resultVal.Memory.Span[0]);
+            Assert.Equal(30, resultVal.Memory.Span[1]);
+            Assert.Equal(15, resultVal.Memory.Span[2]);
+        }
+        [Fact]
+        public void MapGroups_SelectColumn()
+        {
+            var groupCol = new Data.Utf8StringSeries("group", new[] { "a", "a", "b", "b" });
+            var val1 = new Data.Int32Series("val1", new[] { 1, 2, 3, 4 });
+            var val2 = new Data.Float64Series("val2", new[] { 1.5, 2.5, 3.5, 4.5 });
+            var df = new DataFrame(new ISeries[] { groupCol, val1, val2 });
+
+            // Each group: select only val1
+            var gb = new GroupByBuilder(df, "group");
+            var result = gb.MapGroups(g => g.Select(Expr.Col("val1")));
+
+            Assert.Equal(4, result.RowCount);
+            Assert.Single(result.Columns);
+            Assert.Equal("val1", result.Columns[0].Name);
+            var resultVal = (Data.Int32Series)result.GetColumn("val1");
+            Assert.Equal(1, resultVal.Memory.Span[0]);
+            Assert.Equal(2, resultVal.Memory.Span[1]);
+            Assert.Equal(3, resultVal.Memory.Span[2]);
+            Assert.Equal(4, resultVal.Memory.Span[3]);
+        }
+
+        [Fact]
+        public async Task CollectStreaming_TrueYieldsChunks()
+        {
+            var data = Enumerable.Range(1, 50).Select(x => (double)x).ToArray();
+            var df = new DataFrame(new ISeries[] { new Data.Float64Series("val", data) });
+
+            var lazy = df.Lazy();
+            var chunks = new List<DataFrame>();
+            await foreach (var chunk in lazy.Collect(streaming: true))
+            {
+                chunks.Add(chunk);
+            }
+
+            // CsvReader and DataFrameOp currently produce single chunks
+            Assert.Single(chunks);
+            Assert.Equal(50, chunks[0].RowCount);
+        }
+
+        [Fact]
+        public async Task CollectStreaming_FalseReturnsSingleChunk()
+        {
+            var data = Enumerable.Range(1, 50).Select(x => (double)x).ToArray();
+            var df = new DataFrame(new ISeries[] { new Data.Float64Series("val", data) });
+
+            var lazy = df.Lazy();
+            var chunks = new List<DataFrame>();
+            await foreach (var chunk in lazy.Collect(streaming: false))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.Single(chunks);
+            Assert.Equal(50, chunks[0].RowCount);
+        }
+        [Fact]
         public async Task TestProjectionPushdown()
         {
             var csv = "A,B,C,D,E\n1,2,3,4,5\n6,7,8,9,10";
@@ -16,7 +112,7 @@ namespace Glacier.Polaris.Tests
             await System.IO.File.WriteAllTextAsync(path, csv);
 
             var lf = LazyFrame.ScanCsv(path);
-            
+
             var result = await lf.Select(Expr.Col("C"))
                 .Collect();
 
@@ -35,7 +131,7 @@ namespace Glacier.Polaris.Tests
             await System.IO.File.WriteAllTextAsync(path, csv);
 
             var lf = LazyFrame.ScanCsv(path);
-            
+
             var result = await lf.Select(Expr.Col("A"), Expr.Col("B"))
                 .Filter(c => Expr.Col("A") == 6)
                 .Collect();
@@ -53,7 +149,7 @@ namespace Glacier.Polaris.Tests
             await System.IO.File.WriteAllTextAsync(path, csv);
 
             var lf = LazyFrame.ScanCsv(path);
-            
+
             // Select(Select(Scan)) -> Should merge into one Select
             var result = await lf.Select(Expr.Col("A"), Expr.Col("B"), Expr.Col("C"))
                 .Select(Expr.Col("B"), Expr.Col("C"))
