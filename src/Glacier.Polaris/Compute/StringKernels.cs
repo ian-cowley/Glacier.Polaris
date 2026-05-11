@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Glacier.Polaris.Compute
 {
