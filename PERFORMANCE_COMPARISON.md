@@ -1,10 +1,13 @@
 # Glacier.Polaris vs Python Polars: Comprehensive Feature & Performance Comparison
 
-**Date:** 2026-05-09 (Updated)
-**Note:** See [COMPREHENSIVE_REPORT.md](COMPREHENSIVE_REPORT.md) for the most up-to-date full report.
+**Date:** 2026-05-09 (Historical snapshot)
 **C# Version:** Glacier.Polaris (.NET 10.0)
 **Python Version:** Polars 1.40.1 (PyArrow 21.0.0)
 **Hardware:** Same machine, release builds, 3-run average (C#), 3-run minimum (Python)
+
+> ⚠️ **Benchmark snapshot.** These figures reflect the state of the codebase on 2026-05-09 and may be stale.
+> Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate.
+> See [COMPREHENSIVE_REPORT.md](COMPREHENSIVE_REPORT.md) for the companion full report.
 
 ---
 
