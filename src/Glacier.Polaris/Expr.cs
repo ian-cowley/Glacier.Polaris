@@ -389,15 +389,18 @@ namespace Glacier.Polaris
         internal static Expr List_ShiftOp(Expr e, int n) => null!;
         internal static Expr List_SliceOp(Expr e, int offset, int? length) => null!;
         public Expr ValueCounts(bool sort = false, bool parallel = true) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ValueCountsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(sort), System.Linq.Expressions.Expression.Constant(parallel)));
-public Expr IsFirst() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsFirstOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
-public Expr Entropy() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(EntropyOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
-public Expr ApproxNUnique() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ApproxNUniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
-public Expr Hash() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(HashOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
-internal static Expr ValueCountsOp(Expr e, bool sort, bool parallel) => null!;
-internal static Expr IsFirstOp(Expr e) => null!;
-internal static Expr EntropyOp(Expr e) => null!;
-internal static Expr ApproxNUniqueOp(Expr e) => null!;
-internal static Expr HashOp(Expr e) => null!;    }
+        public Expr IsFirst() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsFirstOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Entropy() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(EntropyOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr ApproxNUnique() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ApproxNUniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Hash() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(HashOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        internal static Expr ValueCountsOp(Expr e, bool sort, bool parallel) => null!;
+        internal static Expr IsFirstOp(Expr e) => null!;
+        internal static Expr EntropyOp(Expr e) => null!;
+        internal static Expr ApproxNUniqueOp(Expr e) => null!;
+        internal static Expr HashOp(Expr e) => null!; public Expr MapElements(Func<object?, object?> mapping, Type returnType) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(MapElementsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(mapping), System.Linq.Expressions.Expression.Constant(returnType)));
+public Expr Reinterpret(Type targetType) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ReinterpretOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(targetType)));
+internal static Expr MapElementsOp(Expr e, Func<object?, object?> mapping, Type returnType) => null!;
+internal static Expr ReinterpretOp(Expr e, Type targetType) => null!;}
 
     public sealed class WhenExpr
     {
