@@ -87,9 +87,27 @@ namespace Glacier.Polaris
             return new LazyFrame(methodCall);
         }
         /// <summary>
-        /// Collect the plan in batches of the specified size (streaming).
-        /// Each batch is a DataFrame with at most batchSize rows.
+        /// Collect and optionally stream results.
+        /// When streaming=false (default): materialize into a single DataFrame (existing behavior).
+        /// When streaming=true: return each batch as a separate yield, useful for large datasets.
+        /// Polars API: collect(streaming=True)
         /// </summary>
+        public async IAsyncEnumerable<DataFrame> Collect(bool streaming)
+        {
+            if (!streaming)
+            {
+                var df = await Collect();
+                yield return df;
+                yield break;
+            }
+            await foreach (var df in CollectAsync())
+            {
+                yield return df;
+            }
+        }        /// <summary>
+                 /// Collect the plan in batches of the specified size (streaming).
+                 /// Each batch is a DataFrame with at most batchSize rows.
+                 /// </summary>
         public async IAsyncEnumerable<DataFrame> CollectStreaming(int batchSize = 65536)
         {
             await foreach (var df in CollectAsync())
