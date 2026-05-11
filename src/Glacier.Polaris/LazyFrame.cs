@@ -86,7 +86,40 @@ namespace Glacier.Polaris
             var methodCall = Expression.Call(null, method, Expression.Constant(connection), Expression.Constant(sql));
             return new LazyFrame(methodCall);
         }
-
+        /// <summary>
+        /// Collect the plan in batches of the specified size (streaming).
+        /// Each batch is a DataFrame with at most batchSize rows.
+        /// </summary>
+        public async IAsyncEnumerable<DataFrame> CollectStreaming(int batchSize = 65536)
+        {
+            await foreach (var df in CollectAsync())
+            {
+                int rowCount = df.RowCount;
+                if (rowCount <= batchSize)
+                {
+                    yield return df;
+                }
+                else
+                {
+                    int offset = 0;
+                    while (offset < rowCount)
+                    {
+                        int length = Math.Min(batchSize, rowCount - offset);
+                        var sliceCols = new List<ISeries>();
+                        foreach (var col in df.Columns)
+                        {
+                            var sliceCol = col.CloneEmpty(length);
+                            var indices = new int[length];
+                            for (int i = 0; i < length; i++) indices[i] = offset + i;
+                            col.Take(sliceCol, indices);
+                            sliceCols.Add(sliceCol);
+                        }
+                        yield return new DataFrame(sliceCols);
+                        offset += length;
+                    }
+                }
+            }
+        }
         public LazyFrame Join(LazyFrame other, string on, JoinType type = JoinType.Inner)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(JoinOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
