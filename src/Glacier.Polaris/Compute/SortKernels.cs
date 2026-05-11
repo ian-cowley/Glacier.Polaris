@@ -5,15 +5,14 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
 
 namespace Glacier.Polaris.Compute
 {
     /// <summary>
-    /// High-performance parallel radix sort kernels for Int32 and Float64.
-    /// Both counting AND scatter phases are parallelized using thread-local histograms
-    /// and per-thread scatter offsets. Uses ArrayPool renting for temp buffers,
-    /// stack-allocated histograms.
-    /// LSB-first radix sort (4 bytes for int32, 8 bytes for float64-after-conversion).
+    /// High-performance radix sort kernels for Int32 and Float64.
+    /// Uses sequential 8-bit packed-ulong radix for Int32 ArgSort and
+    /// Array.Sort with struct LongIndexPair for Float64 ArgSort (corrected IEEE 754 transform).
     /// </summary>
     public static class SortKernels
     {
@@ -68,128 +67,149 @@ namespace Glacier.Polaris.Compute
             }
         }
 
-        /// <summary>ArgSort returning new int[].</summary>
+        /// <summary>ArgSort for Int32 — returns new int[]. Packed ulong + 4-pass 8-bit radix.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public static unsafe int[] ArgSort(ReadOnlySpan<int> data)
         {
             if (data.Length == 0) return Array.Empty<int>();
-            int[] indices = new int[data.Length];
-            for (int i = 0; i < data.Length; i++) indices[i] = i;
-            ArgSort(data, indices);
+            int n = data.Length;
+            int[] indices = new int[n];
+
+            ulong[] packed = System.Buffers.ArrayPool<ulong>.Shared.Rent(n);
+            ulong[] buffer = System.Buffers.ArrayPool<ulong>.Shared.Rent(n);
+
+            try
+            {
+                fixed (int* pData = data)
+                fixed (int* pIdx = indices)
+                fixed (ulong* pPacked = packed)
+                fixed (ulong* pBuffer = buffer)
+                {
+                    ulong* pk = pPacked;
+                    for (int i = 0; i < n; i++)
+                        pk[i] = ((ulong)((uint)pData[i] ^ 0x80000000) << 32) | (uint)i;
+
+                    ulong* src = pPacked;
+                    ulong* dst = pBuffer;
+                    int* counts = stackalloc int[256];
+                    for (int shift = 32; shift < 64; shift += 8)
+                    {
+                        for (int j = 0; j < n; j++) counts[(int)((src[j] >> shift) & 0xFF)]++;
+                        int off = 0;
+                        for (int j = 0; j < 256; j++) { int c = counts[j]; counts[j] = off; off += c; }
+                        for (int j = 0; j < n; j++) dst[counts[(int)((src[j] >> shift) & 0xFF)]++] = src[j];
+                        ulong* t = src; src = dst; dst = t;
+                        // Zero out counts for next pass
+                        for (int j = 0; j < 256; j++) counts[j] = 0;
+                    }
+
+                    if (src != pPacked)
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pPacked, src, (uint)(n * sizeof(ulong)));
+
+                    for (int i = 0; i < n; i++)
+                        pIdx[i] = (int)(pPacked[i] & 0xFFFFFFFF);
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<ulong>.Shared.Return(packed);
+                System.Buffers.ArrayPool<ulong>.Shared.Return(buffer);
+            }
+
             return indices;
         }
 
-        /// <summary>ArgSort with parallel counting and scatter.</summary>
+        /// <summary>In-place ArgSort for Int32 (re-sorts existing indices). Packed ulong + 4-pass 8-bit radix.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public static unsafe void ArgSort(ReadOnlySpan<int> data, Span<int> indices, bool descending = false)
         {
             if (data.Length == 0) return;
+            int n = data.Length;
 
-            int totalLen = data.Length;
-            int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(totalLen);
+            ulong[] packed = System.Buffers.ArrayPool<ulong>.Shared.Rent(n);
+            ulong[] buffer = System.Buffers.ArrayPool<ulong>.Shared.Rent(n);
 
             try
             {
-                fixed (int* pIndices = indices)
-                fixed (int* pBuffer = buffer)
                 fixed (int* pData = data)
+                fixed (int* pIdx = indices)
+                fixed (ulong* pPacked = packed)
+                fixed (ulong* pBuffer = buffer)
                 {
-                    int* src = pIndices;
-                    int* dst = pBuffer;
+                    ulong* pk = pPacked;
+                    for (int i = 0; i < n; i++)
+                        pk[i] = ((ulong)((uint)pData[pIdx[i]] ^ 0x80000000) << 32) | (uint)i;
 
-                    for (int shift = 0; shift < 32; shift += 8)
+                    ulong* src = pPacked;
+                    ulong* dst = pBuffer;
+                    int* counts = stackalloc int[256];
+                    for (int shift = 32; shift < 64; shift += 8)
                     {
-                        DoRadixPass(src, dst, pData, totalLen, shift);
-                        int* temp = src;
-                        src = dst;
-                        dst = temp;
+                        for (int j = 0; j < n; j++) counts[(int)((src[j] >> shift) & 0xFF)]++;
+                        int off = 0;
+                        for (int j = 0; j < 256; j++) { int c = counts[j]; counts[j] = off; off += c; }
+                        for (int j = 0; j < n; j++) dst[counts[(int)((src[j] >> shift) & 0xFF)]++] = src[j];
+                        ulong* t = src; src = dst; dst = t;
+                        // Zero out counts for next pass
+                        for (int j = 0; j < 256; j++) counts[j] = 0;
                     }
 
-                    if (src != pIndices)
-                    {
-                        System.Runtime.CompilerServices.Unsafe.CopyBlock(
-                            pIndices, src, (uint)(totalLen * sizeof(int)));
-                    }
+                    if (src != pPacked)
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pPacked, src, (uint)(n * sizeof(ulong)));
 
-                    if (descending)
-                        indices.Reverse();
+                    for (int i = 0; i < n; i++)
+                        pIdx[i] = (int)(pPacked[i] & 0xFFFFFFFF);
                 }
+
+                if (descending)
+                    for (int i = 0; i < n / 2; i++) { int t = indices[i]; indices[i] = indices[n - 1 - i]; indices[n - 1 - i] = t; }
             }
             finally
             {
-                System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+                System.Buffers.ArrayPool<ulong>.Shared.Return(packed);
+                System.Buffers.ArrayPool<ulong>.Shared.Return(buffer);
             }
         }
 
-        /// <summary>ArgSort for double — returns new int[].</summary>
-        public static unsafe int[] ArgSort(ReadOnlySpan<double> data)
+        /// <summary>ArgSort for Float64 — returns new int[]. Uses full 64-bit corrected IEEE key with Array.Sort on LongIndexPair.</summary>
+        public static int[] ArgSort(ReadOnlySpan<double> data)
         {
             if (data.Length == 0) return Array.Empty<int>();
-            int[] indices = new int[data.Length];
-            for (int i = 0; i < data.Length; i++) indices[i] = i;
-            ArgSort(data, indices);
-            return indices;
+            int n = data.Length;
+            var pairs = new LongIndexPair[n];
+            for (int i = 0; i < n; i++)
+            {
+                long val = BitConverter.DoubleToInt64Bits(data[i]);
+                pairs[i] = new LongIndexPair(val < 0 ? ~val : val ^ long.MinValue, i);
+            }
+            Array.Sort(pairs);
+            var result = new int[n];
+            for (int i = 0; i < n; i++) result[i] = pairs[i].Index;
+            return result;
         }
-        public static unsafe void ArgSort(ReadOnlySpan<double> data, Span<int> indices, bool descending = false)
+
+        /// <summary>In-place ArgSort for Float64 (re-sorts existing indices). Uses full 64-bit corrected IEEE key with Array.Sort on LongIndexPair.</summary>
+        public static void ArgSort(ReadOnlySpan<double> data, Span<int> indices, bool descending = false)
         {
             if (data.Length == 0) return;
-
-            int totalLen = data.Length;
-            int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(totalLen);
-            long[]? rented = null;
-
-            try
+            int n = data.Length;
+            var pairs = new LongIndexPair[n];
+            var oldIndices = indices.ToArray();
+            for (int i = 0; i < n; i++)
             {
-                rented = System.Buffers.ArrayPool<long>.Shared.Rent(totalLen);
-
-                // Sequential conversion: Parallel.For overhead exceeds benefit for memory-bound operation.
-                fixed (double* pData = data)
-                fixed (long* pConverted = rented)
-                {
-                    for (int i = 0; i < totalLen; i++)
-                    {
-                        long val = BitConverter.DoubleToInt64Bits(pData[i]);
-                        // IEEE 754: negative values are complement (leading 1), positive are leading 0
-                        // To make sortable: flip sign bit, and for negatives flip all bits
-                        if (val < 0) val ^= long.MaxValue;
-                        else val ^= unchecked((long)0x8000000000000000);
-                        pConverted[i] = val;
-                    }
-                }
-
-                fixed (int* pIndices = indices)
-                fixed (int* pBuffer = buffer)
-                fixed (long* pConverted = rented)
-                {
-                    int* src = pIndices;
-                    int* dst = pBuffer;
-
-                    for (int shift = 0; shift < 64; shift += 8)
-                    {
-                        DoRadixPass64(src, dst, pConverted, totalLen, shift);
-                        int* temp = src;
-                        src = dst;
-                        dst = temp;
-                    }
-
-                    if (src != pIndices)
-                    {
-                        System.Runtime.CompilerServices.Unsafe.CopyBlock(
-                            pIndices, src, (uint)(totalLen * sizeof(int)));
-                    }
-
-                    if (descending)
-                        indices.Reverse();
-                }
+                long val = BitConverter.DoubleToInt64Bits(data[oldIndices[i]]);
+                pairs[i] = new LongIndexPair(val < 0 ? ~val : val ^ long.MinValue, i);
             }
-            finally
-            {
-                if (rented != null)
-                    System.Buffers.ArrayPool<long>.Shared.Return(rented);
-                System.Buffers.ArrayPool<int>.Shared.Return(buffer);
-            }
-        }/// <summary>
-         /// Multi-column sort via stable chained radix sorts in reverse order.
-         /// Uses ArgSort for each column in reverse order (stable sort by last column first).
-         /// </summary>
+            Array.Sort(pairs);
+            for (int i = 0; i < n; i++) indices[i] = pairs[i].Index;
+            if (descending)
+                for (int i = 0; i < n / 2; i++) { int t = indices[i]; indices[i] = indices[n - 1 - i]; indices[n - 1 - i] = t; }
+        }
+
+        /// <summary>
+        /// Multi-column sort via stable chained radix sorts in reverse order.
+        /// Uses ArgSort for each column in reverse order (stable sort by last column first).
+        /// </summary>
         public static int[] MultiColumnSort(DataFrame df, string[] columnNames, bool[] descending)
         {
             if (columnNames.Length == 0 || df.Columns.Count == 0) return Array.Empty<int>();
