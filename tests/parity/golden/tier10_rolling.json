@@ -1,0 +1,30 @@
+{
+  "rolling_mean": [
+    null,
+    null,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "rolling_sum": [
+    null,
+    null,
+    6.0,
+    9.0,
+    12.0
+  ],
+  "rolling_min": [
+    null,
+    null,
+    1.0,
+    2.0,
+    3.0
+  ],
+  "rolling_max": [
+    null,
+    null,
+    3.0,
+    4.0,
+    5.0
+  ]
+}

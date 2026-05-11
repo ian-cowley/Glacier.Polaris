@@ -1,0 +1,26 @@
+{
+  "id": [
+    2,
+    3,
+    null,
+    1
+  ],
+  "name": [
+    "Bob",
+    "Charlie",
+    null,
+    "Alice"
+  ],
+  "id_right": [
+    2,
+    3,
+    4,
+    null
+  ],
+  "salary": [
+    50000,
+    60000,
+    70000,
+    null
+  ]
+}

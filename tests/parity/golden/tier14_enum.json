@@ -1,0 +1,9 @@
+{
+  "enum_pet": [
+    "cat",
+    "dog",
+    "cat",
+    "bird",
+    null
+  ]
+}

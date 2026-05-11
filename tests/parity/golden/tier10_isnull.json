@@ -1,0 +1,12 @@
+{
+  "is_null": [
+    false,
+    true,
+    false
+  ],
+  "is_not_null": [
+    true,
+    false,
+    true
+  ]
+}

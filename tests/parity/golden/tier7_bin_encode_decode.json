@@ -1,0 +1,12 @@
+{
+  "encode_hex": [
+    "68656c6c6f",
+    "666f6f20626172",
+    "776f726c6421"
+  ],
+  "encode_b64": [
+    "aGVsbG8=",
+    "Zm9vIGJhcg==",
+    "d29ybGQh"
+  ]
+}

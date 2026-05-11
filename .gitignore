@@ -1,0 +1,71 @@
+# Build output folders
+[Bb]in/
+[Oo]bj/
+[Rr]elease/
+
+# IDE and editor folders
+.vs/
+.idea/
+.vscode/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+*.DotSettings
+
+# AI assistant artifacts
+.gemini/
+
+# BenchmarkDotNet artifacts
+BenchmarkDotNet.Artifacts/
+
+# Scratch / working directories
+brain/
+scratch/
+
+# Test output artifacts
+current_failures.txt
+errors.txt
+failures_summary.txt
+full_test_output.txt
+test_results.txt
+test_normal.txt
+
+# NuGet
+*.nupkg
+packages/
+
+# Logs
+*.log
+ncrunch*
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# WIP scripts and result files (root-level dev artifacts)
+check_ewm.py
+check_sort.py
+check_temporal.py
+verify_temporal_features.py
+polars_bench.py
+cs_results.txt
+cs_results_utf8.txt
+test_output.txt
+python_results.json
+test_large.csv
+
+# Old stale project artifacts
+Polars.slnx
+PolarsSln/
