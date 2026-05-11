@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Glacier.Polaris.Compute
 {
@@ -10,6 +12,12 @@ namespace Glacier.Polaris.Compute
     /// </summary>
     public static class StringKernels
     {
+        private static readonly ConcurrentDictionary<string, Regex> _regexCache =
+            new ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
+
+        private static Regex GetOrAddRegex(string pattern) =>
+            _regexCache.GetOrAdd(pattern, static p =>
+                new Regex(p, RegexOptions.Compiled | RegexOptions.NonBacktracking));
         /// <summary>
         /// Compares a column of UTF-8 strings against a literal for equality.
         /// Returns a mask of matching indices.
@@ -33,14 +41,15 @@ namespace Glacier.Polaris.Compute
                 }
             }
         }
-
         /// <summary>
         /// Filters a Utf8StringSeries using a Regex pattern.
         /// Returns a bitmask of matching indices.
+        /// Uses a thread-local char buffer to transcode UTF-8 → UTF-16 without heap allocation,
+        /// then matches against ReadOnlySpan&lt;char&gt; so no string is ever interned.
         /// </summary>
         public static unsafe void RegexMatch(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string pattern, Span<int> results)
         {
-            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.NonBacktracking);
+            var regex = GetOrAddRegex(pattern);
             int rowCount = offsets.Length - 1;
 
             var options = new System.Threading.Tasks.ParallelOptions
@@ -58,7 +67,7 @@ namespace Glacier.Polaris.Compute
 
                 System.Threading.Tasks.Parallel.For(
                     0, rowCount, options,
-                    () => new char[256], // Thread-local initialization
+                    () => new char[256], // thread-local char buffer
                     (i, state, buffer) =>
                     {
                         int start = pOffsetsLocal[i];
@@ -67,32 +76,29 @@ namespace Glacier.Polaris.Compute
 
                         if (length == 0)
                         {
-                            if (regex.IsMatch(string.Empty)) pResultsLocal[i] = 1;
+                            // Use span overload — avoids allocating string.Empty
+                            if (regex.IsMatch(ReadOnlySpan<char>.Empty))
+                                pResultsLocal[i] = 1;
                             return buffer;
                         }
 
                         int maxChars = Encoding.UTF8.GetMaxCharCount(length);
-
-                        // Grow thread-local buffer if necessary
                         if (maxChars > buffer.Length)
-                        {
                             buffer = new char[maxChars * 2];
-                        }
 
-                        int charCount = Encoding.UTF8.GetChars(new ReadOnlySpan<byte>(pDataBytesLocal + start, length), buffer);
+                        int charCount = Encoding.UTF8.GetChars(
+                            new ReadOnlySpan<byte>(pDataBytesLocal + start, length), buffer);
 
+                        // Span<char> overload: zero heap allocation per row
                         if (regex.IsMatch(new ReadOnlySpan<char>(buffer, 0, charCount)))
-                        {
                             pResultsLocal[i] = 1;
-                        }
 
                         return buffer;
                     },
-                    _ => { } // Thread-local finally
+                    _ => { }
                 );
             }
         }
-
         /// <summary>
         /// Materializes a new Utf8StringSeries based on a set of chosen row indices.
         /// </summary>
@@ -660,183 +666,184 @@ namespace Glacier.Polaris.Compute
             return new Data.ListSeries(source.Name, offsetSeries, valueSeries);
         }
 
-/// <summary>Decode JSON strings into a StructSeries. Each string must be a JSON object.</summary>
-public static Data.StructSeries JsonDecode(Data.Utf8StringSeries source)
-{
-    int rowCount = source.Length;
-    var options = new System.Text.Json.JsonDocumentOptions { AllowTrailingCommas = true };
-
-    // Discover all property names from non-null rows
-    var propertyNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
-    var parsedDocs = new System.Text.Json.JsonDocument[rowCount];
-
-    for (int i = 0; i < rowCount; i++)
-    {
-        if (source.ValidityMask.IsNull(i)) continue;
-        var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
-        if (string.IsNullOrWhiteSpace(s)) continue;
-        try
+        /// <summary>Decode JSON strings into a StructSeries. Each string must be a JSON object.</summary>
+        public static Data.StructSeries JsonDecode(Data.Utf8StringSeries source)
         {
-            parsedDocs[i] = System.Text.Json.JsonDocument.Parse(s, options);
-            foreach (var prop in parsedDocs[i].RootElement.EnumerateObject())
-            {
-                propertyNames.Add(prop.Name);
-            }
-        }
-        catch
-        {
-            // Ignore parse failures
-        }
-    }
+            int rowCount = source.Length;
+            var options = new System.Text.Json.JsonDocumentOptions { AllowTrailingCommas = true };
 
-    // Build field series
-    var names = propertyNames.ToArray();
-    var fields = new System.Collections.Generic.List<ISeries>();
+            // Discover all property names from non-null rows
+            var propertyNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
+            var parsedDocs = new System.Text.Json.JsonDocument[rowCount];
 
-    foreach (var propName in names)
-    {
-        // Infer type from first non-null occurrence
-        System.Type inferredType = typeof(string);
-        for (int i = 0; i < rowCount; i++)
-        {
-            if (parsedDocs[i] == null) continue;
-            if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
-            {
-                inferredType = prop.ValueKind switch
-                {
-                    System.Text.Json.JsonValueKind.Number => typeof(double),
-                    System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => typeof(bool),
-                    System.Text.Json.JsonValueKind.String => typeof(string),
-                    _ => typeof(string)
-                };
-                break;
-            }
-        }
-
-        if (inferredType == typeof(double))
-        {
-            var field = new Data.Float64Series(propName, rowCount);
-            var span = field.Memory.Span;
             for (int i = 0; i < rowCount; i++)
             {
-                if (parsedDocs[i] == null)
+                if (source.ValidityMask.IsNull(i)) continue;
+                var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                if (string.IsNullOrWhiteSpace(s)) continue;
+                try
                 {
-                    field.ValidityMask.SetNull(i);
+                    parsedDocs[i] = System.Text.Json.JsonDocument.Parse(s, options);
+                    foreach (var prop in parsedDocs[i].RootElement.EnumerateObject())
+                    {
+                        propertyNames.Add(prop.Name);
+                    }
                 }
-                else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
+                catch
                 {
-                    if (prop.ValueKind == System.Text.Json.JsonValueKind.Number)
-                        span[i] = prop.GetDouble();
-                    else if (prop.ValueKind == System.Text.Json.JsonValueKind.String && double.TryParse(prop.GetString(), out var d))
-                        span[i] = d;
-                    else
-                        field.ValidityMask.SetNull(i);
+                    // Ignore parse failures
+                }
+            }
+
+            // Build field series
+            var names = propertyNames.ToArray();
+            var fields = new System.Collections.Generic.List<ISeries>();
+
+            foreach (var propName in names)
+            {
+                // Infer type from first non-null occurrence
+                System.Type inferredType = typeof(string);
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (parsedDocs[i] == null) continue;
+                    if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
+                    {
+                        inferredType = prop.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.Number => typeof(double),
+                            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => typeof(bool),
+                            System.Text.Json.JsonValueKind.String => typeof(string),
+                            _ => typeof(string)
+                        };
+                        break;
+                    }
+                }
+
+                if (inferredType == typeof(double))
+                {
+                    var field = new Data.Float64Series(propName, rowCount);
+                    var span = field.Memory.Span;
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        if (parsedDocs[i] == null)
+                        {
+                            field.ValidityMask.SetNull(i);
+                        }
+                        else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
+                        {
+                            if (prop.ValueKind == System.Text.Json.JsonValueKind.Number)
+                                span[i] = prop.GetDouble();
+                            else if (prop.ValueKind == System.Text.Json.JsonValueKind.String && double.TryParse(prop.GetString(), out var d))
+                                span[i] = d;
+                            else
+                                field.ValidityMask.SetNull(i);
+                        }
+                        else
+                        {
+                            field.ValidityMask.SetNull(i);
+                        }
+                    }
+                    fields.Add(field);
+                }
+                else if (inferredType == typeof(bool))
+                {
+                    var field = new Data.BooleanSeries(propName, rowCount);
+                    var span = field.Memory.Span;
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        if (parsedDocs[i] == null)
+                        {
+                            field.ValidityMask.SetNull(i);
+                        }
+                        else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
+                        {
+                            if (prop.ValueKind == System.Text.Json.JsonValueKind.True || prop.ValueKind == System.Text.Json.JsonValueKind.False)
+                                span[i] = prop.GetBoolean();
+                            else
+                                field.ValidityMask.SetNull(i);
+                        }
+                        else
+                        {
+                            field.ValidityMask.SetNull(i);
+                        }
+                    }
+                    fields.Add(field);
                 }
                 else
                 {
-                    field.ValidityMask.SetNull(i);
+                    // String type
+                    var strings = new string[rowCount];
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        if (parsedDocs[i] == null)
+                        {
+                            strings[i] = null!;
+                        }
+                        else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
+                        {
+                            strings[i] = prop.ValueKind == System.Text.Json.JsonValueKind.String
+                                ? prop.GetString()
+                                : prop.GetRawText();
+                        }
+                        else
+                        {
+                            strings[i] = null!;
+                        }
+                    }
+                    var field = Data.Utf8StringSeries.FromStrings(propName, strings);
+                    fields.Add(field);
                 }
             }
-            fields.Add(field);
-        }
-        else if (inferredType == typeof(bool))
-        {
-            var field = new Data.BooleanSeries(propName, rowCount);
-            var span = field.Memory.Span;
+
+            // Cleanup
             for (int i = 0; i < rowCount; i++)
             {
-                if (parsedDocs[i] == null)
-                {
-                    field.ValidityMask.SetNull(i);
-                }
-                else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
-                {
-                    if (prop.ValueKind == System.Text.Json.JsonValueKind.True || prop.ValueKind == System.Text.Json.JsonValueKind.False)
-                        span[i] = prop.GetBoolean();
-                    else
-                        field.ValidityMask.SetNull(i);
-                }
-                else
-                {
-                    field.ValidityMask.SetNull(i);
-                }
+                parsedDocs[i]?.Dispose();
             }
-            fields.Add(field);
+
+            var result = new Data.StructSeries(source.Name + "_decoded", fields.ToArray());
+            for (int i = 0; i < rowCount; i++)
+            {
+                if (source.ValidityMask.IsNull(i))
+                    result.ValidityMask.SetNull(i);
+            }
+            return result;
         }
-        else
+
+        /// <summary>Encode each string as a JSON string value (wraps in quotes with proper escaping).</summary>
+        public static Data.Utf8StringSeries JsonEncode(Data.Utf8StringSeries source)
         {
-            // String type
+            int rowCount = source.Length;
             var strings = new string[rowCount];
+            int totalBytes = 0;
             for (int i = 0; i < rowCount; i++)
             {
-                if (parsedDocs[i] == null)
+                if (source.ValidityMask.IsNull(i))
                 {
-                    strings[i] = null!;
-                }
-                else if (parsedDocs[i].RootElement.TryGetProperty(propName, out var prop))
-                {
-                    strings[i] = prop.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? prop.GetString()
-                        : prop.GetRawText();
+                    strings[i] = "null";
+                    totalBytes += 4;
                 }
                 else
                 {
-                    strings[i] = null!;
+                    var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                    strings[i] = System.Text.Json.JsonSerializer.Serialize(s);
+                    totalBytes += System.Text.Encoding.UTF8.GetByteCount(strings[i]);
                 }
             }
-            var field = Data.Utf8StringSeries.FromStrings(propName, strings);
-            fields.Add(field);
+
+            var result = new Data.Utf8StringSeries(source.Name + "_json", rowCount, totalBytes);
+            int offset = 0;
+            for (int i = 0; i < rowCount; i++)
+            {
+                result.Offsets.Span[i] = offset;
+                var bytes = System.Text.Encoding.UTF8.GetBytes(strings[i]);
+                bytes.CopyTo(result.DataBytes.Span.Slice(offset));
+                offset += bytes.Length;
+                if (source.ValidityMask.IsNull(i))
+                    result.ValidityMask.SetNull(i);
+            }
+            result.Offsets.Span[rowCount] = offset;
+            return result;
         }
     }
-
-    // Cleanup
-    for (int i = 0; i < rowCount; i++)
-    {
-        parsedDocs[i]?.Dispose();
-    }
-
-    var result = new Data.StructSeries(source.Name + "_decoded", fields.ToArray());
-    for (int i = 0; i < rowCount; i++)
-    {
-        if (source.ValidityMask.IsNull(i))
-            result.ValidityMask.SetNull(i);
-    }
-    return result;
-}
-
-/// <summary>Encode each string as a JSON string value (wraps in quotes with proper escaping).</summary>
-public static Data.Utf8StringSeries JsonEncode(Data.Utf8StringSeries source)
-{
-    int rowCount = source.Length;
-    var strings = new string[rowCount];
-    int totalBytes = 0;
-    for (int i = 0; i < rowCount; i++)
-    {
-        if (source.ValidityMask.IsNull(i))
-        {
-            strings[i] = "null";
-            totalBytes += 4;
-        }
-        else
-        {
-            var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
-            strings[i] = System.Text.Json.JsonSerializer.Serialize(s);
-            totalBytes += System.Text.Encoding.UTF8.GetByteCount(strings[i]);
-        }
-    }
-
-    var result = new Data.Utf8StringSeries(source.Name + "_json", rowCount, totalBytes);
-    int offset = 0;
-    for (int i = 0; i < rowCount; i++)
-    {
-        result.Offsets.Span[i] = offset;
-        var bytes = System.Text.Encoding.UTF8.GetBytes(strings[i]);
-        bytes.CopyTo(result.DataBytes.Span.Slice(offset));
-        offset += bytes.Length;
-        if (source.ValidityMask.IsNull(i))
-            result.ValidityMask.SetNull(i);
-    }
-    result.Offsets.Span[rowCount] = offset;
-    return result;
-}}
 }

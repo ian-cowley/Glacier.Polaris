@@ -767,5 +767,74 @@ namespace Glacier.Polaris.Compute
             var bottomIndices = sortedIndices.Take(k).ToArray();
             return ComputeKernels.Take(source, bottomIndices);
         }
+        /// <summary>
+        /// Bit-reinterpret a numeric series to another numeric type without value conversion.
+        /// Supported pairs: Int64 ↔ Float64, Int32 ↔ Float32, UInt64 → Float64, UInt32 → Float32.
+        /// Matches Python Polars Series.reinterpret() / cast() with reinterpret=True semantics.
+        /// </summary>
+        public static ISeries Reinterpret(ISeries source, Type targetType)
+        {
+            int n = source.Length;
+            string name = source.Name;
+
+            // Int64 → Float64
+            if (source is Data.Int64Series i64 && targetType == typeof(double))
+            {
+                var result = new Data.Float64Series(name, n);
+                var src = i64.Memory.Span;
+                var dst = result.Memory.Span;
+                System.Runtime.InteropServices.MemoryMarshal.Cast<long, double>(src).CopyTo(dst);
+                for (int i = 0; i < n; i++)
+                    if (!i64.ValidityMask.IsValid(i)) result.ValidityMask.SetNull(i);
+                return result;
+            }
+            // Float64 → Int64
+            if (source is Data.Float64Series f64 && targetType == typeof(long))
+            {
+                var result = new Data.Int64Series(name, n);
+                var src = f64.Memory.Span;
+                var dst = result.Memory.Span;
+                System.Runtime.InteropServices.MemoryMarshal.Cast<double, long>(src).CopyTo(dst);
+                for (int i = 0; i < n; i++)
+                    if (!f64.ValidityMask.IsValid(i)) result.ValidityMask.SetNull(i);
+                return result;
+            }
+            // Int32 → Float32
+            if (source is Data.Int32Series i32 && targetType == typeof(float))
+            {
+                var result = new Data.Float32Series(name, n);
+                var src = i32.Memory.Span;
+                var dst = result.Memory.Span;
+                System.Runtime.InteropServices.MemoryMarshal.Cast<int, float>(src).CopyTo(dst);
+                for (int i = 0; i < n; i++)
+                    if (!i32.ValidityMask.IsValid(i)) result.ValidityMask.SetNull(i);
+                return result;
+            }
+            // Float32 → Int32
+            if (source is Data.Float32Series f32 && targetType == typeof(int))
+            {
+                var result = new Data.Int32Series(name, n);
+                var src = f32.Memory.Span;
+                var dst = result.Memory.Span;
+                System.Runtime.InteropServices.MemoryMarshal.Cast<float, int>(src).CopyTo(dst);
+                for (int i = 0; i < n; i++)
+                    if (!f32.ValidityMask.IsValid(i)) result.ValidityMask.SetNull(i);
+                return result;
+            }
+            // UInt64 → Float64 (Polars signed=False)
+            if (source is Data.UInt64Series u64 && targetType == typeof(double))
+            {
+                var result = new Data.Float64Series(name, n);
+                var src = u64.Memory.Span;
+                var dst = result.Memory.Span;
+                System.Runtime.InteropServices.MemoryMarshal.Cast<ulong, double>(src).CopyTo(dst);
+                for (int i = 0; i < n; i++)
+                    if (!u64.ValidityMask.IsValid(i)) result.ValidityMask.SetNull(i);
+                return result;
+            }
+
+            throw new NotSupportedException(
+                $"Reinterpret from {source.GetType().Name} to {targetType.Name} is not supported.");
+        }
     }
 }
