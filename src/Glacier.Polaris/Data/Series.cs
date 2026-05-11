@@ -47,7 +47,6 @@ namespace Glacier.Polaris.Data
             if (target is Series<T> other)
             {
                 Compute.ComputeKernels.TakeWithNulls<T>(Memory.Span, indices, other.Memory.Span, other.ValidityMask);
-                // Also propagate existing nulls from source if index is valid
                 for (int i = 0; i < indices.Length; i++)
                 {
                     if (indices[i] != -1 && this.ValidityMask.IsNull(indices[i]))
@@ -88,6 +87,11 @@ namespace Glacier.Polaris.Data
         {
             return (ISeries)Activator.CreateInstance(this.GetType(), Name, length)!;
         }
+        public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
+        public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);
+        public double Entropy() => Compute.AggregationKernels.Entropy(this);
+        public int ApproxNUnique() => Compute.UniqueKernels.ApproxNUnique(this);
+        public ISeries MapElements(Func<object?, object?> mapping, Type returnType) => Compute.ComputeKernels.MapElements(this, mapping, returnType);
     }
 
     public sealed class Int32Series : Series<int>
@@ -114,13 +118,13 @@ namespace Glacier.Polaris.Data
         {
             var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
             for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-            
+
             return new Int32Array(
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
@@ -194,11 +198,11 @@ namespace Glacier.Polaris.Data
             for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
 
             return new DoubleArray(
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
@@ -219,11 +223,11 @@ namespace Glacier.Polaris.Data
             for (int i = 0; i < Length; i++) valueBitmapBuilder.Append(Memory.Span[i]);
 
             return new BooleanArray(
-                valueBitmapBuilder.Build(),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            valueBitmapBuilder.Build(),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
@@ -246,18 +250,17 @@ namespace Glacier.Polaris.Data
             for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
 
             return new Date32Array(
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
     public sealed class DatetimeSeries : Series<long>
     {
         public DatetimeSeries(string name, int length) : base(name, length) { }
-        // Logical type: Datetime (microseconds since epoch)
 
         public override IArrowArray ToArrowArray()
         {
@@ -265,12 +268,12 @@ namespace Glacier.Polaris.Data
             for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
 
             return new TimestampArray(
-                new TimestampType(TimeUnit.Nanosecond, (string?)null),
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            new TimestampType(TimeUnit.Nanosecond, (string?)null),
+            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
@@ -284,20 +287,15 @@ namespace Glacier.Polaris.Data
             for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
 
             return new DurationArray(
-                DurationType.Nanosecond,
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            DurationType.Nanosecond,
+            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+            nullBitmapBuilder.Build(),
+            Length,
+            ValidityMask.NullCount,
+            0);
         }
     }
 
-    /// <summary>
-    /// For Utf8StringSeries, instead of an array of objects/strings, 
-    /// a high-performance engine uses a single large byte array and an offsets array.
-    /// This implementation is a skeleton demonstrating the zero-allocation approach.
-    /// </summary>
     public sealed class Utf8StringSeries : ISeries
     {
         public string Name { get; private set; }
@@ -315,11 +313,8 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = length;
-
-            // Default: allocate for average 16 bytes per string
             _offsets = new MemoryOwnerColumn<int>(length + 1);
             _dataBytes = new MemoryOwnerColumn<byte>(Math.Max(1024, length * 16));
-
             _validityMask = new ValidityMask(length);
         }
 
@@ -327,12 +322,8 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = length;
-
-            // Offsets array contains starting index of each string
             _offsets = new MemoryOwnerColumn<int>(length + 1);
-            // Flat byte array containing all UTF8 characters
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
-
             _validityMask = new ValidityMask(length);
         }
 
@@ -342,11 +333,9 @@ namespace Glacier.Polaris.Data
             Length = data.Length;
             int totalBytes = 0;
             foreach (var s in data) totalBytes += System.Text.Encoding.UTF8.GetByteCount(s);
-
             _offsets = new MemoryOwnerColumn<int>(Length + 1);
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
             _validityMask = new ValidityMask(Length);
-
             var offsetSpan = _offsets.Memory.Span;
             var dataSpan = _dataBytes.Memory.Span;
             int currentOffset = 0;
@@ -392,7 +381,6 @@ namespace Glacier.Polaris.Data
                     var srcSpan = GetStringSpan(indices[i]);
                     if (currentOffset + srcSpan.Length > targetData.Length)
                     {
-                        // This should not happen if the engine pre-calculates, but let's be safe.
                         throw new InvalidOperationException("Target buffer too small for Take.");
                     }
                     srcSpan.CopyTo(targetData.Slice(currentOffset));
@@ -450,13 +438,11 @@ namespace Glacier.Polaris.Data
             {
                 var targetOffsets = other.Offsets.Span;
                 var targetData = other.DataBytes.Span;
-                // Use the final offset slot (other.Length) as a running data position accumulator
                 int dataPos = targetOffsets[other.Length];
                 if (ValidityMask.IsNull(srcIdx))
                 {
                     other.ValidityMask.SetNull(targetIdx);
                     targetOffsets[targetIdx] = dataPos;
-                    // Don't advance dataPos for null entries
                     return;
                 }
                 var srcSpan = GetStringSpan(srcIdx);
@@ -464,17 +450,14 @@ namespace Glacier.Polaris.Data
                 {
                     throw new InvalidOperationException("Target buffer too small for Take.");
                 }
-                // Store the start position in offsets[targetIdx]
                 targetOffsets[targetIdx] = dataPos;
                 srcSpan.CopyTo(targetData.Slice(dataPos));
                 dataPos += srcSpan.Length;
-                // Update running data position accumulator
                 targetOffsets[other.Length] = dataPos;
                 other.ValidityMask.SetValid(targetIdx);
             }
             else throw new InvalidOperationException("Type mismatch in Take.");
         }
-
 
         public Apache.Arrow.IArrowArray ToArrowArray()
         {
@@ -491,5 +474,10 @@ namespace Glacier.Polaris.Data
         {
             return new Utf8StringSeries(Name, length, Math.Max(1024, length * 16));
         }
+        public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
+        public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);
+        public double Entropy() => Compute.AggregationKernels.Entropy(this);
+        public int ApproxNUnique() => Compute.UniqueKernels.ApproxNUnique(this);
+        public ISeries MapElements(Func<object?, object?> mapping, Type returnType) => Compute.ComputeKernels.MapElements(this, mapping, returnType);
     }
 }
