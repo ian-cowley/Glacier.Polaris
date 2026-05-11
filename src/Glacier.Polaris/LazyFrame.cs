@@ -283,6 +283,12 @@ namespace Glacier.Polaris
         internal static LazyFrame SinkCsvOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame SinkParquetOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame ShiftColumnsOp(LazyFrame source, int n) => null!;
+        internal static LazyFrame GroupByDynamicOp(LazyFrame source, string indexColumn, string every, string? period, string? offset, string closed, string startBy) => null!;
+        internal static LazyFrame GroupByRollingOp(LazyFrame source, string indexColumn, string period, string? offset, string closed) => null!;
+        internal static LazyFrame ClearOp(LazyFrame source) => null!;
+        internal static LazyFrame ShrinkToFitOp(LazyFrame source) => null!;
+        internal static LazyFrame RechunkOp(LazyFrame source) => null!;
+        internal static LazyFrame MapOp(LazyFrame source, Func<DataFrame, DataFrame> func) => null!;
 
         public static LazyFrame FromDataFrame(DataFrame df)
         {
@@ -429,55 +435,56 @@ namespace Glacier.Polaris
             return new LazyFrame(methodCall);
         }
 
-/// <summary>
-/// Group-by rolling (sliding-window-based grouping). Ported from Glacier.Polaris_OLD.
-/// </summary>
-public LazyFrame GroupByRolling(string indexColumn, string period, string? offset = null, string closed = "right")
-{
-var method = typeof(LazyFrame).GetMethod(nameof(GroupByRollingOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(period), Expression.Constant(offset, typeof(string)), Expression.Constant(closed));
-return new LazyFrame(methodCall);
-}
+        /// <summary>
+        /// Group-by rolling (sliding-window-based grouping). Ported from Glacier.Polaris_OLD.
+        /// </summary>
+        public LazyFrame GroupByRolling(string indexColumn, string period, string? offset = null, string closed = "right")
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(GroupByRollingOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(period), Expression.Constant(offset, typeof(string)), Expression.Constant(closed));
+            return new LazyFrame(methodCall);
+        }
 
-/// <summary>
-/// Remove all rows from the DataFrame while preserving the schema. Polars API: clear()
-/// </summary>
-public LazyFrame Clear()
-{
-var method = typeof(LazyFrame).GetMethod(nameof(ClearOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var methodCall = Expression.Call(null, method, Plan);
-return new LazyFrame(methodCall);
-}
+        /// <summary>
+        /// Remove all rows from the DataFrame while preserving the schema. Polars API: clear()
+        /// </summary>
+        public LazyFrame Clear()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(ClearOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
 
-/// <summary>
-/// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
-/// </summary>
-public LazyFrame ShrinkToFit()
-{
-var method = typeof(LazyFrame).GetMethod(nameof(ShrinkToFitOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var methodCall = Expression.Call(null, method, Plan);
-return new LazyFrame(methodCall);
-}
+        /// <summary>
+        /// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
+        /// </summary>
+        public LazyFrame ShrinkToFit()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(ShrinkToFitOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
 
-/// <summary>
-/// Rechunk the DataFrame, consolidating into a single contiguous memory chunk per column.
-/// Polars API: rechunk()
-/// </summary>
-public LazyFrame Rechunk()
-{
-var method = typeof(LazyFrame).GetMethod(nameof(RechunkOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var methodCall = Expression.Call(null, method, Plan);
-return new LazyFrame(methodCall);
-}
+        /// <summary>
+        /// Rechunk the DataFrame, consolidating into a single contiguous memory chunk per column.
+        /// Polars API: rechunk()
+        /// </summary>
+        public LazyFrame Rechunk()
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(RechunkOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan);
+            return new LazyFrame(methodCall);
+        }
 
-/// <summary>
-/// Apply a user-defined function to each batch/chunk of the DataFrame.
-/// Polars API: map()
-/// </summary>
-public LazyFrame Map(Func<DataFrame, DataFrame> func)
-{
-var method = typeof(LazyFrame).GetMethod(nameof(MapOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var methodCall = Expression.Call(null, method, Plan, Expression.Constant(func));
-return new LazyFrame(methodCall);
-}    }
+        /// <summary>
+        /// Apply a user-defined function to each batch/chunk of the DataFrame.
+        /// Polars API: map()
+        /// </summary>
+        public LazyFrame Map(Func<DataFrame, DataFrame> func)
+        {
+            var method = typeof(LazyFrame).GetMethod(nameof(MapOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(func));
+            return new LazyFrame(methodCall);
+        }
+    }
 }
