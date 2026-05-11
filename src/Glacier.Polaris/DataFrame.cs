@@ -897,7 +897,7 @@ namespace Glacier.Polaris
         /// Matching Polars' DataFrame.dtypes property.
         /// </summary>
         public Type[] Dtypes => Columns.Select(c => c.DataType).ToArray();
-        
+
         /// <summary>
         /// Returns the estimated memory usage of the DataFrame in bytes.
         /// Matching Polars' DataFrame.estimated_size() behavior.
@@ -1074,7 +1074,36 @@ namespace Glacier.Polaris
             }
             return new DataFrame(newCols);
         }
-    }
+        /// <summary>
+        /// Remove all rows from the DataFrame while preserving the schema. Polars API: clear()
+        /// </summary>
+        public DataFrame Clear()
+        {
+            var newCols = new List<ISeries>(Columns.Count);
+            foreach (var col in Columns)
+            {
+                newCols.Add(col.CloneEmpty(0));
+            }
+            return new DataFrame(newCols);
+        }
+
+/// <summary>
+/// Shrink memory usage by reallocating columns to their actual sizes. Polars API: shrink_to_fit()
+/// </summary>
+public DataFrame ShrinkToFit()
+{
+// For now, ShrinkToFit is a no-op since our columns are already single-chunk.
+// In the future, this could call Compact/TrimExcess on internal buffers.
+return this;
+}
+
+/// <summary>
+/// Apply a user-defined function to the DataFrame. Polars API: map()
+/// </summary>
+public DataFrame Map(Func<DataFrame, DataFrame> func)
+{
+return func(this);
+}    }
 
     public interface ISeries : IDisposable
     {
@@ -1089,5 +1118,10 @@ namespace Glacier.Polaris
         void CopyTo(ISeries target, int offset);
         void Take(ISeries target, ReadOnlySpan<int> indices);
         void Take(ISeries target, int srcIdx, int targetIdx);
+        DataFrame ValueCounts(bool sort = false, bool parallel = true);
+        ISeries IsFirst();
+        double Entropy();
+        int ApproxNUnique();
+        ISeries MapElements(Func<object?, object?> mapping, Type returnType);
     }
 }
