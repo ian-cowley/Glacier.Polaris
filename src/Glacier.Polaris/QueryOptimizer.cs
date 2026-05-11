@@ -460,6 +460,27 @@ namespace Glacier.Polaris
                     var columns = (string[])((ConstantExpression)methodCall.Arguments[1]).Value!;
                     return ApplyAggGroups(source2, columns);
                 }
+                else if (methodCall.Method.Name == nameof(LazyFrame.ClearOp))
+                {
+                    var source2 = Evaluate(methodCall.Arguments[0]);
+                    return ApplyClear(source2);
+                }
+                else if (methodCall.Method.Name == nameof(LazyFrame.ShrinkToFitOp))
+                {
+                    var source2 = Evaluate(methodCall.Arguments[0]);
+                    return ApplyShrinkToFit(source2);
+                }
+                else if (methodCall.Method.Name == nameof(LazyFrame.RechunkOp))
+                {
+                    var source2 = Evaluate(methodCall.Arguments[0]);
+                    return ApplyRechunk(source2);
+                }
+                else if (methodCall.Method.Name == nameof(LazyFrame.MapOp))
+                {
+                    var source2 = Evaluate(methodCall.Arguments[0]);
+                    var func = (Func<DataFrame, DataFrame>)((ConstantExpression)methodCall.Arguments[1]).Value!;
+                    return ApplyMap(source2, func);
+                }
                 else if (methodCall.Method.Name == nameof(LazyFrame.ShiftColumnsOp))
                 {
                     var source2 = Evaluate(methodCall.Arguments[0]);

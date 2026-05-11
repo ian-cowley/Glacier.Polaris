@@ -2,7 +2,7 @@
 
 **Generated:** 2026-05-09 (Historical snapshot) | **C#:** Glacier.Polaris (.NET 10.0, Release) | **Python:** Polars 1.40.1 (PyArrow 21.0.0) | **Hardware:** Same machine
 
-> ⚠️ **Benchmark snapshot.** These figures reflect the state of the codebase on 2026-05-09 and may be stale.
+> ⚠️ **Benchmark snapshot.** These figures reflect the state of the codebase on 2026-05-11 and may be stale.
 > Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate.
 
 ---

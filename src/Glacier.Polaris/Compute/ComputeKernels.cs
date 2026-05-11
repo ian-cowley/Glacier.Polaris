@@ -8,6 +8,80 @@ namespace Glacier.Polaris.Compute
     public static class ComputeKernels
     {
         /// <summary>
+        /// Maps each element of the source series through a function and returns a new series of the specified return type.
+        /// </summary>
+        public static ISeries MapElements(ISeries source, Func<object?, object?> mapping, Type returnType)
+        {
+            if (returnType == typeof(int))
+            {
+                var result = new Int32Series(source.Name, source.Length);
+                for (int i = 0; i < source.Length; i++)
+                {
+                    if (source.ValidityMask.IsNull(i))
+                    {
+                        result.ValidityMask.SetNull(i);
+                    }
+                    else
+                    {
+                        var mapped = mapping(source.Get(i));
+                        if (mapped == null) result.ValidityMask.SetNull(i);
+                        else result[i] = (int)mapped;
+                    }
+                }
+                return result;
+            }
+            if (returnType == typeof(double))
+            {
+                var result = new Float64Series(source.Name, source.Length);
+                for (int i = 0; i < source.Length; i++)
+                {
+                    if (source.ValidityMask.IsNull(i))
+                    {
+                        result.ValidityMask.SetNull(i);
+                    }
+                    else
+                    {
+                        var mapped = mapping(source.Get(i));
+                        if (mapped == null) result.ValidityMask.SetNull(i);
+                        else result[i] = (double)mapped;
+                    }
+                }
+                return result;
+            }
+            if (returnType == typeof(string))
+            {
+                string?[] values = new string?[source.Length];
+                for (int i = 0; i < source.Length; i++)
+                {
+                    if (source.ValidityMask.IsNull(i))
+                    {
+                        values[i] = null;
+                    }
+                    else
+                    {
+                        var mapped = mapping(source.Get(i));
+                        values[i] = mapped?.ToString();
+                    }
+                }
+                return Utf8StringSeries.FromStrings(source.Name, values);
+            }
+            // Fallback: box everything into ObjectSeries
+            object?[] objects = new object?[source.Length];
+            for (int i = 0; i < source.Length; i++)
+            {
+                if (source.ValidityMask.IsNull(i))
+                {
+                    objects[i] = null;
+                }
+                else
+                {
+                    objects[i] = mapping(source.Get(i));
+                }
+            }
+            return new ObjectSeries(source.Name, objects);
+        }
+
+        /// <summary>
         /// Computes the sum of a Span of ints using AVX-512, AVX2, or scalar fallback.
         /// Demonstrates bounds check elimination and vectorization.
         /// </summary>
