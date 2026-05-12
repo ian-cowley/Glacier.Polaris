@@ -3,7 +3,8 @@
 Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .NET 10, heavily inspired by the Rust-based [Polars](https://github.com/pola-rs/polars) library. It provides a robust, zero-copy, memory-efficient data processing engine using modern C# features such as `Memory<T>`, `Span<T>`, hardware intrinsics (SIMD), and a lazy execution engine.
 
 > [!TIP]
-> For detailed performance benchmarks and comparisons against Python Polars (including architectural details and speedups of **up to 445×**), see the **[Glacier.Polaris Performance & Parity Report](docs/REPORT.md)**.
+> For detailed performance benchmarks, architectural details, and comparison results against Python Polars, see the **[Glacier.Polaris Performance & Parity Report](docs/REPORT.md)**.
+
 
 
 ## What is it?
