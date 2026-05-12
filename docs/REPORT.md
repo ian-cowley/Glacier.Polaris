@@ -16,7 +16,7 @@ Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on
 | **Parity tests** | **136 / 136** ✅ (Tiers 1–14, all verified vs Python Polars v1.40.1) |
 | **API coverage** | ~98 %+ of Python Polars core surface |
 | **Missing / partial** | None — all known gaps closed |
-| **Performance summary** | Wins on creation, aggregations, GroupBy, rolling/window, filter, FillNull, pivot, ToUpper, Contains, Float64 sort, and Simple Regex matches. Remaining gap: Complex Regex (~3.3×) — see §7. |
+| **Performance summary** | Wins on creation, aggregations, GroupBy, rolling/window, filter, Inner SmallRight joins, FillNull, pivot, ToUpper, Contains, Float64 sort, and Simple Regex matches. Remaining gap: Complex Regex (~3.3×) — see §7. |
 
 ---
 
@@ -208,9 +208,9 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Inner SmallRight N=1M | 7.59 | **4.61** | 1.65× | 🟡 Comparable |
-| Inner SmallRight N=10M | 64.67 | **32.78** | 1.97× | 🔴 Python 2× faster |
-| Left N=1M | **3.73** | 4.40 | 0.85× | 🟢 **1.18× faster** |
+| Inner SmallRight N=1M | **2.29** | 4.61 | 0.50× | 🟢 **2.01× faster** |
+| Inner SmallRight N=10M | **27.23** | 32.78 | 0.83× | 🟢 **1.20× faster** |
+| Left N=1M | 7.36 | **4.40** | 1.67× | 🟡 Comparable |
 
 ### 3.7 Rolling / Window
 
@@ -268,8 +268,8 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | **FillNull** | 🟢 C# wins | 2.3–2.7× faster |
 | **Pivot** | 🟢 C# wins | 2.4× faster |
 | **String ToUpper / Contains** | 🟢 C# wins | 2.4–2.6× faster |
-| **Join (Left)** | 🟢 C# wins | 1.18× |
-| **Join (Inner)** | 🟡 Comparable | 1.65–1.97× |
+| **Join (Left)** | 🟡 Comparable | 1.67× |
+| **Join (Inner)** | 🟢 C# wins | 1.20–2.01× faster |
 | **Unique** | 🟡 Comparable | 1.29× |
 | **Sort Int32** | 🟡 Comparable | 1.5–2.0× |
 | **Sort Float64** | 🟡 Comparable | 2.0× (with 8-bit parallel-arrays radix sort) |
@@ -287,7 +287,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Single-pass Welford Std/Var (eliminated `Math.Pow`) | Std: 23× slower → 1.7× **faster** |
 | O(n) sliding-window RollingStd (sum/sumsq) | RollingStd: 4.4× **faster** than Python |
 | ASCII branchless byte transforms (ToUpper) | ToUpper: 9× slower → 2.6× **faster** |
-| Small-right-table join fast path (bool lookup array) | Joins: 25× slower → 1.18–2× |
+| Flat allocation-free chained hash map with Fibonacci hashing | Joins (Inner SmallRight): Beating Python by **1.20–2.01×** |
 | Custom open-addressing HashSet (Unique) | Unique: 3.8× → 1.29× |
 | Bitmap-level FillNull (64-bit word-level, `fixed` pointers) | FillNull: C# 2.3–2.7× **faster** |
 | Unified Generic SIMD Filter Engine (`FilterGeneric<T>`) | Vectorized comparisons for **all 10 numeric primitive types** (`sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`) with 100% SIMD coverage and zero duplicated code |

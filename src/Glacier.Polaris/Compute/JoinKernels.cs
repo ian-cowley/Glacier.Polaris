@@ -433,41 +433,71 @@ namespace Glacier.Polaris.Compute
             var rightSpan = right.Memory.Span;
             var leftSpan = left.Memory.Span;
 
-            // Build hash map from right table: value -> list of right indices
-            var rightMap = new Dictionary<int, List<int>>(rightSpan.Length);
-            for (int i = 0; i < rightSpan.Length; i++)
+            int rightLen = rightSpan.Length;
+            if (rightLen == 0 || leftSpan.Length == 0)
+                return new JoinResult { LeftIndices = Array.Empty<int>(), RightIndices = Array.Empty<int>() };
+
+            // 1. Build a flat, allocation-free hash map
+            // Find next power of 2, then double it to keep the load factor < 0.5 for fewer collisions
+            int bucketCount = 1;
+            while (bucketCount <= rightLen) bucketCount <<= 1;
+            bucketCount <<= 1;
+            uint bucketMask = (uint)(bucketCount - 1);
+
+            // 'buckets' acts as the Dictionary Keys, 'next' acts as the List<int>
+            var buckets = new int[bucketCount];
+            Array.Fill(buckets, -1);
+            var next = new int[rightLen];
+
+            // Populate the hash map
+            for (int i = 0; i < rightLen; i++)
             {
                 int val = rightSpan[i];
-                if (!rightMap.TryGetValue(val, out var list))
-                    rightMap[val] = new List<int> { i };
-                else
-                    list.Add(i);
+
+                // Fibonacci hashing for 32-bit integers (super fast, prevents clustering)
+                uint bucket = ((uint)val * 2654435761u) & bucketMask;
+
+                next[i] = buckets[bucket];
+                buckets[bucket] = i;
             }
 
-            // First pass: count total matches
+            // 2. First pass: count total matches
             int totalMatches = 0;
             for (int i = 0; i < leftSpan.Length; i++)
             {
-                if (rightMap.TryGetValue(leftSpan[i], out var list))
-                    totalMatches += list.Count;
+                int val = leftSpan[i];
+                uint bucket = ((uint)val * 2654435761u) & bucketMask;
+                int rIdx = buckets[bucket];
+
+                while (rIdx >= 0)
+                {
+                    if (rightSpan[rIdx] == val)
+                        totalMatches++;
+                    rIdx = next[rIdx];
+                }
             }
 
-            // Allocate exact-sized arrays
+            // Allocate exact-sized output arrays
             var leftResult = new int[totalMatches];
             var rightResult = new int[totalMatches];
 
-            // Second pass: fill results
+            // 3. Second pass: fill results
             int pos = 0;
             for (int i = 0; i < leftSpan.Length; i++)
             {
-                if (rightMap.TryGetValue(leftSpan[i], out var list))
+                int val = leftSpan[i];
+                uint bucket = ((uint)val * 2654435761u) & bucketMask;
+                int rIdx = buckets[bucket];
+
+                while (rIdx >= 0)
                 {
-                    foreach (int rIdx in list)
+                    if (rightSpan[rIdx] == val)
                     {
                         leftResult[pos] = i;
                         rightResult[pos] = rIdx;
                         pos++;
                     }
+                    rIdx = next[rIdx];
                 }
             }
 
