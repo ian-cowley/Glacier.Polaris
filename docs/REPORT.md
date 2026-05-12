@@ -16,7 +16,7 @@ Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on
 | **Parity tests** | **136 / 136** ✅ (Tiers 1–14, all verified vs Python Polars v1.40.1) |
 | **API coverage** | ~98 %+ of Python Polars core surface |
 | **Missing / partial** | None — all known gaps closed |
-| **Performance summary** | Wins on creation, aggregations, GroupBy, rolling/window, filter, FillNull, pivot, ToUpper, Contains, Float64 sort. Remaining gap: regex (~3.9×) — see §7. |
+| **Performance summary** | Wins on creation, aggregations, GroupBy, rolling/window, filter, FillNull, pivot, ToUpper, Contains, Float64 sort. Remaining gap: regex (~4.0×) — see §7. |
 
 ---
 
@@ -236,7 +236,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 |---|---|---|---|---|
 | ToUpper N=1M | **7.94** | ~20.70† | 0.38× | 🟢 **2.6× faster** |
 | Contains N=1M | **9.41** | ~23.16† | 0.41× | 🟢 **2.4× faster** |
-| Regex N=1M | **96.33** | **~24.36†** | 3.9× | 🔴 Python 3.9× faster |
+| Regex N=1M | 96.33 | **~24.36†** | 4.0× | 🔴 Python 4.0× faster |
 
 > †Python benchmark at 500k, scaled to 1M estimate.
 
@@ -274,7 +274,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | **Unique** | 🟡 Comparable | 1.29× |
 | **Sort Int32** | 🟡 Comparable | 1.5–2.0× |
 | **Sort Float64** | 🔴 Python wins | 4.3× (with 16-bit parallel radix) |
-| **String Regex** | 🔴 Python wins | 3.9× (Coarse-Grained Thread Chunked) |
+| **String Regex** | 🔴 Python wins | 4.0× (Coarse-Grained Thread Chunked) |
 | **String filter (EQ)** | 🔴 Python wins | 1.8× |
 
 ### Key optimizations that drove the wins
