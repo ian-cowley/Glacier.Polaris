@@ -4,6 +4,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Text.RegularExpressions;
+using Lokad.Utf8Regex;
 
 namespace Glacier.Polaris.Compute
 {
