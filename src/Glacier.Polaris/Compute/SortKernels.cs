@@ -326,6 +326,15 @@ namespace Glacier.Polaris.Compute
                     ConvertDoublesToSortableLongs(data, keys, isSequential ? null : pIndices);
                 }
 
+                // Initialize sequential indices upfront to simplify the scatter loop
+                if (isSequential)
+                {
+                    fixed (int* pIdx = indices)
+                    {
+                        for (int i = 0; i < n; i++) pIdx[i] = i;
+                    }
+                }
+
                 fixed (long* pKeys = keys)
                 fixed (long* pKeysBuf = keysBuf)
                 fixed (int* pIdx = indices)
@@ -336,121 +345,60 @@ namespace Glacier.Polaris.Compute
                     int* srcIdx = pIdx;
                     int* dstIdx = pIdxBuf;
 
-                    const int bucketCount = 256;
-                    int* counts = stackalloc int[bucketCount];
+                    // 8 tables of 256 buckets
+                    int* counts = stackalloc int[2048];
+                    for (int i = 0; i < 2048; i++) counts[i] = 0;
 
                     // =========================================================
-                    // PASS 1 (Shift 0)
+                    // PASS 1: THE GLOBAL HISTOGRAM
+                    // Computes the counts for all 8 passes in a single sweep
                     // =========================================================
-                    for (int i = 0; i < bucketCount; i++) counts[i] = 0;
-
-                    // UNROLLED COUNTING
-                    int j = 0;
-                    for (; j <= n - 4; j += 4)
+                    for (int j = 0; j < n; j++)
                     {
-                        counts[(int)(srcKeys[j] & 0xFF)]++;
-                        counts[(int)(srcKeys[j + 1] & 0xFF)]++;
-                        counts[(int)(srcKeys[j + 2] & 0xFF)]++;
-                        counts[(int)(srcKeys[j + 3] & 0xFF)]++;
+                        long k = srcKeys[j];
+                        counts[k & 0xFF]++;
+                        counts[256 + ((k >> 8) & 0xFF)]++;
+                        counts[512 + ((k >> 16) & 0xFF)]++;
+                        counts[768 + ((k >> 24) & 0xFF)]++;
+                        counts[1024 + ((k >> 32) & 0xFF)]++;
+                        counts[1280 + ((k >> 40) & 0xFF)]++;
+                        counts[1536 + ((k >> 48) & 0xFF)]++;
+                        counts[1792 + ((k >> 56) & 0xFF)]++;
                     }
-                    for (; j < n; j++) counts[(int)(srcKeys[j] & 0xFF)]++;
-
-                    int offset = 0;
-                    for (int i = 0; i < bucketCount; i++)
-                    {
-                        int c = counts[i];
-                        counts[i] = offset;
-                        offset += c;
-                    }
-
-                    // UNROLLED SCATTER
-                    j = 0;
-                    if (isSequential)
-                    {
-                        for (; j <= n - 4; j += 4)
-                        {
-                            long k0 = srcKeys[j];
-                            long k1 = srcKeys[j + 1];
-                            long k2 = srcKeys[j + 2];
-                            long k3 = srcKeys[j + 3];
-
-                            int b0 = (int)(k0 & 0xFF);
-                            int b1 = (int)(k1 & 0xFF);
-                            int b2 = (int)(k2 & 0xFF);
-                            int b3 = (int)(k3 & 0xFF);
-
-                            int p0 = counts[b0]++; dstKeys[p0] = k0; dstIdx[p0] = j;
-                            int p1 = counts[b1]++; dstKeys[p1] = k1; dstIdx[p1] = j + 1;
-                            int p2 = counts[b2]++; dstKeys[p2] = k2; dstIdx[p2] = j + 2;
-                            int p3 = counts[b3]++; dstKeys[p3] = k3; dstIdx[p3] = j + 3;
-                        }
-                        for (; j < n; j++)
-                        {
-                            long key = srcKeys[j];
-                            int pos = counts[(int)(key & 0xFF)]++;
-                            dstKeys[pos] = key;
-                            dstIdx[pos] = j;
-                        }
-                    }
-                    else
-                    {
-                        for (; j <= n - 4; j += 4)
-                        {
-                            long k0 = srcKeys[j]; int i0 = srcIdx[j];
-                            long k1 = srcKeys[j + 1]; int i1 = srcIdx[j + 1];
-                            long k2 = srcKeys[j + 2]; int i2 = srcIdx[j + 2];
-                            long k3 = srcKeys[j + 3]; int i3 = srcIdx[j + 3];
-
-                            int b0 = (int)(k0 & 0xFF);
-                            int b1 = (int)(k1 & 0xFF);
-                            int b2 = (int)(k2 & 0xFF);
-                            int b3 = (int)(k3 & 0xFF);
-
-                            int p0 = counts[b0]++; dstKeys[p0] = k0; dstIdx[p0] = i0;
-                            int p1 = counts[b1]++; dstKeys[p1] = k1; dstIdx[p1] = i1;
-                            int p2 = counts[b2]++; dstKeys[p2] = k2; dstIdx[p2] = i2;
-                            int p3 = counts[b3]++; dstKeys[p3] = k3; dstIdx[p3] = i3;
-                        }
-                        for (; j < n; j++)
-                        {
-                            long key = srcKeys[j];
-                            int pos = counts[(int)(key & 0xFF)]++;
-                            dstKeys[pos] = key;
-                            dstIdx[pos] = srcIdx[j];
-                        }
-                    }
-
-                    long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
-                    int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
 
                     // =========================================================
-                    // PASSES 2 to 8 (Shifts 8 to 56)
+                    // PASSES 1 to 8: THE SCATTERS
                     // =========================================================
-                    for (int shift = 8; shift < 64; shift += 8)
+                    for (int p = 0; p < 8; p++)
                     {
-                        for (int i = 0; i < bucketCount; i++) counts[i] = 0;
+                        int* currentCounts = counts + (p * 256);
 
-                        // UNROLLED COUNTING
-                        j = 0;
-                        for (; j <= n - 4; j += 4)
+                        // PASS SKIPPING: If all elements share the same byte, skip the entire scatter!
+                        bool skipPass = false;
+                        for (int b = 0; b < 256; b++)
                         {
-                            counts[(int)((srcKeys[j] >> shift) & 0xFF)]++;
-                            counts[(int)((srcKeys[j + 1] >> shift) & 0xFF)]++;
-                            counts[(int)((srcKeys[j + 2] >> shift) & 0xFF)]++;
-                            counts[(int)((srcKeys[j + 3] >> shift) & 0xFF)]++;
+                            if (currentCounts[b] == n)
+                            {
+                                skipPass = true;
+                                break;
+                            }
                         }
-                        for (; j < n; j++) counts[(int)((srcKeys[j] >> shift) & 0xFF)]++;
 
-                        offset = 0;
-                        for (int i = 0; i < bucketCount; i++)
+                        // If skipped, the data remains in srcKeys, and we don't swap pointers.
+                        // This saves a massive amount of memory bandwidth.
+                        if (skipPass) continue;
+
+                        int shift = p * 8;
+                        int offset = 0;
+                        for (int i = 0; i < 256; i++)
                         {
-                            int c = counts[i];
-                            counts[i] = offset;
+                            int c = currentCounts[i];
+                            currentCounts[i] = offset;
                             offset += c;
                         }
 
                         // UNROLLED SCATTER
-                        j = 0;
+                        int j = 0;
                         for (; j <= n - 4; j += 4)
                         {
                             long k0 = srcKeys[j]; int i0 = srcIdx[j];
@@ -458,30 +406,25 @@ namespace Glacier.Polaris.Compute
                             long k2 = srcKeys[j + 2]; int i2 = srcIdx[j + 2];
                             long k3 = srcKeys[j + 3]; int i3 = srcIdx[j + 3];
 
-                            int b0 = (int)((k0 >> shift) & 0xFF);
-                            int b1 = (int)((k1 >> shift) & 0xFF);
-                            int b2 = (int)((k2 >> shift) & 0xFF);
-                            int b3 = (int)((k3 >> shift) & 0xFF);
-
-                            int p0 = counts[b0]++; dstKeys[p0] = k0; dstIdx[p0] = i0;
-                            int p1 = counts[b1]++; dstKeys[p1] = k1; dstIdx[p1] = i1;
-                            int p2 = counts[b2]++; dstKeys[p2] = k2; dstIdx[p2] = i2;
-                            int p3 = counts[b3]++; dstKeys[p3] = k3; dstIdx[p3] = i3;
+                            int p0 = currentCounts[(k0 >> shift) & 0xFF]++; dstKeys[p0] = k0; dstIdx[p0] = i0;
+                            int p1 = currentCounts[(k1 >> shift) & 0xFF]++; dstKeys[p1] = k1; dstIdx[p1] = i1;
+                            int p2 = currentCounts[(k2 >> shift) & 0xFF]++; dstKeys[p2] = k2; dstIdx[p2] = i2;
+                            int p3 = currentCounts[(k3 >> shift) & 0xFF]++; dstKeys[p3] = k3; dstIdx[p3] = i3;
                         }
                         for (; j < n; j++)
                         {
                             long k = srcKeys[j];
-                            int b = (int)((k >> shift) & 0xFF);
-                            int pos = counts[b]++;
+                            int pos = currentCounts[(k >> shift) & 0xFF]++;
                             dstKeys[pos] = k;
                             dstIdx[pos] = srcIdx[j];
                         }
 
-                        tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
-                        tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
+                        // Swap pointers only if a scatter actually occurred
+                        long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
+                        int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
                     }
 
-                    // After 8 passes (even number), the result is back in pIdx.
+                    // If an odd number of passes executed, the final sorted data is sitting in the buffer
                     if (srcIdx != pIdx)
                     {
                         System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, srcIdx, (uint)(n * sizeof(int)));
