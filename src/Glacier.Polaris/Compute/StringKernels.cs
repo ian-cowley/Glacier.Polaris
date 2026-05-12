@@ -681,37 +681,101 @@ namespace Glacier.Polaris.Compute
                 strings[i] = new string(arr);
             }
             return Data.Utf8StringSeries.FromStrings(source.Name, strings);
-        }/// <summary>Extract all matches of a regex pattern from each string, returning a ListSeries.</summary>
+        }        /// <summary>Extract all matches of a regex pattern from each string, returning a ListSeries.</summary>
         public static Data.ListSeries ExtractAll(Data.Utf8StringSeries source, string pattern)
         {
+            var regex = GetOrAddRegex(pattern);
             int rowCount = source.Length;
-            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.Compiled);
+            int numThreads = Math.Max(1, Environment.ProcessorCount);
 
-            // First pass: count total matches and collect strings
-            var allMatches = new System.Collections.Generic.List<string>();
-            var offsets = new int[rowCount + 1];
-            int total = 0;
-            for (int i = 0; i < rowCount; i++)
+            if (rowCount < numThreads * 2)
             {
-                offsets[i] = total;
-                if (!source.ValidityMask.IsNull(i))
+                var allMatches = new System.Collections.Generic.List<string>();
+                var offsets = new int[rowCount + 1];
+                int total = 0;
+                for (int i = 0; i < rowCount; i++)
                 {
-                    var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
-                    var matches = regex.Matches(s);
-                    foreach (System.Text.RegularExpressions.Match m in matches)
+                    offsets[i] = total;
+                    if (!source.ValidityMask.IsNull(i))
                     {
-                        allMatches.Add(m.Value);
-                        total++;
+                        var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                        var matches = regex.Matches(s);
+                        foreach (System.Text.RegularExpressions.Match m in matches)
+                        {
+                            allMatches.Add(m.Value);
+                            total++;
+                        }
                     }
                 }
-            }
-            offsets[rowCount] = total;
+                offsets[rowCount] = total;
 
-            var valueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", allMatches.ToArray());
-            var offsetSeries = new Data.Int32Series(source.Name + "_offsets", offsets);
+                var valueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", allMatches.ToArray());
+                var offsetSeries = new Data.Int32Series(source.Name + "_offsets", offsets);
+                return new Data.ListSeries(source.Name, offsetSeries, valueSeries);
+            }
+
+            var threadMatches = new System.Collections.Generic.List<string>[numThreads];
+            var offsetsArr = new int[rowCount + 1];
+
+            System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+            {
+                int startRow = (int)((long)t * rowCount / numThreads);
+                int endRow = (int)((long)(t + 1) * rowCount / numThreads);
+                var localList = new System.Collections.Generic.List<string>();
+                threadMatches[t] = localList;
+
+                for (int i = startRow; i < endRow; i++)
+                {
+                    if (source.ValidityMask.IsNull(i))
+                    {
+                        offsetsArr[i + 1] = 0;
+                        continue;
+                    }
+                    var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                    var matches = regex.Matches(s);
+                    int count = 0;
+                    foreach (System.Text.RegularExpressions.Match m in matches)
+                    {
+                        localList.Add(m.Value);
+                        count++;
+                    }
+                    offsetsArr[i + 1] = count;
+                }
+            });
+
+            int totalCount = 0;
+            offsetsArr[0] = 0;
+            for (int i = 0; i < rowCount; i++)
+            {
+                int count = offsetsArr[i + 1];
+                offsetsArr[i] = totalCount;
+                totalCount += count;
+            }
+            offsetsArr[rowCount] = totalCount;
+
+            var valueArray = new string[totalCount];
+            int[] threadDestOffsets = new int[numThreads];
+            int currentDestOffset = 0;
+            for (int t = 0; t < numThreads; t++)
+            {
+                threadDestOffsets[t] = currentDestOffset;
+                currentDestOffset += threadMatches[t].Count;
+            }
+
+            System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+            {
+                var localList = threadMatches[t];
+                int destOffset = threadDestOffsets[t];
+                for (int j = 0; j < localList.Count; j++)
+                {
+                    valueArray[destOffset + j] = localList[j];
+                }
+            });
+
+            var valueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", valueArray);
+            var offsetSeries = new Data.Int32Series(source.Name + "_offsets", offsetsArr);
             return new Data.ListSeries(source.Name, offsetSeries, valueSeries);
         }
-
         /// <summary>Decode JSON strings into a StructSeries. Each string must be a JSON object.</summary>
         public static Data.StructSeries JsonDecode(Data.Utf8StringSeries source)
         {
