@@ -1,6 +1,6 @@
 # Glacier.Polaris
 
-Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .NET 10, heavily inspired by the Rust-based Polars library. It provides a robust, zero-copy, memory-efficient data processing engine using modern C# features such as `Memory<T>`, `Span<T>`, hardware intrinsics (SIMD), and a lazy execution engine.
+Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .NET 10, heavily inspired by the Rust-based [Polars](https://github.com/pola-rs/polars) library. It provides a robust, zero-copy, memory-efficient data processing engine using modern C# features such as `Memory<T>`, `Span<T>`, hardware intrinsics (SIMD), and a lazy execution engine.
 
 ## What is it?
 
@@ -168,7 +168,7 @@ var transformed = await df
 
 ### 7. Time-Series and Temporal Operations
 
-Polars excels at time-series analysis. The library provides specialized structures like `DateSeries`, `DatetimeSeries`, and `DurationSeries`, backed by advanced join capabilities such as `JoinAsof` (As-of Joins).
+[Polars](https://github.com/pola-rs/polars) excels at time-series analysis. The library provides specialized structures like `DateSeries`, `DatetimeSeries`, and `DurationSeries`, backed by advanced join capabilities such as `JoinAsof` (As-of Joins).
 
 ```csharp
 using Glacier.Polaris;
