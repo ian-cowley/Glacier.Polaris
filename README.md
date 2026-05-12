@@ -217,6 +217,7 @@ var pivoted = salesDf.Pivot(index: "Region", pivot: "Product", values: "Sales", 
 
 // Melt: Convert wide pivoted data back to long format
 var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B" }, variableName: "Product", valueName: "Sales");
+```
 
 ## Credits
 
@@ -225,5 +226,6 @@ Developed by Ian Cowley and Antigravity (Google DeepMind) and Cline/DeepSeek.
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 
 
