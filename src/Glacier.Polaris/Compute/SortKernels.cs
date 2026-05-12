@@ -1,11 +1,12 @@
 using System;
-using System.Linq;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using System.Runtime.CompilerServices;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Glacier.Polaris.Compute
 {
@@ -181,7 +182,7 @@ namespace Glacier.Polaris.Compute
             int[] indices = new int[n];
             if (n <= 2_000_000)
             {
-                ArgSortFloat64SingleThreaded8BitSeparate(data, indices, isSequential: true);
+                ParallelBlockSortFloat64(data, indices, isSequential: true);
                 return indices;
             }
 
@@ -243,7 +244,7 @@ namespace Glacier.Polaris.Compute
 
             if (n <= 2_000_000)
             {
-                ArgSortFloat64SingleThreaded8BitSeparate(data, indices, isSequential: false);
+                ParallelBlockSortFloat64(data, indices, isSequential: false);
                 if (descending)
                 {
                     for (int i = 0, j = n - 1; i < j; i++, j--)
@@ -310,32 +311,17 @@ namespace Glacier.Polaris.Compute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        private static unsafe void ArgSortFloat64SingleThreaded8BitSeparate(ReadOnlySpan<double> data, Span<int> indices, bool isSequential)
+        private static unsafe void LocalRadixSort8Bit(Span<long> keysSpan, Span<int> indices)
         {
-            int n = data.Length;
+            int n = keysSpan.Length;
             if (n <= 1) return;
 
-            long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
             long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
             int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
 
             try
             {
-                fixed (int* pIndices = indices)
-                {
-                    ConvertDoublesToSortableLongs(data, keys, isSequential ? null : pIndices);
-                }
-
-                // Initialize sequential indices upfront to simplify the scatter loop
-                if (isSequential)
-                {
-                    fixed (int* pIdx = indices)
-                    {
-                        for (int i = 0; i < n; i++) pIdx[i] = i;
-                    }
-                }
-
-                fixed (long* pKeys = keys)
+                fixed (long* pKeys = keysSpan)
                 fixed (long* pKeysBuf = keysBuf)
                 fixed (int* pIdx = indices)
                 fixed (int* pIdxBuf = indicesBuf)
@@ -345,14 +331,9 @@ namespace Glacier.Polaris.Compute
                     int* srcIdx = pIdx;
                     int* dstIdx = pIdxBuf;
 
-                    // 8 tables of 256 buckets
                     int* counts = stackalloc int[2048];
                     for (int i = 0; i < 2048; i++) counts[i] = 0;
 
-                    // =========================================================
-                    // PASS 1: THE GLOBAL HISTOGRAM
-                    // Computes the counts for all 8 passes in a single sweep
-                    // =========================================================
                     for (int j = 0; j < n; j++)
                     {
                         long k = srcKeys[j];
@@ -366,14 +347,10 @@ namespace Glacier.Polaris.Compute
                         counts[1792 + ((k >> 56) & 0xFF)]++;
                     }
 
-                    // =========================================================
-                    // PASSES 1 to 8: THE SCATTERS
-                    // =========================================================
                     for (int p = 0; p < 8; p++)
                     {
                         int* currentCounts = counts + (p * 256);
 
-                        // PASS SKIPPING: If all elements share the same byte, skip the entire scatter!
                         bool skipPass = false;
                         for (int b = 0; b < 256; b++)
                         {
@@ -384,8 +361,6 @@ namespace Glacier.Polaris.Compute
                             }
                         }
 
-                        // If skipped, the data remains in srcKeys, and we don't swap pointers.
-                        // This saves a massive amount of memory bandwidth.
                         if (skipPass) continue;
 
                         int shift = p * 8;
@@ -397,7 +372,6 @@ namespace Glacier.Polaris.Compute
                             offset += c;
                         }
 
-                        // UNROLLED SCATTER
                         int j = 0;
                         for (; j <= n - 4; j += 4)
                         {
@@ -419,15 +393,155 @@ namespace Glacier.Polaris.Compute
                             dstIdx[pos] = srcIdx[j];
                         }
 
-                        // Swap pointers only if a scatter actually occurred
                         long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
                         int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
                     }
 
-                    // If an odd number of passes executed, the final sorted data is sitting in the buffer
                     if (srcIdx != pIdx)
                     {
                         System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, srcIdx, (uint)(n * sizeof(int)));
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pKeys, srcKeys, (uint)(n * sizeof(long)));
+                    }
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
+                System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void ParallelBlockSortFloat64(ReadOnlySpan<double> data, Span<int> indices, bool isSequential)
+        {
+            int n = data.Length;
+            if (n <= 1) return;
+
+            // Use minimum 2 threads, maximum physical cores
+            int numThreads = Math.Min(n / 100_000, Environment.ProcessorCount);
+            // =========================================================
+            // NEW FALLBACK: Calls LocalRadixSort8Bit instead!
+            // =========================================================
+            if (numThreads <= 1)
+            {
+                long[] singleKeys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+                try
+                {
+                    // 1. Transform the doubles to longs
+                    fixed (int* pIdx = indices)
+                    {
+                        ConvertDoublesToSortableLongs(data, singleKeys, isSequential ? null : pIdx);
+                    }
+
+                    // 2. Initialize sequential indices if requested
+                    if (isSequential)
+                    {
+                        for (int i = 0; i < n; i++) indices[i] = i;
+                    }
+
+                    // 3. Call the universal Radix engine
+                    LocalRadixSort8Bit(singleKeys.AsSpan(0, n), indices);
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<long>.Shared.Return(singleKeys);
+                }
+                return;
+            }
+
+            int blockSize = (n + numThreads - 1) / numThreads;
+
+            long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+            long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+            int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+
+            try
+            {
+                // Must pin 'indices' so we can pass an unmanaged pointer into the background threads
+                fixed (int* pIndices = indices)
+                {
+                    IntPtr pIndicesPtr = (IntPtr)pIndices; // IntPtr is safe to capture in lambdas
+
+                    // 1. Transform doubles to sortable longs upfront globally
+                    ConvertDoublesToSortableLongs(data, keys, null);
+
+                    Task[] tasks = new Task[numThreads];
+                    for (int t = 0; t < numThreads; t++)
+                    {
+                        int tCapture = t; // Prevent closure variable bug
+                        int start = tCapture * blockSize;
+                        int length = Math.Min(blockSize, n - start);
+                        if (length <= 0) continue;
+
+                        tasks[tCapture] = Task.Run(() =>
+                        {
+                            var localKeys = keys.AsSpan(start, length);
+
+                            // Reconstruct the Span safely inside the background thread
+                            var localIdx = new Span<int>((int*)pIndicesPtr + start, length);
+
+                            for (int i = 0; i < length; i++) localIdx[i] = start + i;
+
+                            LocalRadixSort8Bit(localKeys, localIdx);
+                        });
+                    }
+                    Task.WaitAll(tasks);
+
+                    // -----------------------------------------------------------------
+                    // PHASE 3: Parallel Tournament Merge
+                    // -----------------------------------------------------------------
+                    int step = 1;
+                    bool dataInBuf = false;
+
+                    while (step < numThreads)
+                    {
+                        int mergeCount = (numThreads + (step * 2) - 1) / (step * 2);
+                        Task[] mTasks = new Task[mergeCount];
+
+                        for (int i = 0; i < mergeCount; i++)
+                        {
+                            int iCapture = i;
+                            int stepCapture = step;
+
+                            int leftStart = iCapture * stepCapture * 2 * blockSize;
+                            int rightStart = leftStart + (stepCapture * blockSize);
+                            int leftLen = Math.Min(stepCapture * blockSize, n - leftStart);
+                            if (leftLen < 0) leftLen = 0;
+                            int rightLen = rightStart < n ? Math.Min(stepCapture * blockSize, n - rightStart) : 0;
+
+                            bool currentInBuf = dataInBuf;
+                            mTasks[iCapture] = Task.Run(() =>
+                            {
+                                var srcK = currentInBuf ? keysBuf.AsSpan() : keys.AsSpan();
+                                var srcI = currentInBuf ? indicesBuf.AsSpan() : new Span<int>((int*)pIndicesPtr, n);
+                                var dstK = currentInBuf ? keys.AsSpan() : keysBuf.AsSpan();
+                                var dstI = currentInBuf ? new Span<int>((int*)pIndicesPtr, n) : indicesBuf.AsSpan();
+
+                                if (rightLen > 0)
+                                {
+                                    MergeBlocks(
+                                        srcK.Slice(leftStart, leftLen), srcI.Slice(leftStart, leftLen),
+                                        srcK.Slice(rightStart, rightLen), srcI.Slice(rightStart, rightLen),
+                                        dstK.Slice(leftStart, leftLen + rightLen), dstI.Slice(leftStart, leftLen + rightLen)
+                                    );
+                                }
+                                else if (leftLen > 0)
+                                {
+                                    // Unpaired block, copy to destination
+                                    srcK.Slice(leftStart, leftLen).CopyTo(dstK.Slice(leftStart, leftLen));
+                                    srcI.Slice(leftStart, leftLen).CopyTo(dstI.Slice(leftStart, leftLen));
+                                }
+                            });
+                        }
+                        Task.WaitAll(mTasks);
+
+                        step *= 2;
+                        dataInBuf = !dataInBuf;
+                    }
+
+                    if (dataInBuf)
+                    {
+                        indicesBuf.AsSpan(0, n).CopyTo(new Span<int>((int*)pIndicesPtr, n));
                     }
                 }
             }
@@ -436,6 +550,57 @@ namespace Glacier.Polaris.Compute
                 System.Buffers.ArrayPool<long>.Shared.Return(keys);
                 System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
                 System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
+            }
+        }
+
+        
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void MergeBlocks(
+    ReadOnlySpan<long> leftKeys, ReadOnlySpan<int> leftIdx,
+    ReadOnlySpan<long> rightKeys, ReadOnlySpan<int> rightIdx,
+    Span<long> destKeys, Span<int> destIdx)
+        {
+            int l = 0, r = 0, d = 0;
+            int leftLen = leftKeys.Length;
+            int rightLen = rightKeys.Length;
+
+            fixed (long* pLeftK = leftKeys, pRightK = rightKeys, pDestK = destKeys)
+            fixed (int* pLeftI = leftIdx, pRightI = rightIdx, pDestI = destIdx)
+            {
+                while (l < leftLen && r < rightLen)
+                {
+                    // Stable merge: if keys are equal, prefer the left side
+                    if (pLeftK[l] <= pRightK[r])
+                    {
+                        pDestK[d] = pLeftK[l];
+                        pDestI[d] = pLeftI[l];
+                        l++;
+                    }
+                    else
+                    {
+                        pDestK[d] = pRightK[r];
+                        pDestI[d] = pRightI[r];
+                        r++;
+                    }
+                    d++;
+                }
+
+                // Blistering fast block copy for whichever side has remaining elements
+                if (l < leftLen)
+                {
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDestK + d, pLeftK + l, (uint)((leftLen - l) * sizeof(long)));
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDestI + d, pLeftI + l, (uint)((leftLen - l) * sizeof(int)));
+                }
+                else if (r < rightLen)
+                {
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDestK + d, pRightK + r, (uint)((rightLen - r) * sizeof(long)));
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDestI + d, pRightI + r, (uint)((rightLen - r) * sizeof(int)));
+                }
             }
         }
 
