@@ -681,7 +681,7 @@ namespace Glacier.Polaris.Compute
                 strings[i] = new string(arr);
             }
             return Data.Utf8StringSeries.FromStrings(source.Name, strings);
-        }        /// <summary>Extract all matches of a regex pattern from each string, returning a ListSeries.</summary>
+        }                /// <summary>Extract all matches of a regex pattern from each string, returning a ListSeries.</summary>
         public static Data.ListSeries ExtractAll(Data.Utf8StringSeries source, string pattern)
         {
             var regex = GetOrAddRegex(pattern);
@@ -709,9 +709,9 @@ namespace Glacier.Polaris.Compute
                 }
                 offsets[rowCount] = total;
 
-                var valueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", allMatches.ToArray());
-                var offsetSeries = new Data.Int32Series(source.Name + "_offsets", offsets);
-                return new Data.ListSeries(source.Name, offsetSeries, valueSeries);
+                var smallValueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", allMatches.ToArray());
+                var smallOffsetSeries = new Data.Int32Series(source.Name + "_offsets", offsets);
+                return new Data.ListSeries(source.Name, smallOffsetSeries, smallValueSeries);
             }
 
             var threadMatches = new System.Collections.Generic.List<string>[numThreads];
@@ -775,8 +775,7 @@ namespace Glacier.Polaris.Compute
             var valueSeries = Data.Utf8StringSeries.FromStrings(source.Name + "_extract_all", valueArray);
             var offsetSeries = new Data.Int32Series(source.Name + "_offsets", offsetsArr);
             return new Data.ListSeries(source.Name, offsetSeries, valueSeries);
-        }
-        /// <summary>Decode JSON strings into a StructSeries. Each string must be a JSON object.</summary>
+        }        /// <summary>Decode JSON strings into a StructSeries. Each string must be a JSON object.</summary>
         public static Data.StructSeries JsonDecode(Data.Utf8StringSeries source)
         {
             int rowCount = source.Length;
