@@ -14,14 +14,12 @@ namespace Glacier.Polaris.Compute
     {
         private static readonly ConcurrentDictionary<string, Regex> _regexCache =
             new ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
-
         private static Regex GetOrAddRegex(string pattern) =>
             _regexCache.GetOrAdd(pattern, static p =>
-                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(10)));
-        /// <summary>
-        /// Compares a column of UTF-8 strings against a literal for equality.
-        /// Returns a mask of matching indices.
-        /// </summary>
+                new Regex(p, RegexOptions.Compiled | RegexOptions.NonBacktracking));        /// <summary>
+                                                                                            /// Compares a column of UTF-8 strings against a literal for equality.
+                                                                                            /// Returns a mask of matching indices.
+                                                                                            /// </summary>
         public static unsafe void Equals(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, ReadOnlySpan<byte> literal, Span<int> results)
         {
             int rowCount = offsets.Length - 1;
