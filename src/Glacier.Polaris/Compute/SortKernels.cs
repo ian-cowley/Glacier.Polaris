@@ -179,6 +179,12 @@ namespace Glacier.Polaris.Compute
             int n = data.Length;
 
             int[] indices = new int[n];
+            if (n <= 2_000_000)
+            {
+                ArgSortFloat64SingleThreaded8BitSeparate(data, indices, isSequential: true);
+                return indices;
+            }
+
             int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
             long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
             long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
@@ -235,6 +241,19 @@ namespace Glacier.Polaris.Compute
             if (data.Length == 0) return;
             int n = data.Length;
 
+            if (n <= 2_000_000)
+            {
+                ArgSortFloat64SingleThreaded8BitSeparate(data, indices, isSequential: false);
+                if (descending)
+                {
+                    for (int i = 0, j = n - 1; i < j; i++, j--)
+                    {
+                        int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                    }
+                }
+                return;
+            }
+
             int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
             long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
             long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
@@ -287,6 +306,127 @@ namespace Glacier.Polaris.Compute
                 System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
                 System.Buffers.ArrayPool<long>.Shared.Return(keys);
                 System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void ArgSortFloat64SingleThreaded8BitSeparate(ReadOnlySpan<double> data, Span<int> indices, bool isSequential)
+        {
+            int n = data.Length;
+            if (n <= 1) return;
+
+            long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+            long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+            int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+
+            try
+            {
+                fixed (int* pIndices = indices)
+                {
+                    ConvertDoublesToSortableLongs(data, keys, isSequential ? null : pIndices);
+                }
+
+                fixed (long* pKeys = keys)
+                fixed (long* pKeysBuf = keysBuf)
+                fixed (int* pIdx = indices)
+                fixed (int* pIdxBuf = indicesBuf)
+                {
+                    long* srcKeys = pKeys;
+                    long* dstKeys = pKeysBuf;
+                    int* srcIdx = pIdx;
+                    int* dstIdx = pIdxBuf;
+
+                    const int bucketCount = 256;
+                    int* counts = stackalloc int[bucketCount];
+
+                    // PASS 1 (shift 0): Special pass that bypasses reading srcIdx if isSequential
+                    {
+                        for (int i = 0; i < bucketCount; i++) counts[i] = 0;
+
+                        for (int j = 0; j < n; j++)
+                        {
+                            counts[(int)(srcKeys[j] & 0xFF)]++;
+                        }
+
+                        int offset = 0;
+                        for (int i = 0; i < bucketCount; i++)
+                        {
+                            int c = counts[i];
+                            counts[i] = offset;
+                            offset += c;
+                        }
+
+                        if (isSequential)
+                        {
+                            for (int j = 0; j < n; j++)
+                            {
+                                long key = srcKeys[j];
+                                int bucket = (int)(key & 0xFF);
+                                int pos = counts[bucket]++;
+                                dstKeys[pos] = key;
+                                dstIdx[pos] = j; // Sequential index optimization
+                            }
+                        }
+                        else
+                        {
+                            for (int j = 0; j < n; j++)
+                            {
+                                long key = srcKeys[j];
+                                int bucket = (int)(key & 0xFF);
+                                int pos = counts[bucket]++;
+                                dstKeys[pos] = key;
+                                dstIdx[pos] = srcIdx[j]; // Permuted index
+                            }
+                        }
+
+                        // Swap pointers
+                        long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
+                        int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
+                    }
+
+                    // Passes 2 to 8: Shifts 8, 16, 24, 32, 40, 48, 56
+                    for (int shift = 8; shift < 64; shift += 8)
+                    {
+                        for (int i = 0; i < bucketCount; i++) counts[i] = 0;
+
+                        for (int j = 0; j < n; j++)
+                        {
+                            counts[(int)((srcKeys[j] >> shift) & 0xFF)]++;
+                        }
+
+                        int offset = 0;
+                        for (int i = 0; i < bucketCount; i++)
+                        {
+                            int c = counts[i];
+                            counts[i] = offset;
+                            offset += c;
+                        }
+
+                        for (int j = 0; j < n; j++)
+                        {
+                            long key = srcKeys[j];
+                            int bucket = (int)((key >> shift) & 0xFF);
+                            int pos = counts[bucket]++;
+                            dstKeys[pos] = key;
+                            dstIdx[pos] = srcIdx[j];
+                        }
+
+                        long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
+                        int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
+                    }
+
+                    // After 8 passes (even number), the result is back in pIdx.
+                    if (srcIdx != pIdx)
+                    {
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, srcIdx, (uint)(n * sizeof(int)));
+                    }
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<long>.Shared.Return(keys);
+                System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
+                System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
             }
         }
 

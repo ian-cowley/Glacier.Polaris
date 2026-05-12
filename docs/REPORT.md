@@ -167,12 +167,12 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Int32 N=1M | 5.36 | **3.57** | 1.5× | 🟡 Comparable |
-| Int32 N=10M | 60.72 | **30.31** | 2.0× | 🟡 Comparable |
-| Float64 N=1M | **15.96** | **4.21** | 3.8× | 🔴 Python 3.8× faster |
-| Float64 N=10M | **86.66** | **42.79** | 2.0× | 🟡 Comparable |
+| Int32 N=1M | 5.29 | **3.57** | 1.5× | 🟡 Comparable |
+| Int32 N=10M | 59.56 | **30.31** | 2.0× | 🟡 Comparable |
+| Float64 N=1M | **14.24** | **4.21** | 3.3× | 🔴 Python 3.3× faster |
+| Float64 N=10M | **90.13** | **42.79** | 2.1× | 🟡 Comparable |
 
-> **Note:** Int32 uses parallel 8-pass 8-bit radix sort. Float64 uses a SIMD-vectorized double-to-long key transform and a high-performance parallel-arrays 8-pass 8-bit radix sort, keeping count tables fully in L1 cache and sorting indices and keys together to avoid pointer-chasing, reducing latency to 15.96 ms and 86.66 ms.
+> **Note:** Int32 uses parallel 8-pass 8-bit radix sort. Float64 uses a hybrid approach: for N <= 2M, C# implements a highly optimized single-threaded cache-aligned radix sort with first-pass index initialization bypass, dropping N=1M latency to **14.24 ms** (a 5x speedup over standard System.Sort). For N > 2M, C# uses a parallel-arrays 8-pass 8-bit radix sort keeping count tables in L1 cache and sorting keys & indices in parallel to avoid pointer-chasing, completing N=10M in **90.13 ms**.
 
 ### 3.3 Filter (SIMD)
 
@@ -272,7 +272,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | **Join (Inner)** | 🟢 C# wins | 1.20–2.01× faster |
 | **Unique** | 🟡 Comparable | 1.29× |
 | **Sort Int32** | 🟡 Comparable | 1.5–2.0× |
-| **Sort Float64** | 🟡 Comparable | 2.0× (with 8-bit parallel-arrays radix sort) |
+| **Sort Float64** | 🟡 Comparable | 2.1× (with hybrid single-threaded & parallel-arrays radix sort) |
 | **String Regex (Simple Literal)** | 🟢 C# wins | 1.4× faster (SIMD Direct Matcher) |
 | **String Regex (Complex Pattern)** | 🔴 Python wins | 3.3× (CultureInvariant JIT + Thread-Local Transcoding) |
 | **String filter (EQ)** | 🔴 Python wins | 1.8× |
@@ -293,7 +293,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Unified Generic SIMD Filter Engine (`FilterGeneric<T>`) | Vectorized comparisons for **all 10 numeric primitive types** (`sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`) with 100% SIMD coverage and zero duplicated code |
 | Centralized `ParallelThresholds` Scheduler | Hardware-aware scheduling dynamically estimates optimum concurrency limits to avoid thread dispatch overhead and L3 cache line thrashing |
 | Vectorized double-to-long transform (`Vector256`) | Accelerates key mapping for double-precision sorting by over 3x |
-| Parallel-Arrays 8-pass 8-bit Radix Sort | Keeps counting tables within L1 cache and sorts indices & keys in parallel, completely eliminating pointer-chasing and dropping latency to **15.96 ms (N=1M)** and **86.66 ms (N=10M)** |
+| Parallel-Arrays & Single-Threaded 8-pass 8-bit Radix Sort | Keeps counting tables within L1 cache. For N <= 2M, utilizes single-threaded cache-aligned radix sort with first-pass index initialization bypass, dropping N=1M latency to **14.24 ms** (5x faster than System.Sort). For N > 2M, runs in parallel to complete N=10M in **90.13 ms**. |
 
 ---
 
@@ -350,7 +350,7 @@ All previously identified gaps have been closed as of this version:
 
 | Item | Status | Resolution |
 |---|---|---|
-| **Float64 radix sort** | ✅ Closed | Parallel-arrays 8-pass 8-bit LSD radix sort on IEEE-transformed `long` keys using sequential-prefetching parallel arrays, dropping 10M Float64 sorting latency to **86.66 ms** (beating previous 16-bit version by 2.1x). |
+| **Float64 radix sort** | ✅ Closed | Hybrid sorting: N <= 2M uses a single-threaded cache-aligned 8-pass 8-bit radix sort with first-pass index initialization bypass (reducing memory writes and L1 cache thrashes), dropping N=1M latency to **14.24 ms** (5x faster than System.Sort). N > 2M runs on parallel-arrays 8-pass 8-bit LSD radix sort on IEEE-transformed `long` keys, completing N=10M in **90.13 ms**. |
 | **Regex performance** | ✅ Closed | **Zero-Allocation Hybrid Match Router**: Pattern classification detects simple sub-patterns (literals, prefix, suffix, equality) and executes SIMD-accelerated matching directly on raw UTF-8 byte spans (running in **~9 ms**, beating Python by **1.4×**). Complex wildcard patterns fall back to a thread-partitioned standard .NET compiled Regex engine with zero-allocation transcoding (running in **~80 ms**, a 16% improvement over baseline). |
 | **`reinterpret()` test** | ✅ Closed | Full `Compute.ArrayKernels.Reinterpret()` kernel (bit-cast via `MemoryMarshal.Cast`); wired into `QueryOptimizer`; golden file `tier14_reinterpret.json` + `Tier14_Reinterpret` parity test added. |
 
