@@ -631,23 +631,42 @@ namespace Glacier.Polaris.Compute
             }
             return Data.Utf8StringSeries.FromStrings(source.Name, strings);
         }
-
         /// <summary>Extract the first match of a regex pattern from each string.</summary>
         public static Data.Utf8StringSeries Extract(Data.Utf8StringSeries source, string pattern)
         {
+            var regex = GetOrAddRegex(pattern);
             int rowCount = source.Length;
             var strings = new string[rowCount];
-            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.Compiled);
-            for (int i = 0; i < rowCount; i++)
+
+            int numThreads = Math.Max(1, Environment.ProcessorCount);
+            if (rowCount < numThreads * 2)
             {
-                if (source.ValidityMask.IsNull(i)) { strings[i] = null!; continue; }
-                var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
-                var match = regex.Match(s);
-                strings[i] = match.Success ? match.Value : string.Empty;
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (source.ValidityMask.IsNull(i)) { strings[i] = null!; continue; }
+                    var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                    var match = regex.Match(s);
+                    strings[i] = match.Success ? match.Value : string.Empty;
+                }
             }
+            else
+            {
+                System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+                {
+                    int startRow = (int)((long)t * rowCount / numThreads);
+                    int endRow = (int)((long)(t + 1) * rowCount / numThreads);
+                    for (int i = startRow; i < endRow; i++)
+                    {
+                        if (source.ValidityMask.IsNull(i)) { strings[i] = null!; continue; }
+                        var s = System.Text.Encoding.UTF8.GetString(source.GetStringSpan(i));
+                        var match = regex.Match(s);
+                        strings[i] = match.Success ? match.Value : string.Empty;
+                    }
+                });
+            }
+
             return Data.Utf8StringSeries.FromStrings(source.Name, strings);
         }
-
         /// <summary>Reverse each string.</summary>
         public static Data.Utf8StringSeries Reverse(Data.Utf8StringSeries source)
         {
