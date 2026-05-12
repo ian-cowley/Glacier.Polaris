@@ -17,7 +17,7 @@ namespace Glacier.Polaris.Compute
 
         private static Regex GetOrAddRegex(string pattern) =>
             _regexCache.GetOrAdd(pattern, static p =>
-                new Regex(p, RegexOptions.Compiled | RegexOptions.NonBacktracking));
+                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(10)));
         /// <summary>
         /// Compares a column of UTF-8 strings against a literal for equality.
         /// Returns a mask of matching indices.
@@ -52,10 +52,40 @@ namespace Glacier.Polaris.Compute
             var regex = GetOrAddRegex(pattern);
             int rowCount = offsets.Length - 1;
 
-            var options = new System.Threading.Tasks.ParallelOptions
+            int numThreads = Math.Max(1, Environment.ProcessorCount);
+            if (rowCount < numThreads * 2)
             {
-                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1)
-            };
+                fixed (byte* pDataBytes = dataBytes)
+                fixed (int* pOffsets = offsets)
+                fixed (int* pResults = results)
+                {
+                    char[] buffer = new char[256];
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        int start = pOffsets[i];
+                        int end = pOffsets[i + 1];
+                        int length = end - start;
+
+                        if (length == 0)
+                        {
+                            if (regex.IsMatch(ReadOnlySpan<char>.Empty))
+                                pResults[i] = 1;
+                            continue;
+                        }
+
+                        int maxChars = Encoding.UTF8.GetMaxCharCount(length);
+                        if (maxChars > buffer.Length)
+                            buffer = new char[maxChars * 2];
+
+                        int charCount = Encoding.UTF8.GetChars(
+                            new ReadOnlySpan<byte>(pDataBytes + start, length), buffer);
+
+                        if (regex.IsMatch(new ReadOnlySpan<char>(buffer, 0, charCount)))
+                            pResults[i] = 1;
+                    }
+                }
+                return;
+            }
 
             fixed (byte* pDataBytes = dataBytes)
             fixed (int* pOffsets = offsets)
@@ -65,10 +95,13 @@ namespace Glacier.Polaris.Compute
                 int* pOffsetsLocal = pOffsets;
                 int* pResultsLocal = pResults;
 
-                System.Threading.Tasks.Parallel.For(
-                    0, rowCount, options,
-                    () => new char[256], // thread-local char buffer
-                    (i, state, buffer) =>
+                System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+                {
+                    int startRow = (int)((long)t * rowCount / numThreads);
+                    int endRow = (int)((long)(t + 1) * rowCount / numThreads);
+                    char[] buffer = new char[256];
+
+                    for (int i = startRow; i < endRow; i++)
                     {
                         int start = pOffsetsLocal[i];
                         int end = pOffsetsLocal[i + 1];
@@ -76,10 +109,9 @@ namespace Glacier.Polaris.Compute
 
                         if (length == 0)
                         {
-                            // Use span overload — avoids allocating string.Empty
                             if (regex.IsMatch(ReadOnlySpan<char>.Empty))
                                 pResultsLocal[i] = 1;
-                            return buffer;
+                            continue;
                         }
 
                         int maxChars = Encoding.UTF8.GetMaxCharCount(length);
@@ -89,19 +121,14 @@ namespace Glacier.Polaris.Compute
                         int charCount = Encoding.UTF8.GetChars(
                             new ReadOnlySpan<byte>(pDataBytesLocal + start, length), buffer);
 
-                        // Span<char> overload: zero heap allocation per row
                         if (regex.IsMatch(new ReadOnlySpan<char>(buffer, 0, charCount)))
                             pResultsLocal[i] = 1;
-
-                        return buffer;
-                    },
-                    _ => { }
-                );
+                    }
+                });
             }
-        }
-        /// <summary>
-        /// Materializes a new Utf8StringSeries based on a set of chosen row indices.
-        /// </summary>
+        }        /// <summary>
+                 /// Materializes a new Utf8StringSeries based on a set of chosen row indices.
+                 /// </summary>
         public static Data.Utf8StringSeries Take(Data.Utf8StringSeries source, ReadOnlySpan<int> indices)
         {
             if (indices.Length == 0)
