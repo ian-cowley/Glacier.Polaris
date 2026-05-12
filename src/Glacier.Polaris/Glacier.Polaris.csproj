@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" Version="22.1.0" />
+    <PackageReference Include="Lokad.Utf8Regex" Version="0.2.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="Parquet.Net" Version="5.6.0" />
