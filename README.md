@@ -240,6 +240,16 @@ var pivoted = salesDf.Pivot(index: "Region", pivot: "Product", values: "Sales", 
 var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B" }, variableName: "Product", valueName: "Sales");
 ```
 
+## Publishing (Maintainers)
+
+To release a new version to NuGet and GitHub:
+
+1. Open PowerShell in the repository root.
+2. Run: `./release.ps1`
+3. Follow the prompts for the commit message.
+
+The script will automatically increment the patch version in `Glacier.Polaris.csproj`, stage all changes, commit, push, and create a GitHub tag `vX.Y.Z`, which triggers the CI/CD pipeline to publish.
+
 ## Credits
 
 Developed by Ian Cowley and Antigravity (Google DeepMind) and Cline/DeepSeek.
