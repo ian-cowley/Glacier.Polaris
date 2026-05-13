@@ -756,6 +756,12 @@ namespace Glacier.Polaris
             var method = typeof(Expr).GetMethod("Dt_MonthEndOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
             return new Expr(System.Linq.Expressions.Expression.Call(null, method, _expr.Expression));
         }
+
+        public Expr ConvertTimeZone(string targetTimeZoneId, string sourceTimeZoneId = "UTC")
+        {
+            var method = typeof(Expr).GetMethod("Dt_ConvertTimeZoneOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            return new Expr(System.Linq.Expressions.Expression.Call(null, method, _expr.Expression, System.Linq.Expressions.Expression.Constant(targetTimeZoneId), System.Linq.Expressions.Expression.Constant(sourceTimeZoneId)));
+        }
     }
 
     public static class Aggregations
