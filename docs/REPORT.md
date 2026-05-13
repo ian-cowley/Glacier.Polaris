@@ -346,19 +346,16 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 ## 7. Known Gaps & Next Steps
 
-All previously identified gaps have been closed as of this version:
+All previously identified major gaps (including **Float64 parallel radix sorting**, **Zero-Allocation Regex Match Routing**, **`Reinterpret()` bit-casting**, and **Timezone Localization & Conversion**) have been fully closed as of this version. 
 
-| Item | Status | Resolution |
+To maintain transparency and guide future optimization sprints, we have documented the remaining niche gaps and long-term roadmap items below:
+
+| Feature/Gap | Status | Details & Next Steps |
 |---|---|---|
-| **Float64 radix sort** | ✅ Closed | Hybrid sorting: N <= 100k uses a single-threaded radix sort with single-sweep global histogramming, 4-way loop unrolling, and dynamic pass-skipping optimizations, dropping N=1M latency to **12.05 ms** (5.8x faster than System.Sort). N > 100k runs a parallel tournament merge over thread-isolated radix blocks, completing N=10M in **84.71 ms**. |
-| **Regex performance** | ✅ Closed | **Zero-Allocation Hybrid Match Router**: Pattern classification detects simple sub-patterns (literals, prefix, suffix, equality) and executes SIMD-accelerated matching directly on raw UTF-8 byte spans (running in **~9 ms**, beating Python by **1.4×**). Complex wildcard patterns fall back to a thread-partitioned standard .NET compiled Regex engine with zero-allocation transcoding (running in **~80 ms**, a 16% improvement over baseline). |
-| **`reinterpret()` test** | ✅ Closed | Full `Compute.ArrayKernels.Reinterpret()` kernel (bit-cast via `MemoryMarshal.Cast`); wired into `QueryOptimizer`; golden file `tier14_reinterpret.json` + `Tier14_Reinterpret` parity test added. |
-
-### Remaining long-term items
-
-| Item | Notes |
-|---|---|
-| **Regex speed parity** | Pure managed .NET Regex has been replaced with a **Zero-Allocation Hybrid Match Router**. Direct SIMD fast-paths are used on UTF-8 spans for simple patterns, beating Python by **1.4×**. Complex wildcard patterns are optimized via coarse-grained task chunking, running in **~80 ms** (16% faster than previous baseline). Further speedups on complex wildcards would require native bindings (e.g., RE2 or Hyperscan). |
+| **Complex Regex Native Parity** | 🚧 Ongoing | While simple patterns run 1.4× faster than Python Polars using our direct UTF-8 SIMD router, complex wildcard matching is backed by .NET's compiled engine with thread partitioning. True parity under extreme wildcards will require native RE2/Hyperscan P/Invoke bindings. |
+| **Out-of-Core / Disk-Spill Exec** | ❌ Planned | While `IAsyncEnumerable<DataFrame>` streams data with minimal memory footprint, pipeline-breakers like `Sort` or `GroupBy` still materialize fully in memory. Future iterations will include partition-based external merge-sort to handle out-of-core workloads. |
+| **Recursive Nested Pushdowns** | 🚧 Partial | Projection and predicate pushdowns in the `QueryOptimizer` are highly optimized for flat schemas but do not recursively push down selections through deeply nested lists of structs. |
+| **Native Multi-threaded Parquet IO** | 🚧 Ongoing | IO depends on existing standard libraries. High-concurrency page serialization and direct C# chunk writing represent the next frontier for IO performance gains. |
 
 ---
 
