@@ -64,7 +64,7 @@ cs_results.txt
 cs_results_utf8.txt
 test_output.txt
 python_results.json
-test_large.csv
+/test_large.csv
 
 # Old stale project artifacts
 Polars.slnx

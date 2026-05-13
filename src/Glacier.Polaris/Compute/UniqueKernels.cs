@@ -147,14 +147,14 @@ namespace Glacier.Polaris.Compute
             {
                 if (series.ValidityMask.IsNull(i)) continue;
                 var val = series.Get(i);
-                counts.TryGetValue(val, out var c);
-                counts[val] = c + 1;
+                counts.TryGetValue(val!, out var c);
+                counts[val!] = c + 1;
             }
             for (int i = 0; i < len; i++)
             {
                 if (series.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
                 var val = series.Get(i);
-                result.Memory.Span[i] = counts.TryGetValue(val, out var c) && c > 1;
+                result.Memory.Span[i] = counts.TryGetValue(val!, out var c) && c > 1;
             }
             return result;
         }
@@ -169,14 +169,14 @@ namespace Glacier.Polaris.Compute
             {
                 if (series.ValidityMask.IsNull(i)) continue;
                 var val = series.Get(i);
-                counts.TryGetValue(val, out var c);
-                counts[val] = c + 1;
+                counts.TryGetValue(val!, out var c);
+                counts[val!] = c + 1;
             }
             for (int i = 0; i < len; i++)
             {
                 if (series.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
                 var val = series.Get(i);
-                result.Memory.Span[i] = counts.TryGetValue(val, out var c) && c == 1;
+                result.Memory.Span[i] = counts.TryGetValue(val!, out var c) && c == 1;
             }
             return result;
         }
@@ -435,19 +435,32 @@ countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
 }
 else
 {
-var dict = new Dictionary<object?, int>();
-for (int i = 0; i < series.Length; i++)
-{
-var val = series.Get(i);
-dict.TryGetValue(val, out int c);
-dict[val] = c + 1;
-}
+            var dict = new Dictionary<object, int>();
+            int nullCount = 0;
+            for (int i = 0; i < series.Length; i++)
+            {
+                var val = series.Get(i);
+                if (val == null)
+                {
+                    nullCount++;
+                }
+                else
+                {
+                    dict.TryGetValue(val, out int c);
+                    dict[val] = c + 1;
+                }
+            }
 
-var entries = dict.ToList();
-if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+            var entries = dict.Select(kvp => new KeyValuePair<object?, int>(kvp.Key, kvp.Value)).ToList();
+            if (nullCount > 0)
+            {
+                entries.Add(new KeyValuePair<object?, int>(null, nullCount));
+            }
 
-keysCol = new ObjectSeries(series.Name, entries.Select(e => e.Key).ToArray());
-countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+            if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            keysCol = new ObjectSeries(series.Name, entries.Select(e => e.Key).ToArray());
+            countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
 }
 
 return new DataFrame(new List<ISeries> { keysCol, countsCol });

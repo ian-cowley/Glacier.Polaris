@@ -35,7 +35,7 @@ namespace Glacier.Polaris
             }
         }
 
-        public static string GetString(uint code)
+        public static string? GetString(uint code)
         {
             if (code == uint.MaxValue) return null;
             return _codeToString[(int)code];

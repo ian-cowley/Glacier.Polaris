@@ -47,8 +47,8 @@ namespace Glacier.Polaris.Data
                 }
                 else
                 {
-                    data[i].CopyTo(bytes.Slice(currentOffset));
-                    currentOffset += data[i].Length;
+                    data[i]!.CopyTo(bytes.Slice(currentOffset));
+                    currentOffset += data[i]!.Length;
                     _validityMask.SetValid(i);
                 }
             }

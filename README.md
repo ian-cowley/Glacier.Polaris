@@ -7,6 +7,22 @@ Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .
 
 
 
+## Installation
+
+Glacier.Polaris is available as a [NuGet package](https://www.nuget.org/packages/Glacier.Polaris). You can install it using the .NET CLI:
+
+```bash
+dotnet add package Glacier.Polaris
+```
+
+Or via the Package Manager Console:
+
+```powershell
+Install-Package Glacier.Polaris
+```
+
+---
+
 ## What is it?
 
 Glacier.Polaris provides an expressive API for data manipulation, cleaning, and analysis in .NET. It's built to handle large datasets efficiently.

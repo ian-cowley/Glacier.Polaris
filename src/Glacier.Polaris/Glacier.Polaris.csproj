@@ -5,6 +5,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     
+    <!-- NuGet Packaging Properties -->
+    <Version>1.0.0</Version>
+    <PackageId>Glacier.Polaris</PackageId>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier</Company>
+    <Description>High-performance, memory-efficient, strongly-typed C# .NET 10 DataFrame library built for speed, with zero-copy semantics, SIMD vectorization, and Kleene logic.</Description>
+    <PackageTags>polars dataframe series dotnet csharp analytics fast high-performance columnar arrow</PackageTags>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Polaris</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
     <!-- High Performance Optimizations -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TieredPGO>true</TieredPGO>
@@ -13,6 +24,10 @@
     <!-- LangVersion must be preview for inline arrays if not enabled by default in net10 -->
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" Version="22.1.0" />
