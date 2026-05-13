@@ -338,6 +338,7 @@ namespace Glacier.Polaris
         internal static Expr Dt_CastTimeUnitOp(Expr e, string unit) => null!;
         internal static Expr Dt_MonthStartOp(Expr e) => null!;
         internal static Expr Dt_MonthEndOp(Expr e) => null!;
+        internal static Expr Dt_ConvertTimeZoneOp(Expr e, string targetTimeZoneId, string sourceTimeZoneId) => null!;
         /// <summary>Represents a reference to the element within a list.eval() context. Equivalent to Python Polars' pl.element().</summary>
         public static Expr Element()
         {
@@ -398,9 +399,10 @@ namespace Glacier.Polaris
         internal static Expr EntropyOp(Expr e) => null!;
         internal static Expr ApproxNUniqueOp(Expr e) => null!;
         internal static Expr HashOp(Expr e) => null!; public Expr MapElements(Func<object?, object?> mapping, Type returnType) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(MapElementsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(mapping), System.Linq.Expressions.Expression.Constant(returnType)));
-public Expr Reinterpret(Type targetType) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ReinterpretOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(targetType)));
-internal static Expr MapElementsOp(Expr e, Func<object?, object?> mapping, Type returnType) => null!;
-internal static Expr ReinterpretOp(Expr e, Type targetType) => null!;}
+        public Expr Reinterpret(Type targetType) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ReinterpretOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(targetType)));
+        internal static Expr MapElementsOp(Expr e, Func<object?, object?> mapping, Type returnType) => null!;
+        internal static Expr ReinterpretOp(Expr e, Type targetType) => null!;
+    }
 
     public sealed class WhenExpr
     {
