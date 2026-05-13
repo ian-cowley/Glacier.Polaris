@@ -29,8 +29,8 @@ public class ParityTests
 
     #region Helpers
 
-    private static string GoldenDir => Path.Combine(
-        AppContext.BaseDirectory, @"..\..\..\..\parity\golden");
+    private static string GoldenDir => Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "parity", "golden"));
 
     private static object? ParseJsonElement(JsonElement el) => el.ValueKind switch
     {
