@@ -398,7 +398,7 @@
 | `clear()` | Returns empty DataFrame | `DataFrame.Clear()` | ✅ | Returns empty DataFrame with same schema |
 | `is_first()` | First-occurrence duplicate check | `Expr.IsFirst()` | ✅ | `UniqueKernels.IsFirst` |
 | `hash()` | Row hashing | `Expr.Hash()` | ✅ | `HashKernels.Hash` (UInt64) |
-| `reinterpret()` | Bit reinterpretation | `Expr.Reinterpret()` | 🟡 | Op wired in optimizer; no dedicated kernel test |
+| `reinterpret()` | Bit reinterpretation | `Expr.Reinterpret()` | ✅ | Bit-cast via MemoryMarshal.Cast; Tier14_Reinterpret parity test added |
 
 
 ---
@@ -426,9 +426,9 @@
 **Notes:**
 - All implemented features now have parity tests (0 🟡 remaining).
 - Known correctness bugs listed in sections 17-20 are **all fixed** (see below).
-- **Missing features**: Only `reinterpret()` (op exists, no kernel test) remains as a minor gap.
+- **Missing features**: None. All core API gaps are closed, including `reinterpret()`.
 - **All previously "missing" advanced features are now implemented**: map_elements, map/apply, KDE/histogram, approx_n_unique, entropy, value_counts, shrink_to_fit, rechunk, clear, is_first, hash — all ✅.
-- **Next priority**: Performance (sort, regex) — all features are complete.
+- **Next priority**: Performance optimizations (completed successfully!).
 
 
 ---

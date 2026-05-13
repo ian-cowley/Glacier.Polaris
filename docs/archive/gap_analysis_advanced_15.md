@@ -27,14 +27,13 @@ are now implemented**. The table below reflects the current state.
 | `clear()` | ✅ Implemented | `DataFrame.Clear()` → returns empty DataFrame with same schema |
 | `is_first()` | ✅ Implemented | `Expr.IsFirst()` → `UniqueKernels.IsFirst` |
 | `hash()` | ✅ Implemented | `Expr.Hash()` → `HashKernels.Hash` (UInt64 output) |
-| `reinterpret()` | 🟡 Partial | `Expr.Reinterpret(targetType)` op wired in optimizer; no dedicated kernel test yet |
+| `reinterpret()` | ✅ Implemented | `Expr.Reinterpret()` → `Compute.ArrayKernels.Reinterpret` (bit-cast), Tier14_Reinterpret parity test added |
 
 ---
 
 ## Result
 
-**All 16 previously-listed "missing or OLD-only" features are now present in the current project.**
-The only remaining item is `reinterpret()`, which has an optimizer op but no dedicated parity test.
+**All 16 previously-listed "missing or OLD-only" features are now present and fully parity-tested in the current project.**
 
 ---
 
