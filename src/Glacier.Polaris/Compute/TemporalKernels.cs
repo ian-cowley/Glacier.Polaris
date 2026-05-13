@@ -608,5 +608,37 @@ namespace Glacier.Polaris.Compute
             }
             throw new NotSupportedException("MonthEnd only supported for Date/Datetime.");
         }
+
+        /// <summary>Converts the datetime values to a target timezone from a source timezone (defaults to UTC).</summary>
+        public static ISeries ConvertTimeZone(ISeries series, string targetTimeZoneId, string sourceTimeZoneId)
+        {
+            if (series is not Data.DatetimeSeries dts)
+                throw new NotSupportedException("ConvertTimeZone only supported for DatetimeSeries.");
+
+            TimeZoneInfo sourceTz = TimeZoneInfo.FindSystemTimeZoneById(sourceTimeZoneId);
+            TimeZoneInfo targetTz = TimeZoneInfo.FindSystemTimeZoneById(targetTimeZoneId);
+
+            var src = dts.Memory.Span;
+            var result = new Data.DatetimeSeries(series.Name, series.Length);
+            var res = result.Memory.Span;
+
+            for (int i = 0; i < series.Length; i++)
+            {
+                if (dts.ValidityMask.IsNull(i))
+                {
+                    result.ValidityMask.SetNull(i);
+                    continue;
+                }
+
+                DateTime dt = NanosToDateTime(src[i]);
+                DateTime unspecifiedDt = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
+                DateTime targetDt = TimeZoneInfo.ConvertTime(unspecifiedDt, sourceTz, targetTz);
+                DateTime targetDtUtc = DateTime.SpecifyKind(targetDt, DateTimeKind.Utc);
+                long ticks = (targetDtUtc - Epoch).Ticks;
+                res[i] = ticks * 100;
+            }
+            result.ValidityMask.CopyFrom(dts.ValidityMask);
+            return result;
+        }
     }
 }

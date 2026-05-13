@@ -517,5 +517,42 @@ namespace Glacier.Polaris.Tests
         }
 
         #endregion
+
+        #region Timezone Localization and Conversion
+
+        [Fact]
+        public async Task TestConvertTimeZone_UTCtoEastern()
+        {
+            // 2026-05-13T12:00:00 UTC (which is DST on, so EDT is UTC-4 -> 08:00:00 Eastern)
+            DateTime utcDateTime = new DateTime(2026, 5, 13, 12, 0, 0, DateTimeKind.Utc);
+            long dtVal = ToNanos(utcDateTime);
+            
+            var dt = new DatetimeSeries("dt", 2);
+            dt.Memory.Span[0] = dtVal;
+            dt.ValidityMask.SetNull(1); // Null value to verify null propagation
+
+            var df = new DataFrame(new ISeries[] { dt });
+
+            var result = await df.Lazy()
+                .Select(
+                    Expr.Col("dt").Dt().ConvertTimeZone("Eastern Standard Time", "UTC").Alias("est"),
+                    Expr.Col("dt").Dt().ConvertTimeZone("Eastern Standard Time", "UTC").Dt().Hour().Alias("hour")
+                )
+                .Collect();
+
+            var est = result.GetColumn("est") as DatetimeSeries;
+            var hour = result.GetColumn("hour") as Int32Series;
+
+            // Hour should be converted to Eastern Daylight Time (EDT, which is UTC-4 in May -> 8)
+            Assert.Equal(8, hour.Memory.Span[0]);
+            Assert.True(hour.ValidityMask.IsNull(1));
+
+            // Validate est nanosecond representation
+            DateTime expectedLocalEst = new DateTime(2026, 5, 13, 8, 0, 0, DateTimeKind.Utc);
+            Assert.Equal(ToNanos(expectedLocalEst), est.Memory.Span[0]);
+            Assert.True(est.ValidityMask.IsNull(1));
+        }
+
+        #endregion
     }
 }
