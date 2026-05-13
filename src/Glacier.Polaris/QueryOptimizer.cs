@@ -1764,6 +1764,15 @@ namespace Glacier.Polaris
                     disposables.Add(res);
                     return res;
                 }
+                else if (mce.Method.Name == "Dt_ConvertTimeZoneOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    string targetTimeZoneId = (string)((ConstantExpression)mce.Arguments[1]).Value!;
+                    string sourceTimeZoneId = (string)((ConstantExpression)mce.Arguments[2]).Value!;
+                    var res = Compute.TemporalKernels.ConvertTimeZone(series, targetTimeZoneId, sourceTimeZoneId);
+                    disposables.Add(res);
+                    return res;
+                }
                 else if (mce.Method.Name == "Dt_OrdinalDayOp")
                 {
                     var series = EvaluateExpression(mce.Arguments[0], df, disposables);
