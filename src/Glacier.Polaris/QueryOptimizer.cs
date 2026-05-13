@@ -2367,9 +2367,9 @@ namespace Glacier.Polaris
                     result.ValidityMask.SetNull(i);
                     continue;
                 }
-                string ls = System.Text.Encoding.UTF8.GetString(left.GetStringSpan(li));
-                string rs = System.Text.Encoding.UTF8.GetString(right.GetStringSpan(ri));
-                int cmp = string.Compare(ls, rs, StringComparison.Ordinal);
+                ReadOnlySpan<byte> lSpan = left.GetStringSpan(li);
+                ReadOnlySpan<byte> rSpan = right.GetStringSpan(ri);
+                int cmp = lSpan.SequenceCompareTo(rSpan);
                 result.Memory.Span[i] = op switch
                 {
                     Compute.FilterOperation.Equal => cmp == 0,

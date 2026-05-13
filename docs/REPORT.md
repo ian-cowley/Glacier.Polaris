@@ -161,96 +161,96 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Int32 N=1M | **0.02** | 5.33 | 0.004× | 🟢 **266× faster** |
 | Int32 N=10M | **0.12** | 53.48 | 0.002× | 🟢 **445× faster** |
 | Float64 N=1M | **0.01** | 2.47 | 0.004× | 🟢 **247× faster** |
-| Float64 N=10M | **0.46** | 22.85 | 0.020× | 🟢 **50× faster** |
+| Float64 N=10M | **0.33** | 22.85 | 0.014× | 🟢 **69× faster** |
 
 ### 3.2 Sort (ArgSort)
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Int32 N=1M | 5.46 | **3.57** | 1.5× | 🟡 Comparable |
-| Int32 N=10M | 61.11 | **30.31** | 2.0× | 🟡 Comparable |
-| Float64 N=1M | **12.05** | **4.21** | 2.9× | 🔴 Python 2.9× faster |
-| Float64 N=10M | **84.71** | **42.79** | 2.0× | 🟡 Comparable |
+| Int32 N=1M | 5.19 | **3.57** | 1.5× | 🟡 Comparable |
+| Int32 N=10M | 61.62 | **30.31** | 2.0× | 🟡 Comparable |
+| Float64 N=1M | 12.42 | **4.21** | 2.9× | 🔴 Python 2.9× faster |
+| Float64 N=10M | 95.89 | **42.79** | 2.2× | 🟡 Comparable |
 
-> **Note:** Int32 uses parallel 8-pass 8-bit radix sort. Float64 uses a hybrid approach: for N <= 100k (numThreads <= 1), C# implements a highly optimized single-threaded radix sort with single-sweep global histogramming, 4-way loop unrolling, and dynamic pass-skipping optimizations, dropping N=1M latency to **12.05 ms** (a 5.8x speedup over standard System.Sort). For N > 100k, C# uses an ultra-scalable **Parallel Block Tournament Merge Sort**, dividing the array into thread-isolated radix blocks sorted concurrently (zero thread contention/locks) and then merged via stable, parallel pairwise tournament merges, completing N=10M in **84.71 ms**.
+> **Note:** Int32 uses parallel 8-pass 8-bit radix sort. Float64 uses a hybrid approach: for N <= 100k (numThreads <= 1), C# implements a highly optimized single-threaded radix sort with single-sweep global histogramming, 4-way loop unrolling, and dynamic pass-skipping optimizations, dropping N=1M latency to **12.42 ms** (a 5.8x speedup over standard System.Sort). For N > 100k, C# uses an ultra-scalable **Parallel Block Tournament Merge Sort**, dividing the array into thread-isolated radix blocks sorted concurrently (zero thread contention/locks) and then merged via stable, parallel pairwise tournament merges, completing N=10M in **95.89 ms**.
 
 ### 3.3 Filter (SIMD)
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Int32 N=1M | **0.56** | 0.69 | 0.81× | 🟢 **1.2× faster** |
-| Int32 N=10M | **2.71** | 5.02 | 0.54× | 🟢 **1.85× faster** |
-| String EQ N=1M | 3.62 | **2.03** | 1.78× | 🔴 Python 1.8× faster |
+| Int32 N=1M | 0.94 | **0.69** | 1.36× | 🟡 Comparable |
+| Int32 N=10M | **2.56** | 5.02 | 0.51× | 🟢 **2.0× faster** |
+| String EQ N=1M | 3.51 | **2.03** | 1.73× | 🔴 Python 1.7× faster |
 
 ### 3.4 Aggregations
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
 | Sum N=1M | **0.14** | 0.45 | 0.31× | 🟢 **3.2× faster** |
-| Sum N=10M | 1.31 | **1.13** | 1.16× | 🟡 Comparable |
+| Sum N=10M | **1.12** | 1.13 | 0.99× | 🟡 Comparable |
 | Mean N=1M | 0.20 | **0.13** | 1.5× | 🟡 Comparable |
-| Mean N=10M | 2.53 | **1.90** | 1.3× | 🟡 Comparable |
-| Std N=1M | **0.33** | 0.55 | 0.60× | 🟢 **1.7× faster** |
-| Std N=10M | **3.44** | 5.29 | 0.65× | 🟢 **1.5× faster** |
+| Mean N=10M | **1.86** | 1.90 | 0.98× | 🟡 Comparable |
+| Std N=1M | **0.37** | 0.55 | 0.67× | 🟢 **1.5× faster** |
+| Std N=10M | **3.85** | 5.29 | 0.73× | 🟢 **1.4× faster** |
 
 ### 3.5 GroupBy
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
 | Int32 Sum N=1M | **1.56** | 5.20 | 0.30× | 🟢 **3.3× faster** |
-| Float64 Mean N=1M | **3.06** | 5.20 | 0.59× | 🟢 **1.7× faster** |
-| Int32 Sum N=10M | **14.99** | 38.94 | 0.38× | 🟢 **2.6× faster** |
-| Multi-agg Float64 N=1M | 7.23 | **4.83** | 1.50× | 🟡 Comparable |
-| Hash Int32 Sum N=1M | **1.65** | 5.20 | 0.32× | 🟢 **3.1× faster** |
-| Hash Float64 Mean N=1M | **3.15** | 5.20 | 0.61× | 🟢 **1.6× faster** |
+| Float64 Mean N=1M | **3.54** | 5.20 | 0.68× | 🟢 **1.5× faster** |
+| Int32 Sum N=10M | **15.13** | 38.94 | 0.39× | 🟢 **2.6× faster** |
+| Multi-agg Float64 N=1M | 7.34 | **4.83** | 1.52× | 🟡 Comparable |
+| Hash Int32 Sum N=1M | **1.62** | 5.20 | 0.31× | 🟢 **3.2× faster** |
+| Hash Float64 Mean N=1M | **3.40** | 5.20 | 0.65× | 🟢 **1.5× faster** |
 
 ### 3.6 Joins
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Inner SmallRight N=1M | **2.29** | 4.61 | 0.50× | 🟢 **2.01× faster** |
-| Inner SmallRight N=10M | **27.23** | 32.78 | 0.83× | 🟢 **1.20× faster** |
-| Left N=1M | 7.36 | **4.40** | 1.67× | 🟡 Comparable |
+| Inner SmallRight N=1M | **2.39** | 4.61 | 0.52× | 🟢 **1.92× faster** |
+| Inner SmallRight N=10M | **25.81** | 32.78 | 0.79× | 🟢 **1.27× faster** |
+| Left N=1M | 7.53 | **4.40** | 1.71× | 🟡 Comparable |
 
 ### 3.7 Rolling / Window
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| RollingMean N=1M | **1.73** | 4.81 | 0.36× | 🟢 **2.8× faster** |
-| RollingMean N=10M | **16.37** | 49.26 | 0.33× | 🟢 **3.0× faster** |
-| RollingStd N=1M | **3.15** | 12.92 | 0.24× | 🟢 **4.1× faster** |
-| ExpandingSum N=1M | **1.62** | 2.88 | 0.56× | 🟢 **1.8× faster** |
-| ExpandingSum N=10M | **16.49** | 35.20 | 0.47× | 🟢 **2.1× faster** |
+| RollingMean N=1M | **2.25** | 4.81 | 0.47× | 🟢 **2.1× faster** |
+| RollingMean N=10M | 56.60 | **49.26** | 1.15× | 🟡 Comparable |
+| RollingStd N=1M | **3.21** | 12.92 | 0.25× | 🟢 **4.0× faster** |
+| ExpandingSum N=1M | **1.29** | 2.88 | 0.45× | 🟢 **2.2× faster** |
+| ExpandingSum N=10M | **21.93** | 35.20 | 0.62× | 🟢 **1.6× faster** |
 | EWMMean N=1M | **1.24** | 3.95 | 0.31× | 🟢 **3.2× faster** |
-| EWMMean N=10M | **13.41** | 35.20† | 0.38× | 🟢 **2.6× faster** |
+| EWMMean N=10M | **16.82** | 35.20† | 0.48× | 🟢 **2.1× faster** |
 
 ### 3.8 Unique
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Unique N=1M | 20.58 | **15.96** | 1.29× | 🟡 Comparable |
+| Unique N=1M | 22.56 | **15.96** | 1.41× | 🟡 Comparable |
 
 ### 3.9 String Operations
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| ToUpper N=1M | **8.14** | 21.09 | 0.39× | 🟢 **2.6× faster** |
-| Contains N=1M | **9.05** | 12.62 | 0.72× | 🟢 **1.4× faster** |
-| Regex (Simple Literal) N=1M | **9.05** | 12.62 | 0.72× | 🟢 **1.4× faster** (SIMD Direct) |
-| Regex (Complex Pattern) N=1M | 80.15 | **24.40** | 3.3× | 🔴 Python 3.3× faster |
+| ToUpper N=1M | **8.05** | 21.09 | 0.38× | 🟢 **2.6× faster** |
+| Contains N=1M | **8.98** | 12.62 | 0.71× | 🟢 **1.4× faster** |
+| Regex (Simple Literal) N=1M | **8.98** | 12.62 | 0.71× | 🟢 **1.4× faster** (SIMD Direct) |
+| Regex (Complex Pattern) N=1M | 60.27 | **24.40** | 2.5× | 🔴 Python 2.5× faster |
 
 ### 3.10 Pivot
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Pivot N=100k | **16.98** | 41.35 | 0.41× | 🟢 **2.4× faster** |
+| Pivot N=100k | **21.28** | 41.35 | 0.51× | 🟢 **1.9× faster** |
 
 ### 3.11 FillNull
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Forward N=1M | **1.14** | 2.65 | 0.43× | 🟢 **2.3× faster** |
-| Forward N=10M | **10.03** | 26.79 | 0.37× | 🟢 **2.7× faster** |
+| Forward N=1M | **0.63** | 2.65 | 0.24× | 🟢 **4.2× faster** |
+| Forward N=10M | **12.35** | 26.79 | 0.46× | 🟢 **2.1× faster** |
 
 > **Note on prior numbers:** Earlier benchmarks showed Python at 0.063 ms / 0.155 ms — those used `np.nan` to create nulls. Python Polars treats `NaN` as a *valid* float (not null), so `fill_null` found zero nulls (a no-op). Fixed with `.fill_nan(None)`. The corrected comparison shows C# wins.
 

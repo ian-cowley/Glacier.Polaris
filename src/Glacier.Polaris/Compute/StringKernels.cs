@@ -1,10 +1,11 @@
+using Lokad.Utf8Regex;
 using System;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Text.RegularExpressions;
-using Lokad.Utf8Regex;
 
 namespace Glacier.Polaris.Compute
 {
@@ -73,28 +74,174 @@ namespace Glacier.Polaris.Compute
             _regexCache.GetOrAdd(pattern, static p =>
                 (new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant),
                  new Utf8Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant)));        /// <summary>
-                                                                                            /// Compares a column of UTF-8 strings against a literal for equality.
-                                                                                            /// Returns a mask of matching indices.
-                                                                                            /// </summary>
-        public static unsafe void Equals(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, ReadOnlySpan<byte> literal, Span<int> results)
+                                                                                                   /// Compares a column of UTF-8 strings against a literal for equality.
+                                                                                                   /// Returns a mask of matching indices.
+                                                                                                   /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public static unsafe void Equals(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, ReadOnlySpan<byte> targetBytes, Span<int> results)
         {
+            results.Clear();
+            int targetLen = targetBytes.Length;
             int rowCount = offsets.Length - 1;
-            for (int i = 0; i < rowCount; i++)
-            {
-                int start = offsets[i];
-                int end = offsets[i + 1];
-                int length = end - start;
 
-                if (length == literal.Length)
+            // Fast path for empty target string
+            if (targetLen == 0)
+            {
+                for (int i = 0; i < rowCount; i++)
                 {
-                    var stringSpan = dataBytes.Slice(start, length);
-                    if (stringSpan.SequenceEqual(literal))
+                    if (offsets[i + 1] - offsets[i] == 0) results[i] = 1;
+                }
+                return;
+            }
+
+            fixed (byte* pData = dataBytes)
+            fixed (byte* pTarget = targetBytes)
+            fixed (int* pOffsets = offsets)
+            fixed (int* pResults = results)
+            {
+                // -------------------------------------------------------------
+                // SIMD FAST PATH (Target length <= 32 bytes)
+                // -------------------------------------------------------------
+                if (Vector256.IsHardwareAccelerated && targetLen <= 32)
+                {
+                    // We pad the target vector with zeros up to 32 bytes.
+                    // This allows us to load the target into a single AVX2 register.
+                    byte* paddedTarget = stackalloc byte[32];
+                    System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedTarget, 0, 32);
+                    System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedTarget, pTarget, (uint)targetLen);
+
+                    Vector256<byte> vTarget = Vector256.Load(paddedTarget);
+                    byte* paddedData = stackalloc byte[32];
+
+                    // Calculate the exact bitmask for the valid bytes in the target.
+                    // For example, if targetLen is 5, the mask is the lowest 5 bits (0b0001_1111).
+                    uint validMask = (1u << targetLen) - 1;
+
+                    int i = 0;
+                    // Unroll loop for maximum ILP
+                    for (; i <= rowCount - 4; i += 4)
                     {
-                        results[i] = 1;
+                        int start0 = pOffsets[i]; int len0 = pOffsets[i + 1] - start0;
+                        int start1 = pOffsets[i + 1]; int len1 = pOffsets[i + 2] - start1;
+                        int start2 = pOffsets[i + 2]; int len2 = pOffsets[i + 3] - start2;
+                        int start3 = pOffsets[i + 3]; int len3 = pOffsets[i + 4] - start3;
+
+                        // Only check data if the lengths perfectly match
+                        if (len0 == targetLen)
+                        {
+                            if (start0 + 32 <= dataBytes.Length)
+                            {
+                                var vData = Vector256.Load(pData + start0);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i] = 1;
+                            }
+                            else
+                            {
+                                System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedData, 0, 32);
+                                System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedData, pData + start0, (uint)len0);
+                                var vData = Vector256.Load(paddedData);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i] = 1;
+                            }
+                        }
+                        if (len1 == targetLen)
+                        {
+                            if (start1 + 32 <= dataBytes.Length)
+                            {
+                                var vData = Vector256.Load(pData + start1);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 1] = 1;
+                            }
+                            else
+                            {
+                                System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedData, 0, 32);
+                                System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedData, pData + start1, (uint)len1);
+                                var vData = Vector256.Load(paddedData);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 1] = 1;
+                            }
+                        }
+                        if (len2 == targetLen)
+                        {
+                            if (start2 + 32 <= dataBytes.Length)
+                            {
+                                var vData = Vector256.Load(pData + start2);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 2] = 1;
+                            }
+                            else
+                            {
+                                System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedData, 0, 32);
+                                System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedData, pData + start2, (uint)len2);
+                                var vData = Vector256.Load(paddedData);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 2] = 1;
+                            }
+                        }
+                        if (len3 == targetLen)
+                        {
+                            if (start3 + 32 <= dataBytes.Length)
+                            {
+                                var vData = Vector256.Load(pData + start3);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 3] = 1;
+                            }
+                            else
+                            {
+                                System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedData, 0, 32);
+                                System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedData, pData + start3, (uint)len3);
+                                var vData = Vector256.Load(paddedData);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i + 3] = 1;
+                            }
+                        }
+                    }
+                    // Tail cleanup
+                    for (; i < rowCount; i++)
+                    {
+                        int start = pOffsets[i];
+                        int len = pOffsets[i + 1] - start;
+                        if (len == targetLen)
+                        {
+                            if (start + 32 <= dataBytes.Length)
+                            {
+                                var vData = Vector256.Load(pData + start);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i] = 1;
+                            }
+                            else
+                            {
+                                System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned(paddedData, 0, 32);
+                                System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(paddedData, pData + start, (uint)len);
+                                var vData = Vector256.Load(paddedData);
+                                if ((Vector256.Equals(vTarget, vData).ExtractMostSignificantBits() & validMask) == validMask)
+                                    pResults[i] = 1;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // -------------------------------------------------------------
+                    // SCALAR PATH (For very long strings or non-AVX processors)
+                    // -------------------------------------------------------------
+                    ReadOnlySpan<byte> targetSpan = targetBytes;
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        int start = pOffsets[i];
+                        int len = pOffsets[i + 1] - start;
+                        if (len == targetLen)
+                        {
+                            if (new ReadOnlySpan<byte>(pData + start, len).SequenceEqual(targetSpan))
+                            {
+                                pResults[i] = 1;
+                            }
+                        }
                     }
                 }
             }
         }
+
         /// <summary>
         /// Filters a Utf8StringSeries using a Regex pattern.
         /// Returns a bitmask of matching indices.
@@ -103,6 +250,7 @@ namespace Glacier.Polaris.Compute
         /// </summary>
         public static unsafe void RegexMatch(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string pattern, Span<int> results)
         {
+            results.Clear();
             int rowCount = offsets.Length - 1;
             if (rowCount <= 0) return;
 
@@ -509,6 +657,7 @@ namespace Glacier.Polaris.Compute
 
         public static void Contains(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string pattern, Span<int> results)
         {
+            results.Clear();
             byte[] patternBytes = Encoding.UTF8.GetBytes(pattern);
             int rowCount = offsets.Length - 1;
             for (int i = 0; i < rowCount; i++)
@@ -529,6 +678,7 @@ namespace Glacier.Polaris.Compute
 
         public static void StartsWith(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string prefix, Span<int> results)
         {
+            results.Clear();
             byte[] prefixBytes = Encoding.UTF8.GetBytes(prefix);
             int rowCount = offsets.Length - 1;
             for (int i = 0; i < rowCount; i++)
@@ -547,6 +697,7 @@ namespace Glacier.Polaris.Compute
 
         public static void EndsWith(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string suffix, Span<int> results)
         {
+            results.Clear();
             byte[] suffixBytes = Encoding.UTF8.GetBytes(suffix);
             int rowCount = offsets.Length - 1;
             for (int i = 0; i < rowCount; i++)
