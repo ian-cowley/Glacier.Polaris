@@ -1,7 +1,7 @@
 # Glacier.Polaris — Comprehensive Report
 
-> **Updated:** 2026-05-12 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
-> **Tests:** 413 / 413 passing (100 %) — 136 golden-file parity tests, 277 unit tests
+> **Updated:** 2026-05-13 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
+> **Tests:** 414 / 414 passing (100 %) — 136 golden-file parity tests, 278 unit tests
 > Run `dotnet test -c Release` to reproduce. Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate benchmarks.
 
 ---
@@ -12,7 +12,7 @@ Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on
 
 | Metric | Value |
 |--------|-------|
-| **Total tests** | **413 / 413** ✅ |
+| **Total tests** | **414 / 414** ✅ |
 | **Parity tests** | **136 / 136** ✅ (Tiers 1–14, all verified vs Python Polars v1.40.1) |
 | **API coverage** | ~98 %+ of Python Polars core surface |
 | **Missing / partial** | None — all known gaps closed |
@@ -315,8 +315,8 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Tier 13 | ArraySeries, Implode, ExpandingMean, Parquet, Floor/Ceil/Round, CumCount, CumProd, DtTruncate | 9 |
 | Tier 14 | Decimal/Enum/Object/Null/Time, SQL scan, Distinct, DropNulls, EWMStd, ArgMinMax, Diff, Clip, Rank, GatherEvery, ShiftExpr, ToDictionary, TopBottomK, EstimatedSize, CsvRoundtrip, etc. | 22 |
 | **Total parity** | | **136** |
-| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, etc. | 277 |
-| **Grand total** | | **413** |
+| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, etc. | 278 |
+| **Grand total** | | **414** |
 
 ---
 
