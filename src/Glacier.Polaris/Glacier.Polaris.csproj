@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- NuGet Packaging Properties -->
-    <Version>1.0.2</Version>
+    <Version>1.0.4</Version>
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
@@ -29,5 +29,6 @@
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="Parquet.Net" Version="5.6.0" />
+    <PackageReference Include="Snappier" Version="1.3.1" />
   </ItemGroup>
 </Project>

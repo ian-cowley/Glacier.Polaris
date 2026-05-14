@@ -2,6 +2,9 @@
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Glacier.Polaris.Benchmarks/Glacier.Polaris.Benchmarks.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Glacier.Polaris.SampleWebApp/Glacier.Polaris.SampleWebApp.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Glacier.Polaris/Glacier.Polaris.csproj" />
   </Folder>

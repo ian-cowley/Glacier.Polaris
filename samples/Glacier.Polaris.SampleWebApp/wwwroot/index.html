@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glacier.Polaris Studio - Next-Gen DataFrame Analytics</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- Bootstrap 5.3 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Background Animated Gradient Mesh -->
+    <div class="bg-mesh"></div>
+
+    <!-- Glass Navbar -->
+    <nav class="navbar navbar-expand-lg glass-navbar fixed-top">
+        <div class="container-fluid px-4">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="#">
+                <div class="brand-logo"><i class="bi bi-cpu-fill"></i></div>
+                <span class="brand-text">Glacier<span class="text-gradient">.Polaris</span></span>
+            </a>
+            <div class="d-flex align-items-center gap-3">
+                <span class="badge glass-badge"><i class="bi bi-lightning-charge-fill text-warning"></i> .NET 10.0 Engine</span>
+                <button id="themeToggle" class="btn btn-glass btn-icon" title="Toggle Theme">
+                    <i class="bi bi-sun-fill light-icon"></i>
+                    <i class="bi bi-moon-fill dark-icon"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Container -->
+    <main class="container-fluid main-container px-4">
+        <!-- Hero Title Section -->
+        <header class="row my-4 text-center hero-section">
+            <div class="col-12">
+                <h1 class="display-4 fw-bolder mb-2">High-Performance DataFrame Studio</h1>
+                <p class="lead text-secondary mb-4">Real-time analytical processing powered by vectorized SIMD compute kernels</p>
+            </div>
+        </header>
+
+        <!-- KPI Summary Cards -->
+        <section class="row g-4 mb-5" id="kpiSection">
+            <div class="col-12 col-md-6 col-xl-3">
+                <div class="card glass-card kpi-card">
+                    <div class="card-body d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="text-uppercase text-secondary mb-1">Dataset Size</h6>
+                            <h2 class="mb-0 fw-bold counter" id="kpiRowCount">--</h2>
+                            <small class="text-success"><i class="bi bi-arrow-up-right"></i> Processed In-Memory</small>
+                        </div>
+                        <div class="kpi-icon bg-primary-subtle text-primary">
+                            <i class="bi bi-database-fill"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+                <div class="card glass-card kpi-card">
+                    <div class="card-body d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="text-uppercase text-secondary mb-1">Active Columns</h6>
+                            <h2 class="mb-0 fw-bold counter" id="kpiColCount">--</h2>
+                            <small class="text-info"><i class="bi bi-layers-fill"></i> Multi-typed Series</small>
+                        </div>
+                        <div class="kpi-icon bg-info-subtle text-info">
+                            <i class="bi bi-layout-three-columns"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+                <div class="card glass-card kpi-card">
+                    <div class="card-body d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="text-uppercase text-secondary mb-1">Memory Allocation</h6>
+                            <h2 class="mb-0 fw-bold counter" id="kpiMemory">--</h2>
+                            <small class="text-warning"><i class="bi bi-speedometer2"></i> Zero-Copy Spans</small>
+                        </div>
+                        <div class="kpi-icon bg-warning-subtle text-warning">
+                            <i class="bi bi-memory"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+                <div class="card glass-card kpi-card">
+                    <div class="card-body d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="text-uppercase text-secondary mb-1">Execution Speed</h6>
+                            <h2 class="mb-0 fw-bold text-success"><i class="bi bi-lightning-fill"></i> Sub-ms</h2>
+                            <small class="text-success"><i class="bi bi-check-circle-fill"></i> Eager & Lazy Engines</small>
+                        </div>
+                        <div class="kpi-icon bg-success-subtle text-success">
+                            <i class="bi bi-rocket-takeoff-fill"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Analytics Navigation Tabs -->
+        <ul class="nav nav-pills glass-tabs mb-4 justify-content-center" id="analyticsTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab"><i class="bi bi-grid-fill me-2"></i> Overview & Schema</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="distribution-tab" data-bs-toggle="tab" data-bs-target="#distribution" type="button" role="tab"><i class="bi bi-bar-chart-fill me-2"></i> Distribution (Hist & KDE)</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="aggregations-tab" data-bs-toggle="tab" data-bs-target="#aggregations" type="button" role="tab"><i class="bi bi-pie-chart-fill me-2"></i> GroupBy Aggregations</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="temporal-tab" data-bs-toggle="tab" data-bs-target="#temporal" type="button" role="tab"><i class="bi bi-graph-up me-2"></i> Temporal & Rolling</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="wrangling-tab" data-bs-toggle="tab" data-bs-target="#wrangling" type="button" role="tab"><i class="bi bi-funnel-fill me-2"></i> Wrangling & Filtering</button>
+            </li>
+        </ul>
+
+        <!-- Tab Content Area -->
+        <div class="tab-content mb-5" id="analyticsTabContent">
+            
+            <!-- OVERVIEW & SCHEMA TAB -->
+            <div class="tab-pane fade show active" id="overview" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-12 col-xl-4">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-card-checklist text-primary me-2"></i> DataFrame Schema</h5>
+                            </div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover glass-table mb-0" id="schemaTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Column Name</th>
+                                            <th>Series Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Populated via JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-xl-8">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0"><i class="bi bi-table text-info me-2"></i> Sample Records (Head)</h5>
+                                <span class="badge bg-primary">10 Records Sampled</span>
+                            </div>
+                            <div class="card-body p-0 table-responsive">
+                                <table class="table table-hover glass-table mb-0" id="sampleTable">
+                                    <thead>
+                                        <tr id="sampleTableHeader">
+                                            <!-- Populated via JS -->
+                                        </tr>
+                                    </thead>
+                                    <tbody id="sampleTableBody">
+                                        <!-- Populated via JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DISTRIBUTION TAB -->
+            <div class="tab-pane fade" id="distribution" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-12 col-lg-3">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-sliders text-warning me-2"></i> Distribution Controls</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label text-secondary fw-semibold">Target Column</label>
+                                    <select class="form-select glass-input" id="distColumnSelect">
+                                        <option value="revenue" selected>Revenue</option>
+                                        <option value="satisfaction">Satisfaction Rating</option>
+                                        <option value="units_sold">Units Sold</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label text-secondary fw-semibold">Histogram Bins: <span id="binsLabel" class="text-light">15</span></label>
+                                    <input type="range" class="form-range custom-range" id="binsRange" min="5" max="30" step="1" value="15">
+                                </div>
+                                <div class="mb-4">
+                                    <label class="form-label text-secondary fw-semibold">KDE Bandwidth: <span id="bwLabel" class="text-light">50</span></label>
+                                    <input type="range" class="form-range custom-range" id="bwRange" min="10" max="150" step="10" value="50">
+                                </div>
+                                <button class="btn btn-primary w-100 btn-gradient shadow-lg" id="updateDistBtn"><i class="bi bi-arrow-clockwise me-2"></i> Run Analytics</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-9">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-bar-chart-fill text-primary me-2"></i> Histogram & Kernel Density Estimation (KDE)</h5>
+                            </div>
+                            <div class="card-body chart-container" style="position: relative; height:450px;">
+                                <canvas id="distributionChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AGGREGATIONS TAB -->
+            <div class="tab-pane fade" id="aggregations" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-12 col-lg-4">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-pie-chart-fill text-success me-2"></i> GroupBy Aggregations</h5>
+                            </div>
+                            <div class="card-body d-flex flex-column justify-content-between">
+                                <div>
+                                    <label class="form-label text-secondary fw-semibold mb-2">GroupBy Attribute</label>
+                                    <select class="form-select glass-input mb-4" id="aggGroupBySelect">
+                                        <option value="category" selected>Product Category</option>
+                                        <option value="region">Geographic Region</option>
+                                        <option value="is_repeat">Customer Type (Repeat/New)</option>
+                                    </select>
+                                    <p class="text-secondary small mb-4">
+                                        Performs SIMD-accelerated multi-column hash aggregations summing and averaging metrics across partitions instantly.
+                                    </p>
+                                </div>
+                                <div class="chart-container" style="position: relative; height:300px;">
+                                    <canvas id="aggPieChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-8">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-graph-up-arrow text-info me-2"></i> Comparative Group Analysis</h5>
+                            </div>
+                            <div class="card-body chart-container" style="position: relative; height:450px;">
+                                <canvas id="aggBarChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TEMPORAL TAB -->
+            <div class="tab-pane fade" id="temporal" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-12 col-lg-3">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-clock-history text-danger me-2"></i> Rolling Window Controls</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-4">
+                                    <label class="form-label text-secondary fw-semibold">Rolling Window Size: <span id="windowLabel" class="text-light">7 Days</span></label>
+                                    <input type="range" class="form-range custom-range" id="windowRange" min="3" max="14" step="1" value="7">
+                                </div>
+                                <p class="text-secondary small mb-4">
+                                    Showcases Glacier.Polaris's powerful windowing functions, computing expanding and rolling aggregations across sorted time series.
+                                </p>
+                                <button class="btn btn-primary w-100 btn-gradient shadow-lg" id="updateTemporalBtn"><i class="bi bi-arrow-clockwise me-2"></i> Recalculate Window</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-9">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-activity text-primary me-2"></i> Revenue Trend & Rolling Mean</h5>
+                            </div>
+                            <div class="card-body chart-container" style="position: relative; height:450px;">
+                                <canvas id="temporalChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- WRANGLING & FILTERING TAB -->
+            <div class="tab-pane fade" id="wrangling" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-12 col-lg-4">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header">
+                                <h5 class="card-title mb-0"><i class="bi bi-funnel-fill text-warning me-2"></i> Wrangling Filter</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-4">
+                                    <label class="form-label text-secondary fw-semibold">Filter Category</label>
+                                    <select class="form-select glass-input mb-3" id="wrangleCatSelect">
+                                        <option value="Electronics" selected>Electronics</option>
+                                        <option value="Apparel">Apparel</option>
+                                        <option value="Home & Kitchen">Home & Kitchen</option>
+                                        <option value="Books">Books</option>
+                                        <option value="Toys">Toys</option>
+                                    </select>
+                                </div>
+                                <button class="btn btn-primary w-100 btn-gradient shadow-lg mb-4" id="updateWrangleBtn"><i class="bi bi-funnel-fill me-2"></i> Apply Filter</button>
+                                <div class="alert glass-alert mt-4">
+                                    <h6 class="alert-heading fw-bold mb-1"><i class="bi bi-info-circle-fill me-2"></i> Filter Status</h6>
+                                    <p class="mb-0 small text-secondary">Showing filtered subset matching query predicate in real-time.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-8">
+                        <div class="card glass-card h-100">
+                            <div class="card-header glass-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0"><i class="bi bi-tags text-primary me-2"></i> Region Breakdown (Filtered Subset)</h5>
+                                <span class="badge bg-warning text-dark fw-bold" id="filteredCountBadge">Rows: --</span>
+                            </div>
+                            <div class="card-body chart-container" style="position: relative; height:450px;">
+                                <canvas id="wranglingChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="glass-footer text-center py-4 mt-auto">
+        <div class="container">
+            <p class="mb-0 text-secondary">
+                Powered by <strong class="text-light">Glacier.Polaris</strong> DataFrame Engine • Built for .NET 10.0 Minimal APIs
+            </p>
+        </div>
+    </footer>
+
+    <!-- Bootstrap 5.3 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Chart.js 4.4 CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Custom JS App -->
+    <script src="js/app.js"></script>
+</body>
+</html>
