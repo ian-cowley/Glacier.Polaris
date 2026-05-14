@@ -7,11 +7,11 @@
     <LangVersion>preview</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Point restore to our locally built NuGet package folder -->
-    <RestoreAdditionalProjectSources>C:\Users\spuri\source\repos\PolarsPlus\Glacier.Polaris\packages</RestoreAdditionalProjectSources>
+    <RestoreAdditionalProjectSources>$(MSBuildProjectDirectory)/../../packages</RestoreAdditionalProjectSources>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Glacier.Polaris" Version="1.0.4" />
+    <PackageReference Include="Glacier.Polaris" Version="1.0.6" />
   </ItemGroup>
 
 </Project>
