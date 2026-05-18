@@ -1,7 +1,11 @@
 # Glacier.Polaris
 
+[![DEV.to Story](https://img.shields.io/badge/DEV.to-Story-0a0a0a?style=for-the-badge&logo=devto&logoColor=white)](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)
 [![NuGet Version](https://img.shields.io/nuget/v/Glacier.Polaris.svg?style=flat-square)](https://www.nuget.org/packages/Glacier.Polaris/)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Glacier.Polaris.svg?style=flat-square)](https://www.nuget.org/packages/Glacier.Polaris/)
+
+> 📖 **Read the Deep-Dive**: **[I built a native C# DataFrame engine to rival Python Polars. It’s actually faster on some things.](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)**
+
 
 Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .NET 10, heavily inspired by the Rust-based [Polars](https://github.com/pola-rs/polars) library. It provides a robust, zero-copy, memory-efficient data processing engine using modern C# features such as `Memory<T>`, `Span<T>`, hardware intrinsics (SIMD), and a lazy execution engine.
 
