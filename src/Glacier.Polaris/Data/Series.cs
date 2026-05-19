@@ -11,7 +11,7 @@ namespace Glacier.Polaris.Data
         public Type DataType => typeof(T);
         public int Length { get; }
 
-        protected readonly MemoryOwnerColumn<T> _data;
+        protected readonly System.Buffers.IMemoryOwner<T> _data;
         protected readonly ValidityMask _validityMask;
 
         protected Series(string name, int length)
@@ -19,6 +19,14 @@ namespace Glacier.Polaris.Data
             Name = name;
             Length = length;
             _data = new MemoryOwnerColumn<T>(length);
+            _validityMask = new ValidityMask(length);
+        }
+
+        protected Series(string name, int length, System.Buffers.IMemoryOwner<T> data)
+        {
+            Name = name;
+            Length = length;
+            _data = data;
             _validityMask = new ValidityMask(length);
         }
 
@@ -97,6 +105,13 @@ namespace Glacier.Polaris.Data
     public sealed class Int32Series : Series<int>
     {
         public Int32Series(string name, int length) : base(name, length) { }
+        public Int32Series(string name, int length, System.Buffers.IMemoryOwner<int> data) : base(name, length, data) { }
+
+        public static Int32Series FromMmf(string name, string filePath, int length)
+        {
+            var storage = new MmfMemoryOwnerColumn<int>(filePath, length);
+            return new Int32Series(name, length, storage);
+        }
         public Int32Series(string name, int[] data) : base(name, data.Length)
         {
             data.CopyTo(Memory);
@@ -141,6 +156,13 @@ namespace Glacier.Polaris.Data
     public sealed class Int64Series : Series<long>
     {
         public Int64Series(string name, int length) : base(name, length) { }
+        public Int64Series(string name, int length, System.Buffers.IMemoryOwner<long> data) : base(name, length, data) { }
+
+        public static Int64Series FromMmf(string name, string filePath, int length)
+        {
+            var storage = new MmfMemoryOwnerColumn<long>(filePath, length);
+            return new Int64Series(name, length, storage);
+        }
         public Int64Series(string name, long[] data) : base(name, data.Length)
         {
             data.CopyTo(Memory);
@@ -175,6 +197,13 @@ namespace Glacier.Polaris.Data
     public sealed class Float64Series : Series<double>
     {
         public Float64Series(string name, int length) : base(name, length) { }
+        public Float64Series(string name, int length, System.Buffers.IMemoryOwner<double> data) : base(name, length, data) { }
+
+        public static Float64Series FromMmf(string name, string filePath, int length)
+        {
+            var storage = new MmfMemoryOwnerColumn<double>(filePath, length);
+            return new Float64Series(name, length, storage);
+        }
         public Float64Series(string name, double[] data) : base(name, data.Length)
         {
             data.CopyTo(Memory);
