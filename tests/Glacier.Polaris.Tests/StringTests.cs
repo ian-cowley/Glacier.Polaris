@@ -271,5 +271,51 @@ namespace Glacier.Polaris.Tests
             Assert.True(parsed.ValidityMask.IsNull(1));
             Assert.True(parsed.ValidityMask.IsNull(2));
         }
+
+        [Fact]
+        public async Task TestStringToDoubleAndIntCast()
+        {
+            var series = Utf8StringSeries.FromStrings("s", new[] { "$1,234.56", "100.5", "42", "invalid", "", null });
+            var df = new DataFrame(new[] { series });
+
+            var result = await df.Lazy()
+                .Select(
+                    Expr.Col("s").Str().ReplaceAll("$", "").Str().ReplaceAll(",", "").Cast(typeof(double)).Alias("to_double"),
+                    Expr.Col("s").Str().ReplaceAll("$", "").Str().ReplaceAll(",", "").Cast(typeof(long)).Alias("to_long")
+                )
+                .CollectAsync()
+                .FirstAsync();
+
+            var toDouble = result.GetColumn("to_double") as Float64Series;
+            var toLong = result.GetColumn("to_long") as Int64Series;
+
+            Assert.NotNull(toDouble);
+            Assert.NotNull(toLong);
+
+            // Double assertions
+            Assert.True(toDouble.ValidityMask.IsValid(0));
+            Assert.Equal(1234.56, toDouble.Memory.Span[0]);
+
+            Assert.True(toDouble.ValidityMask.IsValid(1));
+            Assert.Equal(100.5, toDouble.Memory.Span[1]);
+
+            Assert.True(toDouble.ValidityMask.IsValid(2));
+            Assert.Equal(42.0, toDouble.Memory.Span[2]);
+
+            Assert.True(toDouble.ValidityMask.IsNull(3)); // invalid
+            Assert.True(toDouble.ValidityMask.IsNull(4)); // empty
+            Assert.True(toDouble.ValidityMask.IsNull(5)); // null
+
+            // Long assertions
+            Assert.True(toLong.ValidityMask.IsNull(0)); // "1234.56" is not a valid long
+            Assert.True(toLong.ValidityMask.IsNull(1)); // "100.5" is not a valid long
+
+            Assert.True(toLong.ValidityMask.IsValid(2)); // "42" -> 42
+            Assert.Equal(42L, toLong.Memory.Span[2]);
+
+            Assert.True(toLong.ValidityMask.IsNull(3));
+            Assert.True(toLong.ValidityMask.IsNull(4));
+            Assert.True(toLong.ValidityMask.IsNull(5));
+        }
     }
 }

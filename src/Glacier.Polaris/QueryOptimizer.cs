@@ -1263,7 +1263,57 @@ namespace Glacier.Polaris
                     var series = EvaluateExpression(mce.Arguments[0], df, disposables);
                     var targetType = (Type)((ConstantExpression)mce.Arguments[1]).Value!;
 
-                    if (targetType == typeof(CategoricalSeries))
+                    if ((targetType == typeof(double) || targetType == typeof(Data.Float64Series)) && series is Data.Utf8StringSeries utf8Double)
+                    {
+                        var result = new Data.Float64Series(utf8Double.Name + "_cast", utf8Double.Length);
+                        for (int i = 0; i < utf8Double.Length; i++)
+                        {
+                            if (utf8Double.ValidityMask.IsValid(i))
+                            {
+                                var str = System.Text.Encoding.UTF8.GetString(utf8Double.GetStringSpan(i));
+                                if (double.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedVal))
+                                {
+                                    result.Memory.Span[i] = parsedVal;
+                                }
+                                else
+                                {
+                                    result.ValidityMask.SetNull(i);
+                                }
+                            }
+                            else
+                            {
+                                result.ValidityMask.SetNull(i);
+                            }
+                        }
+                        disposables.Add(result);
+                        return result;
+                    }
+                    else if ((targetType == typeof(long) || targetType == typeof(Data.Int64Series)) && series is Data.Utf8StringSeries utf8Long)
+                    {
+                        var result = new Data.Int64Series(utf8Long.Name + "_cast", utf8Long.Length);
+                        for (int i = 0; i < utf8Long.Length; i++)
+                        {
+                            if (utf8Long.ValidityMask.IsValid(i))
+                            {
+                                var str = System.Text.Encoding.UTF8.GetString(utf8Long.GetStringSpan(i));
+                                if (long.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out long parsedVal))
+                                {
+                                    result.Memory.Span[i] = parsedVal;
+                                }
+                                else
+                                {
+                                    result.ValidityMask.SetNull(i);
+                                }
+                            }
+                            else
+                            {
+                                result.ValidityMask.SetNull(i);
+                            }
+                        }
+                        disposables.Add(result);
+                        return result;
+                    }
+                    else if (targetType == typeof(CategoricalSeries))
                     {
                         if (series is Data.Utf8StringSeries utf8)
                         {
