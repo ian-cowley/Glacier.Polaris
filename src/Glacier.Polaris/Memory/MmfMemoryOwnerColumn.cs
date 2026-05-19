@@ -33,7 +33,7 @@ namespace Glacier.Polaris.Memory
             _accessor = _mmf.CreateViewAccessor(0, bytesRequired, MemoryMappedFileAccess.ReadWrite);
             _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref _pointer);
 
-            _manager = new UnmanagedMemoryManager<T>((T*)_pointer, length);
+            _manager = new UnmanagedMemoryManager<T>((T*)(_pointer + _accessor.PointerOffset), length);
         }
 
         public Memory<T> Memory => _manager.Memory;
