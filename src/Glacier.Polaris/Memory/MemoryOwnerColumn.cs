@@ -18,6 +18,8 @@ namespace Glacier.Polaris.Memory
             _length = length;
             // Rent from ArrayPool
             _rentedArray = ArrayPool<T>.Shared.Rent(length);
+            // Clear the active slice to prevent garbage/data leakage
+            Array.Clear(_rentedArray, 0, length);
         }
 
         public Memory<T> Memory
