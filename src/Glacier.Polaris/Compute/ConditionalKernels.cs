@@ -31,6 +31,8 @@ namespace Glacier.Polaris.Compute
                     SelectGeneric(condSpan, tDbl.Memory.Span, oDbl.Memory.Span, ((Series<double>)result).Memory.Span);
                 else if (thenResult is Series<float> tFlt && otherwiseResult is Series<float> oFlt)
                     SelectGeneric(condSpan, tFlt.Memory.Span, oFlt.Memory.Span, ((Series<float>)result).Memory.Span);
+                else if (thenResult is Series<bool> tBool && otherwiseResult is Series<bool> oBool)
+                    SelectGeneric(condSpan, tBool.Memory.Span, oBool.Memory.Span, ((Series<bool>)result).Memory.Span);
                 else
                     throw new NotSupportedException($"Conditional select not supported for {thenResult.GetType().Name}.");
 

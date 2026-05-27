@@ -128,19 +128,19 @@ namespace Glacier.Polaris
                     }
                 }
             }
-            else if (visitedNode.Method.Name == nameof(LazyFrame.SelectOp))
-            {
-                var source = visitedNode.Arguments[0];
-                var selections = visitedNode.Arguments[1];
-
-                if (source is MethodCallExpression sourceCall && sourceCall.Method.Name == nameof(LazyFrame.SelectOp))
-                {
-                    // Merge consecutive Selects: Select(Select(src, inner), outer) -> Select(src, outer)
-                    // Note: This is safe if 'outer' doesn't depend on aliases created in 'inner' 
-                    // that are not in 'src'. For this MVP, we assume simple column references.
-                    return Expression.Call(null, visitedNode.Method, sourceCall.Arguments[0], selections);
-                }
-            }
+            // else if (visitedNode.Method.Name == nameof(LazyFrame.SelectOp))
+            // {
+            //     var source = visitedNode.Arguments[0];
+            //     var selections = visitedNode.Arguments[1];
+            // 
+            //     if (source is MethodCallExpression sourceCall && sourceCall.Method.Name == nameof(LazyFrame.SelectOp))
+            //     {
+            //         // Merge consecutive Selects: Select(Select(src, inner), outer) -> Select(src, outer)
+            //         // Note: This is safe if 'outer' doesn't depend on aliases created in 'inner' 
+            //         // that are not in 'src'. For this MVP, we assume simple column references.
+            //         return Expression.Call(null, visitedNode.Method, sourceCall.Arguments[0], selections);
+            //     }
+            // }
 
             return visitedNode;
         }
@@ -2395,6 +2395,7 @@ namespace Glacier.Polaris
             if (left is Data.Int32Series l32 && right is Data.Int32Series r32) return Compute.ComparisonKernels.Compare(l32, r32, op);
             if (left is Data.Float64Series lF64 && right is Data.Float64Series rF64) return Compute.ComparisonKernels.Compare(lF64, rF64, op);
             if (left is Data.Int64Series l64 && right is Data.Int64Series r64) return Compute.ComparisonKernels.Compare(l64, r64, op);
+            if (left is Data.BooleanSeries lBool && right is Data.BooleanSeries rBool) return Compute.ComparisonKernels.Compare(lBool, rBool, op);
             if (left is Data.Utf8StringSeries lStr && right is Data.Utf8StringSeries rStr) return CompareStringSeries(lStr, rStr, op);
             // Promote minor integer types to Int32 / Int64 / Float64 for comparison
             if (left is Data.Int8Series || left is Data.Int16Series || left is Data.UInt8Series || left is Data.UInt16Series)

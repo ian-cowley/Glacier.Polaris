@@ -296,6 +296,7 @@ namespace Glacier.Polaris
                     {
                         var c = (Data.Int32Series)df.GetColumn(col.Name);
                         c.Memory.Span.CopyTo(newCol.Memory.Span.Slice(offset));
+                        c.ValidityMask.CopyTo(newCol.ValidityMask, offset);
                         offset += c.Length;
                     }
                     newCols.Add(newCol);
@@ -308,6 +309,7 @@ namespace Glacier.Polaris
                     {
                         var c = (Data.Float64Series)df.GetColumn(col.Name);
                         c.Memory.Span.CopyTo(newCol.Memory.Span.Slice(offset));
+                        c.ValidityMask.CopyTo(newCol.ValidityMask, offset);
                         offset += c.Length;
                     }
                     newCols.Add(newCol);
@@ -333,11 +335,26 @@ namespace Glacier.Polaris
                         {
                             newOffsets[rowOffset + i] = byteOffset + cOffsets[i];
                         }
+                        c.ValidityMask.CopyTo(newCol.ValidityMask, rowOffset);
 
                         rowOffset += c.Length;
                         byteOffset += cData.Length;
                     }
                     newOffsets[totalRows] = byteOffset;
+                    newCols.Add(newCol);
+                }
+                else
+                {
+                    var seriesType = col.GetType();
+                    var newCol = (ISeries)Activator.CreateInstance(seriesType, col.Name, totalRows)!;
+                    int offset = 0;
+                    foreach (var df in results)
+                    {
+                        var chunkCol = df.GetColumn(col.Name);
+                        chunkCol.CopyTo(newCol, offset);
+                        chunkCol.ValidityMask.CopyTo(newCol.ValidityMask, offset);
+                        offset += chunkCol.Length;
+                    }
                     newCols.Add(newCol);
                 }
             }
