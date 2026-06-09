@@ -15,8 +15,6 @@ in Glacier.Polaris, please report it by:
 2. Click the **Report a vulnerability** button to submit a private draft advisory.
 3. Fill out the details of the vulnerability.
 
-Alternatively, you can email the maintainers directly at ian.cowley@example.com.
-
 Please **do not** report security vulnerabilities through public GitHub issues.
 
 We will acknowledge receipt of your report within 48 hours and provide a
