@@ -9,7 +9,13 @@
 ## Reporting a Vulnerability
 
 We take security vulnerabilities seriously. If you discover a security issue
-in Glacier.Polaris, please report it by emailing ian.cowley@example.com.
+in Glacier.Polaris, please report it by:
+
+1. Navigate to the **Security** tab of the repository on GitHub.
+2. Click the **Report a vulnerability** button to submit a private draft advisory.
+3. Fill out the details of the vulnerability.
+
+Alternatively, you can email the maintainers directly at ian.cowley@example.com.
 
 Please **do not** report security vulnerabilities through public GitHub issues.
 
