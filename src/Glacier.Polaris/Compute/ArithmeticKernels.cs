@@ -139,5 +139,21 @@ namespace Glacier.Polaris.Compute
             }
             for (; i < left.Length; i++) result[i] = left[i] / right;
         }
+
+        // GPU Bare-metal hardware accelerated Float32 operations
+        public static void Add(ReadOnlySpan<float> left, ReadOnlySpan<float> right, Span<float> result, GpuTarget target = GpuTarget.Auto)
+            => GpuPolarisAccelerator.VectorAdd(left, right, result, target);
+
+        public static void Subtract(ReadOnlySpan<float> left, ReadOnlySpan<float> right, Span<float> result, GpuTarget target = GpuTarget.Auto)
+            => GpuPolarisAccelerator.VectorSub(left, right, result, target);
+
+        public static void Multiply(ReadOnlySpan<float> left, ReadOnlySpan<float> right, Span<float> result, GpuTarget target = GpuTarget.Auto)
+            => GpuPolarisAccelerator.VectorMul(left, right, result, target);
+
+        public static void Divide(ReadOnlySpan<float> left, ReadOnlySpan<float> right, Span<float> result, GpuTarget target = GpuTarget.Auto)
+            => GpuPolarisAccelerator.VectorDiv(left, right, result, target);
+
+        public static void FusedMultiplyAdd(ReadOnlySpan<float> a, ReadOnlySpan<float> b, ReadOnlySpan<float> c, Span<float> result, GpuTarget target = GpuTarget.Auto)
+            => GpuPolarisAccelerator.VectorFma(a, b, c, result, target);
     }
 }

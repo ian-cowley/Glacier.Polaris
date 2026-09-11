@@ -192,6 +192,113 @@ namespace Glacier.Polaris.Data
     public sealed class Float32Series : Series<float>
     {
         public Float32Series(string name, int length) : base(name, length) { }
+        public Float32Series(string name, int length, System.Buffers.IMemoryOwner<float> data) : base(name, length, data) { }
+        public Float32Series(string name, float[] data) : base(name, data.Length)
+        {
+            data.CopyTo(Memory);
+        }
+        public Float32Series(string name, ReadOnlySpan<float> data) : base(name, data.Length)
+        {
+            data.CopyTo(Memory.Span);
+        }
+
+        public static Float32Series FromValues(string name, float?[] values)
+        {
+            var series = new Float32Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
+
+        public Float32Series Add(Float32Series other, Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorAdd(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Subtract(Float32Series other, Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorSub(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Multiply(Float32Series other, Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorMul(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Divide(Float32Series other, Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorDiv(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Fma(Float32Series mul, Float32Series add, Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            if (Length != mul.Length || Length != add.Length) throw new ArgumentException("Series lengths must match.");
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorFma(Memory.Span, mul.Memory.Span, add.Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Exp(Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorExp(Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Log(Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorLog(Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Sqrt(Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorSqrt(Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public Float32Series Sigmoid(Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            var res = new Float32Series(Name, Length);
+            Compute.GpuPolarisAccelerator.VectorSigmoid(Memory.Span, res.Memory.Span, target);
+            return res;
+        }
+
+        public float Sum(Compute.GpuTarget target = Compute.GpuTarget.Auto)
+        {
+            return Compute.GpuPolarisAccelerator.VectorSum(Memory.Span, target);
+        }
+
+        public override IArrowArray ToArrowArray()
+        {
+            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
+            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
+
+            return new FloatArray(
+                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
+                nullBitmapBuilder.Build(),
+                Length,
+                ValidityMask.NullCount,
+                0);
+        }
     }
 
     public sealed class Float64Series : Series<double>
