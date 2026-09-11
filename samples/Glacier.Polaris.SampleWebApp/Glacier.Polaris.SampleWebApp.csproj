@@ -6,12 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>preview</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Point restore to our locally built NuGet package folder -->
-    <RestoreAdditionalProjectSources>$(MSBuildProjectDirectory)/../../packages</RestoreAdditionalProjectSources>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Glacier.Polaris" Version="1.0.9" />
+    <ProjectReference Include="..\..\src\Glacier.Polaris\Glacier.Polaris.csproj" />
   </ItemGroup>
 
 </Project>
