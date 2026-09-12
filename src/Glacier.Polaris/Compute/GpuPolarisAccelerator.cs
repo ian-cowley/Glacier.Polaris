@@ -447,62 +447,8 @@ public static unsafe class GpuPolarisAccelerator
 
         if (useGpu && IsNvidiaAvailable && s_fnSum != IntPtr.Zero)
         {
-            uint blockSize = 256;
-            uint gridSize = (uint)((n + (blockSize * 2) - 1) / (blockSize * 2));
-            float[] blockSums = GC.AllocateArray<float>((int)gridSize, pinned: true);
-
-            nuint bytesIn = (nuint)(n * sizeof(float));
-            nuint bytesOut = (nuint)(gridSize * sizeof(float));
-
-            CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
-            {
-                EnsurePoolBuffers(bytesIn, 0, 0, bytesOut);
-
-                fixed (float* pIn = input, pSums = blockSums)
-                {
-                    CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pIn, bytesIn);
-
-                    IntPtr[] kernelParams = new IntPtr[3];
-                    GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(n, GCHandleType.Pinned);
-
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
-                    {
-                        uint sharedMemBytes = blockSize * sizeof(float);
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnSum,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            sharedMemBytes, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pSums, s_dOut, bytesOut);
-
-                            float total = 0f;
-                            for (int i = 0; i < blockSums.Length; i++) total += blockSums[i];
-                            return total;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free();
-                        h1.Free();
-                        h2.Free();
-                    }
-                }
-            }
+            if (TryExecuteGpuVectorSum(input, n, out float gpuSum))
+                return gpuSum;
         }
 
         // SIMD AVX-512 CPU Sum
@@ -717,6 +663,76 @@ public static unsafe class GpuPolarisAccelerator
                 }
             }
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryExecuteGpuVectorSum(ReadOnlySpan<float> input, int n, out float total)
+    {
+        total = 0f;
+        try
+        {
+            uint blockSize = 256;
+            uint gridSize = (uint)((n + (blockSize * 2) - 1) / (blockSize * 2));
+            float[] blockSums = GC.AllocateArray<float>((int)gridSize, pinned: true);
+
+            nuint bytesIn = (nuint)(n * sizeof(float));
+            nuint bytesOut = (nuint)(gridSize * sizeof(float));
+
+            CuDriver.CtxSetCurrent(s_cuContext);
+            lock (s_initLock)
+            {
+                EnsurePoolBuffers(bytesIn, 0, 0, bytesOut);
+
+                fixed (float* pIn = input, pSums = blockSums)
+                {
+                    CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pIn, bytesIn);
+
+                    IntPtr[] kernelParams = new IntPtr[3];
+                    GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
+                    GCHandle h1 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
+                    GCHandle h2 = GCHandle.Alloc(n, GCHandleType.Pinned);
+
+                    kernelParams[0] = h0.AddrOfPinnedObject();
+                    kernelParams[1] = h1.AddrOfPinnedObject();
+                    kernelParams[2] = h2.AddrOfPinnedObject();
+
+                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
+                    try
+                    {
+                        uint sharedMemBytes = blockSize * sizeof(float);
+                        int launchRes = CuDriver.LaunchKernel(
+                            s_fnSum,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            sharedMemBytes, IntPtr.Zero,
+                            hArray.AddrOfPinnedObject(),
+                            IntPtr.Zero);
+
+                        if (launchRes == 0)
+                        {
+                            CuDriver.CtxSynchronize();
+                            CuDriver.MemcpyDtoH((IntPtr)pSums, s_dOut, bytesOut);
+
+                            for (int i = 0; i < blockSums.Length; i++) total += blockSums[i];
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        hArray.Free();
+                        h0.Free();
+                        h1.Free();
+                        h2.Free();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private static void EnsurePoolBuffers(nuint cap1, nuint cap2, nuint cap3, nuint capOut)
