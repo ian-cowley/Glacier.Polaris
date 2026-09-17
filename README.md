@@ -1,3 +1,5 @@
+![Glacier.Polaris Banner](assets/banner.jpg)
+
 # Glacier.Polaris
 
 [![DEV.to Story](https://img.shields.io/badge/DEV.to-Story-0a0a0a?style=for-the-badge&logo=devto&logoColor=white)](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)
