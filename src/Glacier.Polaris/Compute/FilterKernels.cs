@@ -71,7 +71,27 @@ namespace Glacier.Polaris.Compute
                         int localCount = 0;
                         int i = start;
 
-                        if (Vector256.IsHardwareAccelerated && (end - start) >= Vector256<T>.Count)
+                        if (Vector512.IsHardwareAccelerated && (end - start) >= Vector512<T>.Count)
+                        {
+                            int step = Vector512<T>.Count;
+                            var vThreshold = Vector512.Create(threshold);
+                            for (; i <= end - step; i += step)
+                            {
+                                var vData = Vector512.Load(localData + i);
+                                Vector512<T> vMask = op switch
+                                {
+                                    FilterOperation.Equal => Vector512.Equals(vData, vThreshold),
+                                    FilterOperation.NotEqual => ~Vector512.Equals(vData, vThreshold),
+                                    FilterOperation.GreaterThan => Vector512.GreaterThan(vData, vThreshold),
+                                    FilterOperation.GreaterThanOrEqual => Vector512.GreaterThanOrEqual(vData, vThreshold),
+                                    FilterOperation.LessThan => Vector512.LessThan(vData, vThreshold),
+                                    FilterOperation.LessThanOrEqual => Vector512.LessThanOrEqual(vData, vThreshold),
+                                    _ => throw new NotImplementedException()
+                                };
+                                localCount += BitOperations.PopCount(vMask.ExtractMostSignificantBits());
+                            }
+                        }
+                        else if (Vector256.IsHardwareAccelerated && (end - start) >= Vector256<T>.Count)
                         {
                             int step = Vector256<T>.Count;
                             var vThreshold = Vector256.Create(threshold);
@@ -118,7 +138,33 @@ namespace Glacier.Polaris.Compute
                         int destOffset = offsets[p];
                         int i = start;
 
-                        if (Vector256.IsHardwareAccelerated && (end - start) >= Vector256<T>.Count)
+                        if (Vector512.IsHardwareAccelerated && (end - start) >= Vector512<T>.Count)
+                        {
+                            int step = Vector512<T>.Count;
+                            var vThreshold = Vector512.Create(threshold);
+                            for (; i <= end - step; i += step)
+                            {
+                                var vData = Vector512.Load(localData + i);
+                                Vector512<T> vMask = op switch
+                                {
+                                    FilterOperation.Equal => Vector512.Equals(vData, vThreshold),
+                                    FilterOperation.NotEqual => ~Vector512.Equals(vData, vThreshold),
+                                    FilterOperation.GreaterThan => Vector512.GreaterThan(vData, vThreshold),
+                                    FilterOperation.GreaterThanOrEqual => Vector512.GreaterThanOrEqual(vData, vThreshold),
+                                    FilterOperation.LessThan => Vector512.LessThan(vData, vThreshold),
+                                    FilterOperation.LessThanOrEqual => Vector512.LessThanOrEqual(vData, vThreshold),
+                                    _ => throw new NotImplementedException()
+                                };
+                                ulong mask = vMask.ExtractMostSignificantBits();
+                                while (mask != 0)
+                                {
+                                    int bit = BitOperations.TrailingZeroCount(mask);
+                                    pIndices[destOffset++] = i + bit;
+                                    mask &= (mask - 1);
+                                }
+                            }
+                        }
+                        else if (Vector256.IsHardwareAccelerated && (end - start) >= Vector256<T>.Count)
                         {
                             int step = Vector256<T>.Count;
                             var vThreshold = Vector256.Create(threshold);
@@ -135,7 +181,7 @@ namespace Glacier.Polaris.Compute
                                     FilterOperation.LessThanOrEqual => Vector256.LessThanOrEqual(vData, vThreshold),
                                     _ => throw new NotImplementedException()
                                 };
-                                uint mask = vMask.ExtractMostSignificantBits();
+                                ulong mask = vMask.ExtractMostSignificantBits();
                                 while (mask != 0)
                                 {
                                     int bit = BitOperations.TrailingZeroCount(mask);
@@ -158,7 +204,33 @@ namespace Glacier.Polaris.Compute
             int count = 0;
             int idx = 0;
 
-            if (Vector256.IsHardwareAccelerated && data.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && data.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                var vThreshold = Vector512.Create(threshold);
+                for (; idx <= data.Length - step; idx += step)
+                {
+                    var vData = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(data.Slice(idx)));
+                    Vector512<T> vMask = op switch
+                    {
+                        FilterOperation.Equal => Vector512.Equals(vData, vThreshold),
+                        FilterOperation.NotEqual => ~Vector512.Equals(vData, vThreshold),
+                        FilterOperation.GreaterThan => Vector512.GreaterThan(vData, vThreshold),
+                        FilterOperation.GreaterThanOrEqual => Vector512.GreaterThanOrEqual(vData, vThreshold),
+                        FilterOperation.LessThan => Vector512.LessThan(vData, vThreshold),
+                        FilterOperation.LessThanOrEqual => Vector512.LessThanOrEqual(vData, vThreshold),
+                        _ => throw new NotImplementedException()
+                    };
+                    ulong mask = vMask.ExtractMostSignificantBits();
+                    while (mask != 0)
+                    {
+                        int bit = BitOperations.TrailingZeroCount(mask);
+                        indices[count++] = idx + bit;
+                        mask &= (mask - 1);
+                    }
+                }
+            }
+            else if (Vector256.IsHardwareAccelerated && data.Length >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 var vThreshold = Vector256.Create(threshold);
@@ -175,7 +247,7 @@ namespace Glacier.Polaris.Compute
                         FilterOperation.LessThanOrEqual => Vector256.LessThanOrEqual(vData, vThreshold),
                         _ => throw new NotImplementedException()
                     };
-                    uint mask = vMask.ExtractMostSignificantBits();
+                    ulong mask = vMask.ExtractMostSignificantBits();
                     while (mask != 0)
                     {
                         int bit = BitOperations.TrailingZeroCount(mask);

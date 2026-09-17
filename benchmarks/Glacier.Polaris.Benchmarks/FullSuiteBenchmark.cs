@@ -127,6 +127,24 @@ namespace Glacier.Polaris.Benchmarks
                 GC.KeepAlive(sorted);
             });
 
+            // ── Arithmetic (Vector512/256 SIMD) ──────────
+            var addResI32Small = new int[SmallN];
+            var addResI32Large = new int[LargeN];
+            var addResF64Small = new double[SmallN];
+            var addResF64Large = new double[LargeN];
+            Time("Arithmetic_Add_Int32(N=1M)", () => {
+                ArithmeticKernels.Add(s_i32Small.Memory.Span, s_keySmall.Memory.Span, addResI32Small);
+            });
+            Time("Arithmetic_Add_Int32(N=10M)", () => {
+                ArithmeticKernels.Add(s_i32Large.Memory.Span, s_keyLarge.Memory.Span, addResI32Large);
+            });
+            Time("Arithmetic_Add_Float64(N=1M)", () => {
+                ArithmeticKernels.Add(s_f64Small.Memory.Span, s_f64Small.Memory.Span, addResF64Small);
+            });
+            Time("Arithmetic_Add_Float64(N=10M)", () => {
+                ArithmeticKernels.Add(s_f64Large.Memory.Span, s_f64Large.Memory.Span, addResF64Large);
+            });
+
             // ── Filter (SIMD) ─────────────────────────────
             Time("Filter_Int32(N=1M)", () => {
                 var threshold = int.MaxValue / 2;

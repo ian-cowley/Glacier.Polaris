@@ -14,7 +14,17 @@ namespace Glacier.Polaris.Compute
         public static void Add<T>(ReadOnlySpan<T> left, ReadOnlySpan<T> right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    var vRight = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(right.Slice(i)));
+                    (vLeft + vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 for (; i <= left.Length - step; i += step)
@@ -30,7 +40,17 @@ namespace Glacier.Polaris.Compute
         public static void Subtract<T>(ReadOnlySpan<T> left, ReadOnlySpan<T> right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    var vRight = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(right.Slice(i)));
+                    (vLeft - vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 for (; i <= left.Length - step; i += step)
@@ -46,7 +66,17 @@ namespace Glacier.Polaris.Compute
         public static void Multiply<T>(ReadOnlySpan<T> left, ReadOnlySpan<T> right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    var vRight = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(right.Slice(i)));
+                    (vLeft * vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 for (; i <= left.Length - step; i += step)
@@ -62,7 +92,17 @@ namespace Glacier.Polaris.Compute
         public static void Divide<T>(ReadOnlySpan<T> left, ReadOnlySpan<T> right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    var vRight = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(right.Slice(i)));
+                    (vLeft / vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 for (; i <= left.Length - step; i += step)
@@ -79,7 +119,17 @@ namespace Glacier.Polaris.Compute
         public static void AddScalar<T>(ReadOnlySpan<T> left, T right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                var vRight = Vector512.Create(right);
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    (vLeft + vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 var vRight = Vector256.Create(right);
@@ -95,7 +145,17 @@ namespace Glacier.Polaris.Compute
         public static void SubtractScalar<T>(ReadOnlySpan<T> left, T right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                var vRight = Vector512.Create(right);
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    (vLeft - vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 var vRight = Vector256.Create(right);
@@ -111,7 +171,17 @@ namespace Glacier.Polaris.Compute
         public static void MultiplyScalar<T>(ReadOnlySpan<T> left, T right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                var vRight = Vector512.Create(right);
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    (vLeft * vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 var vRight = Vector256.Create(right);
@@ -127,7 +197,17 @@ namespace Glacier.Polaris.Compute
         public static void DivideScalar<T>(ReadOnlySpan<T> left, T right, Span<T> result) where T : unmanaged, INumber<T>
         {
             int i = 0;
-            if (Vector256.IsHardwareAccelerated && left.Length >= Vector256<T>.Count)
+            if (Vector512.IsHardwareAccelerated && left.Length >= Vector512<T>.Count)
+            {
+                int step = Vector512<T>.Count;
+                var vRight = Vector512.Create(right);
+                for (; i <= left.Length - step; i += step)
+                {
+                    var vLeft = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(left.Slice(i)));
+                    (vLeft / vRight).StoreUnsafe(ref MemoryMarshal.GetReference(result.Slice(i)));
+                }
+            }
+            if (Vector256.IsHardwareAccelerated && (left.Length - i) >= Vector256<T>.Count)
             {
                 int step = Vector256<T>.Count;
                 var vRight = Vector256.Create(right);
