@@ -35,15 +35,76 @@ public static unsafe class GpuPolarisAccelerator
     private static IntPtr s_fnSum;
     private static IntPtr s_fnFilterGt;
 
-    // Persistent reusable device memory pool
-    private static IntPtr s_dIn1;
-    private static IntPtr s_dIn2;
-    private static IntPtr s_dIn3;
-    private static IntPtr s_dOut;
-    private static nuint s_capIn1;
-    private static nuint s_capIn2;
-    private static nuint s_capIn3;
-    private static nuint s_capOut;
+    private sealed class PolarisGpuStreamContext : IDisposable
+    {
+        public IntPtr Stream;
+        public IntPtr DIn1;
+        public IntPtr DIn2;
+        public IntPtr DIn3;
+        public IntPtr DOut;
+        public nuint CapIn1;
+        public nuint CapIn2;
+        public nuint CapIn3;
+        public nuint CapOut;
+
+        public PolarisGpuStreamContext(IntPtr stream)
+        {
+            Stream = stream;
+        }
+
+        public void EnsureBuffers(nuint cap1, nuint cap2, nuint cap3, nuint capOut)
+        {
+            if (cap1 > CapIn1)
+            {
+                if (DIn1 != IntPtr.Zero) CuDriver.MemFree(DIn1);
+                CuDriver.MemAlloc(out DIn1, cap1);
+                CapIn1 = cap1;
+            }
+            if (cap2 > CapIn2)
+            {
+                if (DIn2 != IntPtr.Zero) CuDriver.MemFree(DIn2);
+                CuDriver.MemAlloc(out DIn2, cap2);
+                CapIn2 = cap2;
+            }
+            if (cap3 > CapIn3)
+            {
+                if (DIn3 != IntPtr.Zero) CuDriver.MemFree(DIn3);
+                CuDriver.MemAlloc(out DIn3, cap3);
+                CapIn3 = cap3;
+            }
+            if (capOut > CapOut)
+            {
+                if (DOut != IntPtr.Zero) CuDriver.MemFree(DOut);
+                CuDriver.MemAlloc(out DOut, capOut);
+                CapOut = capOut;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (DIn1 != IntPtr.Zero) { CuDriver.MemFree(DIn1); DIn1 = IntPtr.Zero; }
+            if (DIn2 != IntPtr.Zero) { CuDriver.MemFree(DIn2); DIn2 = IntPtr.Zero; }
+            if (DIn3 != IntPtr.Zero) { CuDriver.MemFree(DIn3); DIn3 = IntPtr.Zero; }
+            if (DOut != IntPtr.Zero) { CuDriver.MemFree(DOut); DOut = IntPtr.Zero; }
+            if (Stream != IntPtr.Zero) { CuDriver.StreamDestroy(Stream); Stream = IntPtr.Zero; }
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<PolarisGpuStreamContext> s_streamPool = new();
+
+    private static PolarisGpuStreamContext RentContext()
+    {
+        if (s_streamPool.TryDequeue(out var ctx))
+            return ctx;
+
+        CuDriver.StreamCreate(out IntPtr stream, 0);
+        return new PolarisGpuStreamContext(stream);
+    }
+
+    private static void ReturnContext(PolarisGpuStreamContext ctx)
+    {
+        s_streamPool.Enqueue(ctx);
+    }
 
     private static bool s_amdInitialized;
     private static bool s_amdAvailable;
@@ -497,19 +558,20 @@ public static unsafe class GpuPolarisAccelerator
         nuint bytes = (nuint)(n * sizeof(float));
         CuDriver.CtxSetCurrent(s_cuContext);
 
-        lock (s_initLock)
+        var ctx = RentContext();
+        try
         {
-            EnsurePoolBuffers(bytes, bytes, 0, bytes);
+            ctx.EnsureBuffers(bytes, bytes, 0, bytes);
 
             fixed (float* pA = a, pB = b, pD = dest)
             {
-                CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pA, bytes);
-                CuDriver.MemcpyHtoD(s_dIn2, (IntPtr)pB, bytes);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn1, (IntPtr)pA, bytes, ctx.Stream);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn2, (IntPtr)pB, bytes, ctx.Stream);
 
                 IntPtr[] kernelParams = new IntPtr[4];
-                GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
-                GCHandle h1 = GCHandle.Alloc(s_dIn2, GCHandleType.Pinned);
-                GCHandle h2 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
+                GCHandle h0 = GCHandle.Alloc(ctx.DIn1, GCHandleType.Pinned);
+                GCHandle h1 = GCHandle.Alloc(ctx.DIn2, GCHandleType.Pinned);
+                GCHandle h2 = GCHandle.Alloc(ctx.DOut, GCHandleType.Pinned);
                 GCHandle h3 = GCHandle.Alloc(n, GCHandleType.Pinned);
 
                 kernelParams[0] = h0.AddrOfPinnedObject();
@@ -528,14 +590,14 @@ public static unsafe class GpuPolarisAccelerator
                         fn,
                         gridSize, 1, 1,
                         blockSize, 1, 1,
-                        0, IntPtr.Zero,
+                        0, ctx.Stream,
                         hArray.AddrOfPinnedObject(),
                         IntPtr.Zero);
 
                     if (launchRes != 0) return false;
 
-                    CuDriver.CtxSynchronize();
-                    CuDriver.MemcpyDtoH((IntPtr)pD, s_dOut, bytes);
+                    CuDriver.MemcpyDtoHAsync((IntPtr)pD, ctx.DOut, bytes, ctx.Stream);
+                    CuDriver.StreamSynchronize(ctx.Stream);
                     return true;
                 }
                 finally
@@ -548,6 +610,10 @@ public static unsafe class GpuPolarisAccelerator
                 }
             }
         }
+        finally
+        {
+            ReturnContext(ctx);
+        }
     }
 
     private static bool ExecuteTernaryKernel(ReadOnlySpan<float> a, ReadOnlySpan<float> b, ReadOnlySpan<float> c, Span<float> dest, IntPtr fn, int n)
@@ -555,21 +621,22 @@ public static unsafe class GpuPolarisAccelerator
         nuint bytes = (nuint)(n * sizeof(float));
         CuDriver.CtxSetCurrent(s_cuContext);
 
-        lock (s_initLock)
+        var ctx = RentContext();
+        try
         {
-            EnsurePoolBuffers(bytes, bytes, bytes, bytes);
+            ctx.EnsureBuffers(bytes, bytes, bytes, bytes);
 
             fixed (float* pA = a, pB = b, pC = c, pD = dest)
             {
-                CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pA, bytes);
-                CuDriver.MemcpyHtoD(s_dIn2, (IntPtr)pB, bytes);
-                CuDriver.MemcpyHtoD(s_dIn3, (IntPtr)pC, bytes);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn1, (IntPtr)pA, bytes, ctx.Stream);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn2, (IntPtr)pB, bytes, ctx.Stream);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn3, (IntPtr)pC, bytes, ctx.Stream);
 
                 IntPtr[] kernelParams = new IntPtr[5];
-                GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
-                GCHandle h1 = GCHandle.Alloc(s_dIn2, GCHandleType.Pinned);
-                GCHandle h2 = GCHandle.Alloc(s_dIn3, GCHandleType.Pinned);
-                GCHandle h3 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
+                GCHandle h0 = GCHandle.Alloc(ctx.DIn1, GCHandleType.Pinned);
+                GCHandle h1 = GCHandle.Alloc(ctx.DIn2, GCHandleType.Pinned);
+                GCHandle h2 = GCHandle.Alloc(ctx.DIn3, GCHandleType.Pinned);
+                GCHandle h3 = GCHandle.Alloc(ctx.DOut, GCHandleType.Pinned);
                 GCHandle h4 = GCHandle.Alloc(n, GCHandleType.Pinned);
 
                 kernelParams[0] = h0.AddrOfPinnedObject();
@@ -589,14 +656,14 @@ public static unsafe class GpuPolarisAccelerator
                         fn,
                         gridSize, 1, 1,
                         blockSize, 1, 1,
-                        0, IntPtr.Zero,
+                        0, ctx.Stream,
                         hArray.AddrOfPinnedObject(),
                         IntPtr.Zero);
 
                     if (launchRes != 0) return false;
 
-                    CuDriver.CtxSynchronize();
-                    CuDriver.MemcpyDtoH((IntPtr)pD, s_dOut, bytes);
+                    CuDriver.MemcpyDtoHAsync((IntPtr)pD, ctx.DOut, bytes, ctx.Stream);
+                    CuDriver.StreamSynchronize(ctx.Stream);
                     return true;
                 }
                 finally
@@ -610,6 +677,10 @@ public static unsafe class GpuPolarisAccelerator
                 }
             }
         }
+        finally
+        {
+            ReturnContext(ctx);
+        }
     }
 
     private static bool ExecuteUnaryKernel(ReadOnlySpan<float> input, Span<float> dest, IntPtr fn, int n)
@@ -617,17 +688,18 @@ public static unsafe class GpuPolarisAccelerator
         nuint bytes = (nuint)(n * sizeof(float));
         CuDriver.CtxSetCurrent(s_cuContext);
 
-        lock (s_initLock)
+        var ctx = RentContext();
+        try
         {
-            EnsurePoolBuffers(bytes, 0, 0, bytes);
+            ctx.EnsureBuffers(bytes, 0, 0, bytes);
 
             fixed (float* pIn = input, pD = dest)
             {
-                CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pIn, bytes);
+                CuDriver.MemcpyHtoDAsync(ctx.DIn1, (IntPtr)pIn, bytes, ctx.Stream);
 
                 IntPtr[] kernelParams = new IntPtr[3];
-                GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
-                GCHandle h1 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
+                GCHandle h0 = GCHandle.Alloc(ctx.DIn1, GCHandleType.Pinned);
+                GCHandle h1 = GCHandle.Alloc(ctx.DOut, GCHandleType.Pinned);
                 GCHandle h2 = GCHandle.Alloc(n, GCHandleType.Pinned);
 
                 kernelParams[0] = h0.AddrOfPinnedObject();
@@ -644,14 +716,14 @@ public static unsafe class GpuPolarisAccelerator
                         fn,
                         gridSize, 1, 1,
                         blockSize, 1, 1,
-                        0, IntPtr.Zero,
+                        0, ctx.Stream,
                         hArray.AddrOfPinnedObject(),
                         IntPtr.Zero);
 
                     if (launchRes != 0) return false;
 
-                    CuDriver.CtxSynchronize();
-                    CuDriver.MemcpyDtoH((IntPtr)pD, s_dOut, bytes);
+                    CuDriver.MemcpyDtoHAsync((IntPtr)pD, ctx.DOut, bytes, ctx.Stream);
+                    CuDriver.StreamSynchronize(ctx.Stream);
                     return true;
                 }
                 finally
@@ -662,6 +734,10 @@ public static unsafe class GpuPolarisAccelerator
                     h2.Free();
                 }
             }
+        }
+        finally
+        {
+            ReturnContext(ctx);
         }
     }
 
@@ -679,17 +755,18 @@ public static unsafe class GpuPolarisAccelerator
             nuint bytesOut = (nuint)(gridSize * sizeof(float));
 
             CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
+            var ctx = RentContext();
+            try
             {
-                EnsurePoolBuffers(bytesIn, 0, 0, bytesOut);
+                ctx.EnsureBuffers(bytesIn, 0, 0, bytesOut);
 
                 fixed (float* pIn = input, pSums = blockSums)
                 {
-                    CuDriver.MemcpyHtoD(s_dIn1, (IntPtr)pIn, bytesIn);
+                    CuDriver.MemcpyHtoDAsync(ctx.DIn1, (IntPtr)pIn, bytesIn, ctx.Stream);
 
                     IntPtr[] kernelParams = new IntPtr[3];
-                    GCHandle h0 = GCHandle.Alloc(s_dIn1, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dOut, GCHandleType.Pinned);
+                    GCHandle h0 = GCHandle.Alloc(ctx.DIn1, GCHandleType.Pinned);
+                    GCHandle h1 = GCHandle.Alloc(ctx.DOut, GCHandleType.Pinned);
                     GCHandle h2 = GCHandle.Alloc(n, GCHandleType.Pinned);
 
                     kernelParams[0] = h0.AddrOfPinnedObject();
@@ -704,14 +781,14 @@ public static unsafe class GpuPolarisAccelerator
                             s_fnSum,
                             gridSize, 1, 1,
                             blockSize, 1, 1,
-                            sharedMemBytes, IntPtr.Zero,
+                            sharedMemBytes, ctx.Stream,
                             hArray.AddrOfPinnedObject(),
                             IntPtr.Zero);
 
                         if (launchRes == 0)
                         {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pSums, s_dOut, bytesOut);
+                            CuDriver.MemcpyDtoHAsync((IntPtr)pSums, ctx.DOut, bytesOut, ctx.Stream);
+                            CuDriver.StreamSynchronize(ctx.Stream);
 
                             for (int i = 0; i < blockSums.Length; i++) total += blockSums[i];
                             return true;
@@ -726,6 +803,10 @@ public static unsafe class GpuPolarisAccelerator
                     }
                 }
             }
+            finally
+            {
+                ReturnContext(ctx);
+            }
         }
         catch
         {
@@ -733,34 +814,6 @@ public static unsafe class GpuPolarisAccelerator
         }
 
         return false;
-    }
-
-    private static void EnsurePoolBuffers(nuint cap1, nuint cap2, nuint cap3, nuint capOut)
-    {
-        if (cap1 > s_capIn1)
-        {
-            if (s_dIn1 != IntPtr.Zero) CuDriver.MemFree(s_dIn1);
-            CuDriver.MemAlloc(out s_dIn1, cap1);
-            s_capIn1 = cap1;
-        }
-        if (cap2 > s_capIn2)
-        {
-            if (s_dIn2 != IntPtr.Zero) CuDriver.MemFree(s_dIn2);
-            CuDriver.MemAlloc(out s_dIn2, cap2);
-            s_capIn2 = cap2;
-        }
-        if (cap3 > s_capIn3)
-        {
-            if (s_dIn3 != IntPtr.Zero) CuDriver.MemFree(s_dIn3);
-            CuDriver.MemAlloc(out s_dIn3, cap3);
-            s_capIn3 = cap3;
-        }
-        if (capOut > s_capOut)
-        {
-            if (s_dOut != IntPtr.Zero) CuDriver.MemFree(s_dOut);
-            CuDriver.MemAlloc(out s_dOut, capOut);
-            s_capOut = capOut;
-        }
     }
 
     #endregion

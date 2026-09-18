@@ -89,8 +89,38 @@ namespace Glacier.Polaris.Compute
             }
             return new NullSeries(series.Name + "_max", 1);
         }
+        private static readonly Vector256<int>[] s_int32MaskLut = PrecomputeInt32MaskLut();
+        private static readonly Vector256<long>[] s_float64MaskLut = PrecomputeFloat64MaskLut();
+
+        private static Vector256<int>[] PrecomputeInt32MaskLut()
+        {
+            var lut = new Vector256<int>[256];
+            Span<int> lanes = stackalloc int[8];
+            for (int b = 0; b < 256; b++)
+            {
+                for (int k = 0; k < 8; k++)
+                    lanes[k] = ((b & (1 << k)) != 0) ? -1 : 0;
+                lut[b] = Vector256.Create(lanes);
+            }
+            return lut;
+        }
+
+        private static Vector256<long>[] PrecomputeFloat64MaskLut()
+        {
+            var lut = new Vector256<long>[16];
+            Span<long> lanes = stackalloc long[4];
+            for (int b = 0; b < 16; b++)
+            {
+                for (int k = 0; k < 4; k++)
+                    lanes[k] = ((b & (1 << k)) != 0) ? -1L : 0L;
+                lut[b] = Vector256.Create(lanes);
+            }
+            return lut;
+        }
+
         /// <summary>
-        /// SIMD-accelerated Sum. Uses Vector256 to process 8 Int32s or 4 Float64s per instruction.
+        /// SIMD-accelerated Sum with 64-element block bitwise validity mask filtering.
+        /// Uses Vector256 to process 8 Int32s or 4 Float64s per instruction, zeroing null lanes.
         /// Falls back to scalar for non-numeric types.
         /// </summary>
         public static ISeries Sum(ISeries series)
@@ -98,31 +128,106 @@ namespace Glacier.Polaris.Compute
             if (series is Int32Series i32)
             {
                 var span = i32.Memory.Span;
+                var mask = i32.ValidityMask;
                 long sum = 0;
                 int i = 0;
 
                 if (Vector256.IsHardwareAccelerated && span.Length >= Vector256<int>.Count)
                 {
-                    int step = Vector256<int>.Count; // 8
-                    var vSum = Vector256<long>.Zero;
-                    for (; i <= span.Length - step; i += step)
+                    if (!mask.HasNulls)
                     {
-                        var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
-                        var (widenLo, widenHi) = Vector256.Widen(vData);
-                        vSum = Vector256.Add(vSum, widenLo);
-                        vSum = Vector256.Add(vSum, widenHi);
+                        // Unmasked fast path: hardware memory bandwidth saturation
+                        int step = Vector256<int>.Count; // 8
+                        var vSum = Vector256<long>.Zero;
+                        for (; i <= span.Length - step; i += step)
+                        {
+                            var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
+                            var (wLo, wHi) = Vector256.Widen(vData);
+                            vSum = Vector256.Add(vSum, wLo);
+                            vSum = Vector256.Add(vSum, wHi);
+                        }
+                        long simdSum = 0;
+                        for (int j = 0; j < Vector256<long>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
                     }
-                    // Horizontal add: extract and sum all 4 longs
-                    long simdSum = 0;
-                    for (int j = 0; j < Vector256<long>.Count; j++)
-                        simdSum += vSum[j];
-                    sum = simdSum;
+                    else
+                    {
+                        // Masked SIMD path: 64-element word chunks
+                        int fullWords = span.Length / 64;
+                        var vSum = Vector256<long>.Zero;
+
+                        for (int w = 0; w < fullWords; w++)
+                        {
+                            ulong word = mask.GetWord(w);
+                            int baseIdx = w * 64;
+
+                            if (word == ulong.MaxValue)
+                            {
+                                // All 64 elements valid
+                                for (int v = 0; v < 8; v++)
+                                {
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 8)));
+                                    var (wLo, wHi) = Vector256.Widen(vData);
+                                    vSum = Vector256.Add(vSum, wLo);
+                                    vSum = Vector256.Add(vSum, wHi);
+                                }
+                            }
+                            else if (word == 0UL)
+                            {
+                                // All 64 elements null: skip
+                                continue;
+                            }
+                            else
+                            {
+                                for (int v = 0; v < 8; v++)
+                                {
+                                    byte b = (byte)((word >> (v * 8)) & 0xFF);
+                                    if (b == 0x00) continue;
+
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 8)));
+                                    if (b != 0xFF)
+                                        vData = Vector256.BitwiseAnd(vData, s_int32MaskLut[b]);
+
+                                    var (wLo, wHi) = Vector256.Widen(vData);
+                                    vSum = Vector256.Add(vSum, wLo);
+                                    vSum = Vector256.Add(vSum, wHi);
+                                }
+                            }
+                        }
+
+                        // Handle remaining vectors in partial 64-element block
+                        i = fullWords * 64;
+                        int rem = span.Length - i;
+                        int remVectors = rem / 8;
+                        if (remVectors > 0)
+                        {
+                            ulong remWord = mask.GetWord(fullWords);
+                            for (int v = 0; v < remVectors; v++)
+                            {
+                                byte b = (byte)((remWord >> (v * 8)) & 0xFF);
+                                if (b == 0x00) continue;
+
+                                var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i + v * 8)));
+                                if (b != 0xFF)
+                                    vData = Vector256.BitwiseAnd(vData, s_int32MaskLut[b]);
+
+                                var (wLo, wHi) = Vector256.Widen(vData);
+                                vSum = Vector256.Add(vSum, wLo);
+                                vSum = Vector256.Add(vSum, wHi);
+                            }
+                            i += remVectors * 8;
+                        }
+
+                        long simdSum = 0;
+                        for (int j = 0; j < Vector256<long>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
+                    }
                 }
 
-                // Scalar tail with null check
+                // Scalar tail with strict null verification
                 for (; i < span.Length; i++)
                 {
-                    if (series.ValidityMask.IsValid(i)) sum += span[i];
+                    if (mask.IsValid(i)) sum += span[i];
                 }
 
                 var result = new Int32Series(series.Name + "_sum", 1);
@@ -132,27 +237,92 @@ namespace Glacier.Polaris.Compute
             if (series is Float64Series f64)
             {
                 var span = f64.Memory.Span;
+                var mask = f64.ValidityMask;
                 double sum = 0;
                 int i = 0;
 
                 if (Vector256.IsHardwareAccelerated && span.Length >= Vector256<double>.Count)
                 {
-                    int step = Vector256<double>.Count; // 4
-                    var vSum = Vector256<double>.Zero;
-                    for (; i <= span.Length - step; i += step)
+                    if (!mask.HasNulls)
                     {
-                        var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
-                        vSum = Vector256.Add(vSum, vData);
+                        int step = Vector256<double>.Count; // 4
+                        var vSum = Vector256<double>.Zero;
+                        for (; i <= span.Length - step; i += step)
+                        {
+                            var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
+                            vSum = Vector256.Add(vSum, vData);
+                        }
+                        double simdSum = 0;
+                        for (int j = 0; j < Vector256<double>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
                     }
-                    double simdSum = 0;
-                    for (int j = 0; j < Vector256<double>.Count; j++)
-                        simdSum += vSum[j];
-                    sum = simdSum;
+                    else
+                    {
+                        int fullWords = span.Length / 64;
+                        var vSum = Vector256<double>.Zero;
+
+                        for (int w = 0; w < fullWords; w++)
+                        {
+                            ulong word = mask.GetWord(w);
+                            int baseIdx = w * 64;
+
+                            if (word == ulong.MaxValue)
+                            {
+                                for (int v = 0; v < 16; v++)
+                                {
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 4)));
+                                    vSum = Vector256.Add(vSum, vData);
+                                }
+                            }
+                            else if (word == 0UL)
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                for (int v = 0; v < 16; v++)
+                                {
+                                    int nibble = (int)((word >> (v * 4)) & 0x0F);
+                                    if (nibble == 0x00) continue;
+
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 4)));
+                                    if (nibble != 0x0F)
+                                        vData = Vector256.BitwiseAnd(vData.AsInt64(), s_float64MaskLut[nibble]).AsDouble();
+
+                                    vSum = Vector256.Add(vSum, vData);
+                                }
+                            }
+                        }
+
+                        i = fullWords * 64;
+                        int rem = span.Length - i;
+                        int remVectors = rem / 4;
+                        if (remVectors > 0)
+                        {
+                            ulong remWord = mask.GetWord(fullWords);
+                            for (int v = 0; v < remVectors; v++)
+                            {
+                                int nibble = (int)((remWord >> (v * 4)) & 0x0F);
+                                if (nibble == 0x00) continue;
+
+                                var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i + v * 4)));
+                                if (nibble != 0x0F)
+                                    vData = Vector256.BitwiseAnd(vData.AsInt64(), s_float64MaskLut[nibble]).AsDouble();
+
+                                vSum = Vector256.Add(vSum, vData);
+                            }
+                            i += remVectors * 4;
+                        }
+
+                        double simdSum = 0;
+                        for (int j = 0; j < Vector256<double>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
+                    }
                 }
 
                 for (; i < span.Length; i++)
                 {
-                    if (series.ValidityMask.IsValid(i)) sum += span[i];
+                    if (mask.IsValid(i)) sum += span[i];
                 }
 
                 var result = new Float64Series(series.Name + "_sum", 1);
@@ -162,8 +332,8 @@ namespace Glacier.Polaris.Compute
             return new NullSeries(series.Name + "_sum", 1);
         }
         /// <summary>
-        /// SIMD-accelerated Mean. For Float64, uses Vector256 to sum 4 values per instruction,
-        /// with a scalar count. For Int32, widens to long and sums via SIMD.
+        /// SIMD-accelerated Mean with accurate non-null count tracking via BitOperations.PopCount.
+        /// Zeroes null lanes in SIMD vector blocks and computes exact mathematical average.
         /// </summary>
         public static ISeries Mean(ISeries series)
         {
@@ -172,29 +342,104 @@ namespace Glacier.Polaris.Compute
                 long sum = 0;
                 int count = 0;
                 var span = i32.Memory.Span;
+                var mask = i32.ValidityMask;
                 int i = 0;
 
                 if (Vector256.IsHardwareAccelerated && span.Length >= Vector256<int>.Count)
                 {
-                    int step = Vector256<int>.Count; // 8
-                    var vSum = Vector256<long>.Zero;
-                    for (; i <= span.Length - step; i += step)
+                    if (!mask.HasNulls)
                     {
-                        var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
-                        var (widenLo, widenHi) = Vector256.Widen(vData);
-                        vSum = Vector256.Add(vSum, widenLo);
-                        vSum = Vector256.Add(vSum, widenHi);
+                        int step = Vector256<int>.Count; // 8
+                        var vSum = Vector256<long>.Zero;
+                        for (; i <= span.Length - step; i += step)
+                        {
+                            var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
+                            var (widenLo, widenHi) = Vector256.Widen(vData);
+                            vSum = Vector256.Add(vSum, widenLo);
+                            vSum = Vector256.Add(vSum, widenHi);
+                        }
+                        long simdSum = 0;
+                        for (int j = 0; j < Vector256<long>.Count; j++)
+                            simdSum += vSum[j];
+                        sum = simdSum;
+                        count = i;
                     }
-                    long simdSum = 0;
-                    for (int j = 0; j < Vector256<long>.Count; j++)
-                        simdSum += vSum[j];
-                    sum = simdSum;
-                    count = (i / step) * step;
+                    else
+                    {
+                        int fullWords = span.Length / 64;
+                        var vSum = Vector256<long>.Zero;
+
+                        for (int w = 0; w < fullWords; w++)
+                        {
+                            ulong word = mask.GetWord(w);
+                            int baseIdx = w * 64;
+
+                            if (word == ulong.MaxValue)
+                            {
+                                for (int v = 0; v < 8; v++)
+                                {
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 8)));
+                                    var (wLo, wHi) = Vector256.Widen(vData);
+                                    vSum = Vector256.Add(vSum, wLo);
+                                    vSum = Vector256.Add(vSum, wHi);
+                                }
+                                count += 64;
+                            }
+                            else if (word == 0UL)
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                for (int v = 0; v < 8; v++)
+                                {
+                                    byte b = (byte)((word >> (v * 8)) & 0xFF);
+                                    if (b == 0x00) continue;
+
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 8)));
+                                    if (b != 0xFF)
+                                        vData = Vector256.BitwiseAnd(vData, s_int32MaskLut[b]);
+
+                                    var (wLo, wHi) = Vector256.Widen(vData);
+                                    vSum = Vector256.Add(vSum, wLo);
+                                    vSum = Vector256.Add(vSum, wHi);
+                                    count += System.Numerics.BitOperations.PopCount(b);
+                                }
+                            }
+                        }
+
+                        i = fullWords * 64;
+                        int rem = span.Length - i;
+                        int remVectors = rem / 8;
+                        if (remVectors > 0)
+                        {
+                            ulong remWord = mask.GetWord(fullWords);
+                            for (int v = 0; v < remVectors; v++)
+                            {
+                                byte b = (byte)((remWord >> (v * 8)) & 0xFF);
+                                if (b == 0x00) continue;
+
+                                var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i + v * 8)));
+                                if (b != 0xFF)
+                                    vData = Vector256.BitwiseAnd(vData, s_int32MaskLut[b]);
+
+                                var (wLo, wHi) = Vector256.Widen(vData);
+                                vSum = Vector256.Add(vSum, wLo);
+                                vSum = Vector256.Add(vSum, wHi);
+                                count += System.Numerics.BitOperations.PopCount(b);
+                            }
+                            i += remVectors * 8;
+                        }
+
+                        long simdSum = 0;
+                        for (int j = 0; j < Vector256<long>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
+                    }
                 }
 
                 for (; i < span.Length; i++)
                 {
-                    if (series.ValidityMask.IsValid(i)) { sum += span[i]; count++; }
+                    if (mask.IsValid(i)) { sum += span[i]; count++; }
                 }
 
                 var result = new Float64Series(series.Name + "_mean", 1);
@@ -207,27 +452,96 @@ namespace Glacier.Polaris.Compute
                 double sum = 0;
                 int count = 0;
                 var span = f64.Memory.Span;
+                var mask = f64.ValidityMask;
                 int i = 0;
 
                 if (Vector256.IsHardwareAccelerated && span.Length >= Vector256<double>.Count)
                 {
-                    int step = Vector256<double>.Count; // 4
-                    var vSum = Vector256<double>.Zero;
-                    for (; i <= span.Length - step; i += step)
+                    if (!mask.HasNulls)
                     {
-                        var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
-                        vSum = Vector256.Add(vSum, vData);
+                        int step = Vector256<double>.Count; // 4
+                        var vSum = Vector256<double>.Zero;
+                        for (; i <= span.Length - step; i += step)
+                        {
+                            var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i)));
+                            vSum = Vector256.Add(vSum, vData);
+                        }
+                        double simdSum = 0;
+                        for (int j = 0; j < Vector256<double>.Count; j++)
+                            simdSum += vSum[j];
+                        sum = simdSum;
+                        count = i;
                     }
-                    double simdSum = 0;
-                    for (int j = 0; j < Vector256<double>.Count; j++)
-                        simdSum += vSum[j];
-                    sum = simdSum;
-                    count = i; // No nulls in SIMD path (typical case)
+                    else
+                    {
+                        int fullWords = span.Length / 64;
+                        var vSum = Vector256<double>.Zero;
+
+                        for (int w = 0; w < fullWords; w++)
+                        {
+                            ulong word = mask.GetWord(w);
+                            int baseIdx = w * 64;
+
+                            if (word == ulong.MaxValue)
+                            {
+                                for (int v = 0; v < 16; v++)
+                                {
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 4)));
+                                    vSum = Vector256.Add(vSum, vData);
+                                }
+                                count += 64;
+                            }
+                            else if (word == 0UL)
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                for (int v = 0; v < 16; v++)
+                                {
+                                    int nibble = (int)((word >> (v * 4)) & 0x0F);
+                                    if (nibble == 0x00) continue;
+
+                                    var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(baseIdx + v * 4)));
+                                    if (nibble != 0x0F)
+                                        vData = Vector256.BitwiseAnd(vData.AsInt64(), s_float64MaskLut[nibble]).AsDouble();
+
+                                    vSum = Vector256.Add(vSum, vData);
+                                    count += System.Numerics.BitOperations.PopCount((uint)nibble);
+                                }
+                            }
+                        }
+
+                        i = fullWords * 64;
+                        int rem = span.Length - i;
+                        int remVectors = rem / 4;
+                        if (remVectors > 0)
+                        {
+                            ulong remWord = mask.GetWord(fullWords);
+                            for (int v = 0; v < remVectors; v++)
+                            {
+                                int nibble = (int)((remWord >> (v * 4)) & 0x0F);
+                                if (nibble == 0x00) continue;
+
+                                var vData = Vector256.LoadUnsafe(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(span.Slice(i + v * 4)));
+                                if (nibble != 0x0F)
+                                    vData = Vector256.BitwiseAnd(vData.AsInt64(), s_float64MaskLut[nibble]).AsDouble();
+
+                                vSum = Vector256.Add(vSum, vData);
+                                count += System.Numerics.BitOperations.PopCount((uint)nibble);
+                            }
+                            i += remVectors * 4;
+                        }
+
+                        double simdSum = 0;
+                        for (int j = 0; j < Vector256<double>.Count; j++) simdSum += vSum[j];
+                        sum = simdSum;
+                    }
                 }
 
                 for (; i < span.Length; i++)
                 {
-                    if (series.ValidityMask.IsValid(i)) { sum += span[i]; count++; }
+                    if (mask.IsValid(i)) { sum += span[i]; count++; }
                 }
 
                 var result = new Float64Series(series.Name + "_mean", 1);

@@ -15,6 +15,15 @@ namespace Glacier.Polaris.Memory
         public int Length { get; }
         private int UlongCount => (Length + 63) / 64;
 
+        /// <summary>Returns the raw mask words span for zero-copy SIMD processing.</summary>
+        public ReadOnlySpan<ulong> AsSpan() => _mask;
+
+        /// <summary>Returns the 64-bit mask word at the given word index.</summary>
+        public ulong GetWord(int index) => _mask[index];
+
+        /// <summary>Total number of 64-bit mask words.</summary>
+        public int WordCount => UlongCount;
+
         public ValidityMask(int length)
         {
             Length = length;
