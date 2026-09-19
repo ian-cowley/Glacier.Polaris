@@ -280,6 +280,12 @@ var pivoted = salesDf.Pivot(index: "Region", pivot: "Product", values: "Sales", 
 var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B" }, variableName: "Product", valueName: "Sales");
 ```
 
+## 🆕 What's New in v1.0.17
+
+- **Bitwise LUT-based `Vector256<int>` validity mask filtering** — zero-branching null handling on all SIMD filter paths.
+- **`PolarisGpuStreamContext` pool** — eliminates the global `s_initLock` contention present in previous versions, enabling concurrent GPU stream initialization.
+- **16 new stress tests** — total test count grows from 426 → **442** (306 unit + 136 parity).
+
 ## Publishing (Maintainers)
 
 To release a new version to NuGet and GitHub:

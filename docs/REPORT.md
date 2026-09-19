@@ -1,8 +1,8 @@
 # Glacier.Polaris — Comprehensive Report
 
-> **Updated:** 2026-09-17 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
+> **Updated:** 2026-09-19 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
 > **Hardware:** AMD Ryzen AI 9 HX 370 (Zen 5 AVX-512), Windows 11 x64
-> **Tests:** 426 / 426 passing (100 %) — 136 golden-file parity tests, 290 unit tests
+> **Tests:** 442 / 442 passing (100 %) — 136 golden-file parity tests, 306 unit tests
 > Run `dotnet test -c Release` to reproduce. Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate benchmarks.
 
 ---
@@ -13,9 +13,9 @@ Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on
 
 | Metric | Value |
 |--------|-------|
-| **Total tests** | **426 / 426** ✅ |
+| **Total tests** | **442 / 442** ✅ |
 | **Parity tests** | **136 / 136** ✅ (Tiers 1–14, all verified vs Python Polars v1.40.1) |
-| **Unit tests** | **290 / 290** ✅ |
+| **Unit tests** | **306 / 306** ✅ |
 | **API coverage** | ~98 %+ of Python Polars core surface |
 | **Missing / partial** | None — all known gaps closed |
 | **Performance summary** | Wins on creation, aggregations (Sum/Std), GroupBy, rolling/window, filter (N=10M), Inner SmallRight joins, FillNull, pivot, ToUpper, Contains, and Simple Regex matches. Float64 parallel tournament radix sort provides 6.7x speedup over standard sorting. |
@@ -317,8 +317,8 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Tier 13 | ArraySeries, Implode, ExpandingMean, Parquet, Floor/Ceil/Round, CumCount, CumProd, DtTruncate | 9 |
 | Tier 14 | Decimal/Enum/Object/Null/Time, SQL scan, Distinct, DropNulls, EWMStd, ArgMinMax, Diff, Clip, Rank, GatherEvery, ShiftExpr, ToDictionary, TopBottomK, EstimatedSize, CsvRoundtrip, etc. | 22 |
 | **Total parity** | | **136** |
-| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, etc. | 290 |
-| **Grand total** | | **426** |
+| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, etc. | 306 |
+| **Grand total** | | **442** |
 
 ---
 
