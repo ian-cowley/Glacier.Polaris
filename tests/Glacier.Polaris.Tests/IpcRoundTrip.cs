@@ -98,5 +98,31 @@ namespace Glacier.Polaris.Tests
             clonedCol!.Memory.Span[0] = 99;
             Assert.Equal(1, df.GetColumn("a")!.Get(0));
         }
+
+        [Fact]
+        public void WriteAndReadGlacierStorageArrowIpc()
+        {
+            var df = new DataFrame(new ISeries[]
+            {
+                Data.Int32Series.FromValues("x", new int?[] { 10, 20, 30, 40 }),
+                Data.Float32Series.FromValues("y", new float?[] { 1.1f, 2.2f, 3.3f, 4.4f })
+            });
+
+            using var ms = new MemoryStream();
+            Glacier.Polaris.IO.GlacierStorageBridge.WriteGlacierArrowIpc(df, ms, leaveOpen: true);
+            Assert.True(ms.Length > 0);
+
+            ms.Position = 0;
+            using var reader = new Glacier.Storage.Arrow.ArrowStreamReader(ms);
+            var batch = reader.ReadNextRecordBatch();
+            Assert.NotNull(batch);
+            Assert.Equal(4, batch.RowCount);
+            Assert.Equal(2, batch.Columns.Count);
+            Assert.Equal("x", batch.Columns[0].Field.Name);
+            Assert.Equal("y", batch.Columns[1].Field.Name);
+            Assert.Equal(10, batch.Columns[0].GetInt32(0));
+            Assert.Equal(20, batch.Columns[0].GetInt32(1));
+        }
     }
 }
+
