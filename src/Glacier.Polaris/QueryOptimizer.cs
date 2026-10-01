@@ -1300,6 +1300,144 @@ namespace Glacier.Polaris
                     disposables.Add(result);
                     return result;
                 }
+                else if (mce.Method.Name == "AllOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.AggregationKernels.All(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "AnyOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.AggregationKernels.Any(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsInOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var values = (object[])((ConstantExpression)mce.Arguments[1]).Value!;
+                    var result = Compute.PredicateKernels.IsIn(series, values);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsInExprOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var targetSeries = EvaluateExpression(mce.Arguments[1], df, disposables);
+                    var result = Compute.PredicateKernels.IsIn(series, targetSeries);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsBetweenOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var lower = ((ConstantExpression)mce.Arguments[1]).Value!;
+                    var upper = ((ConstantExpression)mce.Arguments[2]).Value!;
+                    string closed = (string)((ConstantExpression)mce.Arguments[3]).Value!;
+                    var result = Compute.PredicateKernels.IsBetween(series, lower, upper, closed);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsBetweenExprOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var lowerSeries = EvaluateExpression(mce.Arguments[1], df, disposables);
+                    var upperSeries = EvaluateExpression(mce.Arguments[2], df, disposables);
+                    string closed = (string)((ConstantExpression)mce.Arguments[3]).Value!;
+                    var result = Compute.PredicateKernels.IsBetween(series, lowerSeries, upperSeries, closed);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsNanOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.PredicateKernels.IsNan(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsNotNanOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.PredicateKernels.IsNotNan(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsFiniteOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.PredicateKernels.IsFinite(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "IsInfiniteOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.PredicateKernels.IsInfinite(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "SignOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.MathKernels.Sign(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "PowOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    double exponent = Convert.ToDouble(((ConstantExpression)mce.Arguments[1]).Value!);
+                    var result = Compute.MathKernels.Pow(series, exponent);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "PowExprOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var expSeries = EvaluateExpression(mce.Arguments[1], df, disposables);
+                    var result = Compute.MathKernels.Pow(series, expSeries);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "Log1pOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.MathKernels.Log1p(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "CbrtOp")
+                {
+                    var series = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var result = Compute.MathKernels.Cbrt(series);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "DotOp")
+                {
+                    var left = EvaluateExpression(mce.Arguments[0], df, disposables);
+                    var right = EvaluateExpression(mce.Arguments[1], df, disposables);
+                    var result = Compute.MathKernels.Dot(left, right);
+                    disposables.Add(result);
+                    return result;
+                }
+                else if (mce.Method.Name == "CoalesceOp")
+                {
+                    var newArray = (NewArrayExpression)mce.Arguments[0];
+                    var evaluatedSeries = new List<ISeries>(newArray.Expressions.Count);
+                    foreach (var expr in newArray.Expressions)
+                    {
+                        var cExpr = (ConstantExpression)expr;
+                        var polarisExpr = (Expr)cExpr.Value!;
+                        var s = EvaluateExpression(polarisExpr.Expression, df, disposables);
+                        evaluatedSeries.Add(s);
+                    }
+                    var result = Compute.MathKernels.Coalesce(evaluatedSeries.ToArray());
+                    disposables.Add(result);
+                    return result;
+                }
                 else if (mce.Method.Name == "CastOp")
                 {
                     var series = EvaluateExpression(mce.Arguments[0], df, disposables);

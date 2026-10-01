@@ -92,6 +92,170 @@ namespace Glacier.Polaris.Compute
             }
             return new NullSeries(series.Name + "_max", 1);
         }
+
+        public static BooleanSeries All(ISeries series)
+        {
+            var result = new BooleanSeries(series.Name + "_all", 1);
+            if (series.Length == 0)
+            {
+                result.Memory.Span[0] = true;
+                return result;
+            }
+
+            if (series is BooleanSeries bs)
+            {
+                var span = bs.Memory.Span;
+                var mask = bs.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && !span[i])
+                    {
+                        result.Memory.Span[0] = false;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = true;
+                return result;
+            }
+
+            if (series is Int32Series i32)
+            {
+                var span = i32.Memory.Span;
+                var mask = i32.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && span[i] == 0)
+                    {
+                        result.Memory.Span[0] = false;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = true;
+                return result;
+            }
+
+            if (series is Float64Series f64)
+            {
+                var span = f64.Memory.Span;
+                var mask = f64.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && (span[i] == 0.0 || double.IsNaN(span[i])))
+                    {
+                        result.Memory.Span[0] = false;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = true;
+                return result;
+            }
+
+            for (int i = 0; i < series.Length; i++)
+            {
+                if (series.ValidityMask.IsValid(i))
+                {
+                    var val = series.Get(i);
+                    bool truthy = val switch
+                    {
+                        bool b => b,
+                        int n => n != 0,
+                        long l => l != 0,
+                        double d => d != 0.0 && !double.IsNaN(d),
+                        string s => !string.IsNullOrEmpty(s),
+                        _ => val != null
+                    };
+                    if (!truthy)
+                    {
+                        result.Memory.Span[0] = false;
+                        return result;
+                    }
+                }
+            }
+            result.Memory.Span[0] = true;
+            return result;
+        }
+
+        public static BooleanSeries Any(ISeries series)
+        {
+            var result = new BooleanSeries(series.Name + "_any", 1);
+            if (series.Length == 0)
+            {
+                result.Memory.Span[0] = false;
+                return result;
+            }
+
+            if (series is BooleanSeries bs)
+            {
+                var span = bs.Memory.Span;
+                var mask = bs.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && span[i])
+                    {
+                        result.Memory.Span[0] = true;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = false;
+                return result;
+            }
+
+            if (series is Int32Series i32)
+            {
+                var span = i32.Memory.Span;
+                var mask = i32.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && span[i] != 0)
+                    {
+                        result.Memory.Span[0] = true;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = false;
+                return result;
+            }
+
+            if (series is Float64Series f64)
+            {
+                var span = f64.Memory.Span;
+                var mask = f64.ValidityMask;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    if (mask.IsValid(i) && span[i] != 0.0 && !double.IsNaN(span[i]))
+                    {
+                        result.Memory.Span[0] = true;
+                        return result;
+                    }
+                }
+                result.Memory.Span[0] = false;
+                return result;
+            }
+
+            for (int i = 0; i < series.Length; i++)
+            {
+                if (series.ValidityMask.IsValid(i))
+                {
+                    var val = series.Get(i);
+                    bool truthy = val switch
+                    {
+                        bool b => b,
+                        int n => n != 0,
+                        long l => l != 0,
+                        double d => d != 0.0 && !double.IsNaN(d),
+                        string s => !string.IsNullOrEmpty(s),
+                        _ => val != null
+                    };
+                    if (truthy)
+                    {
+                        result.Memory.Span[0] = true;
+                        return result;
+                    }
+                }
+            }
+            result.Memory.Span[0] = false;
+            return result;
+        }
         private static readonly Vector256<int>[] s_int32MaskLut = PrecomputeInt32MaskLut();
         private static readonly Vector256<long>[] s_float64MaskLut = PrecomputeFloat64MaskLut();
 

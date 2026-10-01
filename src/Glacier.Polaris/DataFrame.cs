@@ -57,6 +57,92 @@ namespace Glacier.Polaris
             return Lazy().Filter(predicate).Collect().GetAwaiter().GetResult();
         }
 
+        public DataFrame Drop(params string[] columnNames)
+        {
+            if (columnNames == null || columnNames.Length == 0) return this.Clone();
+            var dropSet = new System.Collections.Generic.HashSet<string>(columnNames, StringComparer.Ordinal);
+            var remainingCols = Columns.Where(c => !dropSet.Contains(c.Name)).Select(c => c.Clone()).ToList();
+            return new DataFrame(remainingCols);
+        }
+
+        public DataFrame WithColumns(params Expr[] exprs)
+        {
+            return Lazy().WithColumns(exprs).Collect().GetAwaiter().GetResult();
+        }
+
+        public DataFrame VStack(DataFrame other)
+        {
+            if (other == null) throw new ArgumentNullException(nameof(other));
+            return Concat(new[] { this, other });
+        }
+
+        public DataFrame HStack(DataFrame other)
+        {
+            if (other == null) throw new ArgumentNullException(nameof(other));
+            if (RowCount != other.RowCount && RowCount != 0 && other.RowCount != 0)
+                throw new InvalidOperationException($"Cannot HStack dataframes with unequal row counts: {RowCount} vs {other.RowCount}");
+            var newCols = new System.Collections.Generic.List<ISeries>(Columns.Count + other.Columns.Count);
+            foreach (var c in Columns) newCols.Add(c.Clone());
+            foreach (var c in other.Columns) newCols.Add(c.Clone());
+            return new DataFrame(newCols);
+        }
+
+        public System.Collections.Generic.List<DataFrame> PartitionBy(params string[] columnNames)
+        {
+            if (columnNames == null || columnNames.Length == 0)
+                return new System.Collections.Generic.List<DataFrame> { this.Clone() };
+
+            var cols = columnNames.Select(c => GetColumn(c)).ToArray();
+            var groups = Compute.GroupByKernels.GroupBy(cols);
+            var result = new System.Collections.Generic.List<DataFrame>(groups.Count);
+
+            foreach (var group in groups)
+            {
+                var subCols = new System.Collections.Generic.List<ISeries>(Columns.Count);
+                int n = group.Count;
+                foreach (var col in Columns)
+                {
+                    var subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
+                    for (int i = 0; i < n; i++)
+                    {
+                        col.Take(subCol, group[i], i);
+                    }
+                    subCols.Add(subCol);
+                }
+                result.Add(new DataFrame(subCols));
+            }
+            return result;
+        }
+
+        public System.Collections.Generic.Dictionary<string, DataFrame> PartitionByDict(params string[] columnNames)
+        {
+            if (columnNames == null || columnNames.Length == 0)
+                return new System.Collections.Generic.Dictionary<string, DataFrame> { [""] = this.Clone() };
+
+            var cols = columnNames.Select(c => GetColumn(c)).ToArray();
+            var groups = Compute.GroupByKernels.GroupBy(cols);
+            var result = new System.Collections.Generic.Dictionary<string, DataFrame>(groups.Count);
+
+            foreach (var group in groups)
+            {
+                if (group.Count == 0) continue;
+                string key = string.Join("_", cols.Select(c => c.Get(group[0])?.ToString() ?? "null"));
+                var subCols = new System.Collections.Generic.List<ISeries>(Columns.Count);
+                int n = group.Count;
+                foreach (var col in Columns)
+                {
+                    var subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
+                    for (int i = 0; i < n; i++)
+                    {
+                        col.Take(subCol, group[i], i);
+                    }
+                    subCols.Add(subCol);
+                }
+                result[key] = new DataFrame(subCols);
+            }
+            return result;
+        }
+
         public DataFrame Sort(string columnName, bool descending = false)
         {
             return Lazy().Sort(columnName, descending).Collect().GetAwaiter().GetResult();
@@ -594,6 +680,11 @@ namespace Glacier.Polaris
         }
 
         /// <summary>
+        /// Returns a new DataFrame containing only the first n rows (default 5).
+        /// </summary>
+        public DataFrame Head(int n = 5) => Slice(0, n);
+
+        /// <summary>
         /// Returns a new DataFrame containing only the last n rows.
         /// </summary>
         public DataFrame Tail(int n)
@@ -914,6 +1005,12 @@ namespace Glacier.Polaris
         /// Matching Polars' DataFrame.dtypes property.
         /// </summary>
         public Type[] Dtypes => Columns.Select(c => c.DataType).ToArray();
+
+        /// <summary>
+        /// Gets the column names of the DataFrame.
+        /// Matching Polars' DataFrame.columns property.
+        /// </summary>
+        public string[] ColumnNames => Columns.Select(c => c.Name).ToArray();
 
         /// <summary>
         /// Returns the estimated memory usage of the DataFrame in bytes.

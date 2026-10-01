@@ -494,7 +494,70 @@ namespace Glacier.Polaris.Compute
                     dest.Memory.Span[i] = seen.Count;
                 });
             }
-            // Add more as needed
+            else if (aggType == "all")
+            {
+                var dest = (BooleanSeries)resultCol;
+                System.Threading.Tasks.Parallel.For(0, groupCount, options, i =>
+                {
+                    bool allVal = true;
+                    foreach (int idx in groups[i])
+                    {
+                        if (source.ValidityMask.IsValid(idx))
+                        {
+                            if (source is BooleanSeries bs)
+                            {
+                                if (!bs.Memory.Span[idx]) { allVal = false; break; }
+                            }
+                            else if (source is Int32Series i32s)
+                            {
+                                if (i32s.Memory.Span[idx] == 0) { allVal = false; break; }
+                            }
+                            else if (source is Float64Series f64s)
+                            {
+                                if (f64s.Memory.Span[idx] == 0.0 || double.IsNaN(f64s.Memory.Span[idx])) { allVal = false; break; }
+                            }
+                            else
+                            {
+                                var val = source.Get(idx);
+                                if (val is bool b && !b) { allVal = false; break; }
+                            }
+                        }
+                    }
+                    dest.Memory.Span[i] = allVal;
+                });
+            }
+            else if (aggType == "any")
+            {
+                var dest = (BooleanSeries)resultCol;
+                System.Threading.Tasks.Parallel.For(0, groupCount, options, i =>
+                {
+                    bool anyVal = false;
+                    foreach (int idx in groups[i])
+                    {
+                        if (source.ValidityMask.IsValid(idx))
+                        {
+                            if (source is BooleanSeries bs)
+                            {
+                                if (bs.Memory.Span[idx]) { anyVal = true; break; }
+                            }
+                            else if (source is Int32Series i32s)
+                            {
+                                if (i32s.Memory.Span[idx] != 0) { anyVal = true; break; }
+                            }
+                            else if (source is Float64Series f64s)
+                            {
+                                if (f64s.Memory.Span[idx] != 0.0 && !double.IsNaN(f64s.Memory.Span[idx])) { anyVal = true; break; }
+                            }
+                            else
+                            {
+                                var val = source.Get(idx);
+                                if (val is bool b && b) { anyVal = true; break; }
+                            }
+                        }
+                    }
+                    dest.Memory.Span[i] = anyVal;
+                });
+            }
 
             return resultCol;
         }
@@ -510,6 +573,8 @@ namespace Glacier.Polaris.Compute
 
         private static ISeries CreateResultColumn(string name, string agg, int length, ISeries? source = null)
         {
+            if (agg == "all" || agg == "any")
+                return new BooleanSeries($"{name}_{agg}", length);
             if (agg == "sum")
             {
                 if (source != null && (source is Float64Series || source is Int64Series))

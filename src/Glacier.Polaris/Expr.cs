@@ -104,6 +104,12 @@ namespace Glacier.Polaris
         public Expr ExpandingMin() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ExpandingMinOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
         public Expr ExpandingMax() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ExpandingMaxOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
         public Expr ExpandingStd() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(ExpandingStdOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr CumSum() => ExpandingSum();
+        public Expr CumMean() => ExpandingMean();
+        public Expr CumMin() => ExpandingMin();
+        public Expr CumMax() => ExpandingMax();
+        public Expr ExpandingProd(bool reverse = false) => CumProd(reverse);
+        public Expr ExpandingCount(bool reverse = false) => CumCount(reverse);
         public ListNamespace List() => new ListNamespace(this);
         public StructNamespace Struct() => new StructNamespace(this);
 
@@ -202,7 +208,74 @@ namespace Glacier.Polaris
         public Expr First() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(FirstOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
         public Expr Last() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(LastOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
         public Expr IsDuplicated() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsDuplicatedOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
-        public Expr IsUnique() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsUniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression)); internal static Expr RollingMinOp(Expr e, int window) => null!;
+        public Expr IsUnique() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsUniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr All() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(AllOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Any() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(AnyOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+
+        public Expr IsIn(params object[] values)
+        {
+            return new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsInOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(values, typeof(object[]))));
+        }
+
+        public Expr IsIn(System.Collections.IEnumerable values)
+        {
+            var list = new System.Collections.Generic.List<object?>();
+            foreach (var v in values) list.Add(v);
+            return new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsInOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(list.ToArray(), typeof(object[]))));
+        }
+
+        public Expr IsIn(Expr other)
+        {
+            return new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsInExprOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, other.Expression));
+        }
+
+        public Expr IsBetween(object lower, object upper, string closed = "both")
+        {
+            return new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsBetweenOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(lower, typeof(object)), System.Linq.Expressions.Expression.Constant(upper, typeof(object)), System.Linq.Expressions.Expression.Constant(closed)));
+        }
+
+        public Expr IsBetween(Expr lower, Expr upper, string closed = "both")
+        {
+            return new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsBetweenExprOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, lower.Expression, upper.Expression, System.Linq.Expressions.Expression.Constant(closed)));
+        }
+
+        public Expr IsNan() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsNanOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr IsNotNan() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsNotNanOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr IsFinite() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsFiniteOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr IsInfinite() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(IsInfiniteOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+
+        internal static Expr AllOp(Expr e) => null!;
+        internal static Expr AnyOp(Expr e) => null!;
+        internal static Expr IsInOp(Expr e, object[] values) => null!;
+        internal static Expr IsInExprOp(Expr e, Expr other) => null!;
+        internal static Expr IsBetweenOp(Expr e, object lower, object upper, string closed) => null!;
+        internal static Expr IsBetweenExprOp(Expr e, Expr lower, Expr upper, string closed) => null!;
+        internal static Expr IsNanOp(Expr e) => null!;
+        internal static Expr IsNotNanOp(Expr e) => null!;
+        internal static Expr IsFiniteOp(Expr e) => null!;
+        internal static Expr IsInfiniteOp(Expr e) => null!;
+        public Expr Sign() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(SignOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Pow(double exponent) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(PowOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, System.Linq.Expressions.Expression.Constant(exponent)));
+        public Expr Pow(Expr exponent) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(PowExprOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, exponent.Expression));
+        public Expr Log1p() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(Log1pOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Cbrt() => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(CbrtOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression));
+        public Expr Dot(Expr other) => new Expr(System.Linq.Expressions.Expression.Call(null, typeof(Expr).GetMethod(nameof(DotOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!, this.Expression, other.Expression));
+
+        public static Expr Coalesce(params Expr[] exprs)
+        {
+            var method = typeof(Expr).GetMethod(nameof(CoalesceOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var arrayExpr = System.Linq.Expressions.Expression.NewArrayInit(typeof(Expr), exprs.Select(e => System.Linq.Expressions.Expression.Constant(e, typeof(Expr))));
+            return new Expr(System.Linq.Expressions.Expression.Call(null, method, arrayExpr));
+        }
+
+        internal static Expr SignOp(Expr e) => null!;
+        internal static Expr PowOp(Expr e, double exponent) => null!;
+        internal static Expr PowExprOp(Expr e, Expr exponent) => null!;
+        internal static Expr Log1pOp(Expr e) => null!;
+        internal static Expr CbrtOp(Expr e) => null!;
+        internal static Expr DotOp(Expr left, Expr right) => null!;
+        internal static Expr CoalesceOp(Expr[] exprs) => null!;
+        internal static Expr RollingMinOp(Expr e, int window) => null!;
         internal static Expr RollingMaxOp(Expr e, int window) => null!;
         internal static Expr EWMMeanOp(Expr e, double alpha) => null!;
         internal static Expr ExpandingMeanOp(Expr e) => null!;

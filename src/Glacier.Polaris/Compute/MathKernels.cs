@@ -742,5 +742,187 @@ namespace Glacier.Polaris.Compute
             }
             throw new NotSupportedException($"Round not supported for {source.GetType().Name}");
         }
+
+        public static ISeries Sign(ISeries source)
+        {
+            int length = source.Length;
+            var result = new Int32Series(source.Name + "_sign", length);
+            var resSpan = result.Memory.Span;
+            var mask = source.ValidityMask;
+            var resMask = result.ValidityMask;
+
+            if (source is Int32Series i32)
+            {
+                var span = i32.Memory.Span;
+                for (int i = 0; i < length; i++)
+                {
+                    if (mask.IsNull(i)) resMask.SetNull(i);
+                    else resSpan[i] = Math.Sign(span[i]);
+                }
+                return result;
+            }
+
+            if (source is Float64Series f64)
+            {
+                var span = f64.Memory.Span;
+                for (int i = 0; i < length; i++)
+                {
+                    if (mask.IsNull(i)) resMask.SetNull(i);
+                    else
+                    {
+                        double v = span[i];
+                        resSpan[i] = double.IsNaN(v) ? 0 : Math.Sign(v);
+                    }
+                }
+                return result;
+            }
+
+            for (int i = 0; i < length; i++)
+            {
+                if (mask.IsNull(i)) resMask.SetNull(i);
+                else
+                {
+                    double v = Convert.ToDouble(source.Get(i));
+                    resSpan[i] = double.IsNaN(v) ? 0 : Math.Sign(v);
+                }
+            }
+            return result;
+        }
+
+        public static ISeries Pow(ISeries source, double exponent)
+        {
+            int length = source.Length;
+            var result = new Float64Series(source.Name + "_pow", length);
+            var resSpan = result.Memory.Span;
+            var mask = source.ValidityMask;
+            var resMask = result.ValidityMask;
+
+            for (int i = 0; i < length; i++)
+            {
+                if (mask.IsNull(i)) resMask.SetNull(i);
+                else
+                {
+                    double v = Convert.ToDouble(source.Get(i));
+                    resSpan[i] = Math.Pow(v, exponent);
+                }
+            }
+            return result;
+        }
+
+        public static ISeries Pow(ISeries source, ISeries exponent)
+        {
+            int length = source.Length;
+            var result = new Float64Series(source.Name + "_pow", length);
+            var resSpan = result.Memory.Span;
+            var resMask = result.ValidityMask;
+
+            for (int i = 0; i < length; i++)
+            {
+                if (source.ValidityMask.IsNull(i) || exponent.ValidityMask.IsNull(i))
+                {
+                    resMask.SetNull(i);
+                }
+                else
+                {
+                    double baseVal = Convert.ToDouble(source.Get(i));
+                    double expVal = Convert.ToDouble(exponent.Get(i));
+                    resSpan[i] = Math.Pow(baseVal, expVal);
+                }
+            }
+            return result;
+        }
+
+        public static ISeries Log1p(ISeries source)
+        {
+            int length = source.Length;
+            var result = new Float64Series(source.Name + "_log1p", length);
+            var resSpan = result.Memory.Span;
+            var mask = source.ValidityMask;
+            var resMask = result.ValidityMask;
+
+            for (int i = 0; i < length; i++)
+            {
+                if (mask.IsNull(i)) resMask.SetNull(i);
+                else
+                {
+                    double v = Convert.ToDouble(source.Get(i));
+                    resSpan[i] = Math.Log(1.0 + v);
+                }
+            }
+            return result;
+        }
+
+        public static ISeries Cbrt(ISeries source)
+        {
+            int length = source.Length;
+            var result = new Float64Series(source.Name + "_cbrt", length);
+            var resSpan = result.Memory.Span;
+            var mask = source.ValidityMask;
+            var resMask = result.ValidityMask;
+
+            for (int i = 0; i < length; i++)
+            {
+                if (mask.IsNull(i)) resMask.SetNull(i);
+                else
+                {
+                    double v = Convert.ToDouble(source.Get(i));
+                    resSpan[i] = Math.Cbrt(v);
+                }
+            }
+            return result;
+        }
+
+        public static ISeries Dot(ISeries left, ISeries right)
+        {
+            int length = Math.Min(left.Length, right.Length);
+            double sum = 0.0;
+            bool found = false;
+
+            for (int i = 0; i < length; i++)
+            {
+                if (left.ValidityMask.IsValid(i) && right.ValidityMask.IsValid(i))
+                {
+                    double lv = Convert.ToDouble(left.Get(i));
+                    double rv = Convert.ToDouble(right.Get(i));
+                    sum += lv * rv;
+                    found = true;
+                }
+            }
+
+            var result = new Float64Series(left.Name + "_dot_" + right.Name, 1);
+            if (found) result.Memory.Span[0] = sum;
+            else result.ValidityMask.SetNull(0);
+            return result;
+        }
+
+        public static ISeries Coalesce(params ISeries[] seriesList)
+        {
+            if (seriesList == null || seriesList.Length == 0)
+                throw new ArgumentException("Coalesce requires at least one series.");
+
+            int length = seriesList[0].Length;
+            var firstNonNullType = seriesList[0].GetType();
+            var result = (ISeries)Activator.CreateInstance(firstNonNullType, "coalesce", length)!;
+            var resMask = result.ValidityMask;
+
+            for (int i = 0; i < length; i++)
+            {
+                bool resolved = false;
+                foreach (var s in seriesList)
+                {
+                    if (s.ValidityMask.IsValid(i))
+                    {
+                        s.Take(result, i, i);
+                        resolved = true;
+                        break;
+                    }
+                }
+                if (!resolved)
+                {
+                    resMask.SetNull(i);
+                }
+            }
+            return result;
+        }
     }
 }

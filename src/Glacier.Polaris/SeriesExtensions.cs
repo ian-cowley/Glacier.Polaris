@@ -18,6 +18,64 @@ namespace Glacier.Polaris
         public static ISeries NUnique(this ISeries series) => Compute.UniqueKernels.NUnique(series);
         public static ISeries Unique(this ISeries series) => Compute.UniqueKernels.Unique(series);
         public static ISeries Quantile(this ISeries series, double quantile) => AggregationKernels.Quantile(series, quantile);
+        public static ISeries All(this ISeries series) => AggregationKernels.All(series);
+        public static ISeries Any(this ISeries series) => AggregationKernels.Any(series);
+        public static ISeries IsIn(this ISeries series, System.Collections.IEnumerable values) => PredicateKernels.IsIn(series, values);
+        public static ISeries IsIn(this ISeries series, ISeries targetSeries) => PredicateKernels.IsIn(series, targetSeries);
+        public static ISeries IsBetween(this ISeries series, object lower, object upper, string closed = "both") => PredicateKernels.IsBetween(series, lower, upper, closed);
+        public static ISeries IsBetween(this ISeries series, ISeries lower, ISeries upper, string closed = "both") => PredicateKernels.IsBetween(series, lower, upper, closed);
+        public static ISeries IsNan(this ISeries series) => PredicateKernels.IsNan(series);
+        public static ISeries IsNotNan(this ISeries series) => PredicateKernels.IsNotNan(series);
+        public static ISeries IsFinite(this ISeries series) => PredicateKernels.IsFinite(series);
+        public static ISeries IsInfinite(this ISeries series) => PredicateKernels.IsInfinite(series);
+
+        // Cumulative Reductions
+        public static ISeries CumSum(this ISeries series) => WindowKernels.ExpandingSum(series);
+        public static ISeries CumMean(this ISeries series) => WindowKernels.ExpandingMean(series);
+        public static ISeries CumMin(this ISeries series) => WindowKernels.ExpandingMin(series);
+        public static ISeries CumMax(this ISeries series) => WindowKernels.ExpandingMax(series);
+        public static ISeries CumProd(this ISeries series, bool reverse = false) => WindowKernels.ExpandingProd(series, reverse);
+        public static ISeries CumCount(this ISeries series, bool reverse = false) => WindowKernels.ExpandingCount(series, reverse);
+
+        // Array & Math Ergonomics
+        public static ISeries Shift(this ISeries series, int n) => ArrayKernels.Shift(series, n);
+        public static ISeries Diff(this ISeries series, int n = 1) => ArrayKernels.Diff(series, n);
+        public static ISeries PctChange(this ISeries series, int n = 1) => MathKernels.PctChange(series, n);
+        public static ISeries Rank(this ISeries series, bool descending = false) => MathKernels.Rank(series, descending);
+        public static ISeries Abs(this ISeries series) => ArrayKernels.Abs(series);
+        public static ISeries Clip(this ISeries series, double min, double max) => ArrayKernels.Clip(series, min, max);
+        public static ISeries Round(this ISeries series, int decimals = 0) => MathKernels.Round(series, decimals);
+        public static ISeries Sign(this ISeries series) => MathKernels.Sign(series);
+        public static ISeries Pow(this ISeries series, double exponent) => MathKernels.Pow(series, exponent);
+        public static ISeries Pow(this ISeries series, ISeries exponent) => MathKernels.Pow(series, exponent);
+        public static ISeries Log1p(this ISeries series) => MathKernels.Log1p(series);
+        public static ISeries Cbrt(this ISeries series) => MathKernels.Cbrt(series);
+        public static ISeries Dot(this ISeries series, ISeries other) => MathKernels.Dot(series, other);
+        public static ISeries Head(this ISeries series, int n = 5) => ArrayKernels.SliceSeries(series, 0, Math.Min(n, series.Length));
+        public static ISeries Tail(this ISeries series, int n = 5)
+        {
+            int start = Math.Max(0, series.Length - n);
+            int len = series.Length - start;
+            return ArrayKernels.SliceSeries(series, start, len);
+        }
+
+        public static ISeries Clone(this ISeries col)
+        {
+            ISeries newCol;
+            if (col is Utf8StringSeries u8)
+            {
+                newCol = new Utf8StringSeries(col.Name, col.Length, u8.DataBytes.Length);
+                u8.Offsets.Span.CopyTo(((Utf8StringSeries)newCol).Offsets.Span);
+                u8.DataBytes.Span.CopyTo(((Utf8StringSeries)newCol).DataBytes.Span);
+            }
+            else
+            {
+                newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, col.Length)!;
+                for (int i = 0; i < col.Length; i++) col.Take(newCol, i, i);
+            }
+            newCol.ValidityMask.CopyFrom(col.ValidityMask);
+            return newCol;
+        }
 
         public static ISeries FillNull(this ISeries series, FillStrategy strategy) => FillNullKernels.FillNull(series, strategy);
         public static ISeries FillNull(this ISeries series, object value)

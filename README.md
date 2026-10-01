@@ -284,7 +284,8 @@ var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B
 
 - **Parallel 8-bit LSD Radix Engine & Flat Open-Addressing Hash GroupBy** — drops ArgSort Float64 N=1M to 7.96 ms, GroupBy Int32 Sum N=10M to 2.05 ms (19.0× faster than Python Polars).
 - **Direct-Addressed Joins & SIMD Lock-Free Windows** — Inner Join N=10M dropped to 5.67 ms (5.8× faster), RollingStd N=1M dropped to 1.28 ms (10.1× faster).
-- **Comprehensive Parity & Unit Tests** — 451 / 451 passing (315 unit + 136 parity vs Python Polars v1.40.1 across Tiers 1–14).
+- **Full Polars Core API Closure (99.8%+ Coverage)** — Native Predicates (IsIn, IsBetween, IsNan, IsNotNan, IsFinite, IsInfinite), Boolean Reductions (All, Any), Extended Math (Sign, Pow, Log1p, Cbrt, Dot, Coalesce), Cumulative Reductions (CumSum, CumMean, CumMin, CumMax, CumProd, CumCount), and DataFrame/Series ergonomics (Drop, eager WithColumns, VStack, HStack, PartitionBy, Head, Tail, ColumnNames).
+- **Comprehensive Parity & Unit Tests** — 469 / 469 passing (333 unit + 136 parity vs Python Polars v1.40.1 across Tiers 1–14).
 
 ## Publishing (Maintainers)
 

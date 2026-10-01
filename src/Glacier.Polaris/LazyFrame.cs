@@ -151,6 +151,11 @@ namespace Glacier.Polaris
             var methodCall = Expression.Call(null, method, Plan, Expression.Constant(n));
             return new LazyFrame(methodCall);
         }
+        /// <summary>
+        /// Returns the first n rows (default 5). Matches Polars lf.head(n).
+        /// </summary>
+        public LazyFrame Head(int n = 5) => Limit(n);
+
 
         public LazyFrame WithColumns(params Expr[] columns)
         {
