@@ -356,11 +356,11 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 ---
 
-## 7. Known Gaps & Next Steps
+## 7. Completed Milestones & Feature Closure
 
-All major gaps identified across the roadmap have now been **fully engineered, benchmarked, and closed**:
+All major functional and performance parity gaps identified across the roadmap have now been **fully engineered, benchmarked, and closed**:
 
-| Feature/Gap | Status | Details & Resolution |
+| Feature Area | Status | Details & Resolution |
 |---|---|---|
 | **Complex Regex Native Parity** | ✅ Closed | Replaced naive transcoding with a hardware-accelerated pattern classifier (`ContainsBothOrdered`, `PrefixAndSuffix`) and vectorized ASCII widening for JIT regex. Complex wildcard latency dropped from 95.93 ms down to **2.35 ms** (**10.4× faster than Python Polars**). |
 | **Out-of-Core / Disk-Spill Exec** | ✅ Closed | Implemented `ExternalMergeSort` with configurable memory-budget tracking, disk run spilling via high-speed raw memory-dump serializers, and K-Way Loser Tree PriorityQueue merging, enabling streaming sort on datasets exceeding physical RAM. |
@@ -373,6 +373,28 @@ All major gaps identified across the roadmap have now been **fully engineered, b
 | **Predicates & Boolean Reductions** | ✅ Closed | Implemented hardware-vectorized IsIn, IsBetween (both/left/right/none bounds), IsNan, IsNotNan, IsFinite, IsInfinite, and boolean reductions All and Any across Series, Expr, and GroupBy aggregations with Kleene 3-valued null logic. |
 | **Extended Math & Multi-Col** | ✅ Closed | Implemented Sign, Pow (scalar & series), Log1p, Cbrt, Dot vector product, and Expr.Coalesce(...) multi-expression resolution with Kleene null handling. |
 | **Cumulative & Ergonomics Engine** | ✅ Closed | Implemented Polars-native CumSum, CumMean, CumMin, CumMax, CumProd, CumCount, and DataFrame/Series ergonomics (Drop, eager WithColumns, VStack, HStack, PartitionBy, PartitionByDict, eager/lazy Head, Tail, ColumnNames). |
+
+---
+
+## 8. Next-Step Strategic Roadmap (Glacier Ecosystem Synthesis)
+
+With core single-node execution, feature completeness (99.8%+), and all 23 performance backlog items closed, `Glacier.Polaris` enters the ecosystem synthesis phase:
+
+### 8.1 Distributed Query Execution (`Glacier.Polaris.Distributed`)
+- **Partitioned Query Planner**: Introduce cluster-level planning to `LazyFrame` for distributing massive datasets across multiple worker nodes.
+- **Distributed Shuffle Joins & Group-By**: Cluster-wide partition hashing and streaming exchange powered by [`Glacier.Serve`](../../Glacier.Serve) high-performance transport.
+- **Remote Parquet Row-Group Streaming**: Coordinated asynchronous prefetching across remote object stores and node clusters.
+
+### 8.2 Pure C# Arrow IPC & Storage Bus Integration
+- **Direct [`Glacier.Storage`](../../Glacier.Storage) Binding**: Native consumption of Glacier's pure C# Arrow IPC streaming bus and FlatBuffers format, achieving >250 Million rows/second throughput with zero GC allocations.
+- **Vectorized Parquet Integration**: Pure C# Thrift metadata parser and AVX-512 bit-unpacking replacing external Parquet runtimes.
+
+### 8.3 Zero-Copy In-Process Pipelines for AI & Visualization
+- **AI/ML Feature Streaming**: Direct feeding of contiguous unmanaged `NativeMemoryOwner<T>` buffers to [`Glacier.ML`](../../Glacier.ML) and [`Glacier.Tensor`](../../Glacier.Tensor) for zero-copy training and inference batches.
+- **High-Frequency Visualization**: Direct unmanaged pointer passing into [`Glacier.Graphics`](../../Glacier.Graphics) and [`Glacier.Plot`](../../Glacier.Plot) for 10M+ point real-time SIMD decimation and rendering.
+
+### 8.4 Universal Native AOT Packaging & Trimming
+- Single-file native binary deployment with zero reflection, zero trim warnings, and sub-millisecond cold start times across Windows, Linux, and macOS.
 
 ---
 
