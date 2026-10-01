@@ -172,143 +172,283 @@ namespace Glacier.Polaris.Compute
             }
         }
 
-        /// <summary>ArgSort for Float64 — returns new int[]. Parallel 8-bit LSD radix on parallel arrays.</summary>
+        /// <summary>ArgSort for Float64 — returns new int[]. Ultra-fast parallel 8-bit LSD radix sort.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public static unsafe int[] ArgSort(ReadOnlySpan<double> data)
         {
             if (data.Length == 0) return Array.Empty<int>();
             int n = data.Length;
+            if (n == 1) return new int[] { 0 };
 
             int[] indices = new int[n];
-            if (n <= 2_000_000)
-            {
-                ParallelBlockSortFloat64(data, indices, isSequential: true);
-                return indices;
-            }
-
-            int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
-            long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
-            long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
-
-            try
-            {
-                // Vectorized and parallelized key transform step
-                ConvertDoublesToSortableLongs(data, keys);
-
-                // Initialise indices
-                for (int i = 0; i < n; i++) indices[i] = i;
-
-                fixed (int* pIdx = indices)
-                fixed (int* pIdxBuf = indicesBuf)
-                fixed (long* pKeys = keys)
-                fixed (long* pKeysBuf = keysBuf)
-                {
-                    int* srcIdx = pIdx;
-                    int* dstIdx = pIdxBuf;
-                    long* srcKeys = pKeys;
-                    long* dstKeys = pKeysBuf;
-
-                    // 8 passes × 8 bits = 64-bit key
-                    for (int shift = 0; shift < 64; shift += 8)
-                    {
-                        DoRadixPass64_8bit_Parallel(srcIdx, dstIdx, srcKeys, dstKeys, n, shift);
-
-                        // Swap pointers
-                        int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
-                        long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
-                    }
-
-                    // After 8 passes (even number), the result is back in pIdx.
-                    if (srcIdx != pIdx)
-                    {
-                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, srcIdx, (uint)(n * sizeof(int)));
-                    }
-                }
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
-                System.Buffers.ArrayPool<long>.Shared.Return(keys);
-                System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
-            }
-
+            ArgSortCoreFloat64(data, indices.AsSpan(), descending: false, isSequential: true);
             return indices;
         }
 
-        /// <summary>In-place ArgSort for Float64 (re-sorts existing indices). Parallel 8-bit LSD radix on parallel arrays.</summary>
+        /// <summary>In-place ArgSort for Float64 (re-sorts existing indices). Ultra-fast parallel 8-bit LSD radix sort.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public static unsafe void ArgSort(ReadOnlySpan<double> data, Span<int> indices, bool descending = false)
         {
-            if (data.Length == 0) return;
-            int n = data.Length;
+            ArgSortCoreFloat64(data, indices, descending, isSequential: false);
+        }
 
-            if (n <= 2_000_000)
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void ArgSortCoreFloat64(ReadOnlySpan<double> data, Span<int> indices, bool descending, bool isSequential)
+        {
+            int n = data.Length;
+            if (n <= 1) return;
+
+            // Sequential fallback for small arrays (< 65,536 elements)
+            int numThreads = n < 65536 ? 1 : Math.Min(Environment.ProcessorCount, 16);
+            if (numThreads <= 1)
             {
-                ParallelBlockSortFloat64(data, indices, isSequential: false);
-                if (descending)
+                long[] sKeys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+                try
                 {
-                    for (int i = 0, j = n - 1; i < j; i++, j--)
+                    fixed (double* pData = data)
+                    fixed (int* pIdx = indices)
+                    fixed (long* pKeys = sKeys)
                     {
-                        int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                        if (isSequential)
+                        {
+                            for (int i = 0; i < n; i++)
+                            {
+                                pIdx[i] = i;
+                                long bits = BitConverter.DoubleToInt64Bits(pData[i]);
+                                pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                            }
+                        }
+                        else
+                        {
+                            for (int i = 0; i < n; i++)
+                            {
+                                long bits = BitConverter.DoubleToInt64Bits(pData[pIdx[i]]);
+                                pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                            }
+                        }
                     }
+
+                    LocalRadixSort8Bit(sKeys.AsSpan(0, n), indices);
+
+                    if (descending)
+                    {
+                        for (int i = 0, j = n - 1; i < j; i++, j--)
+                        {
+                            int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                        }
+                    }
+                    return;
                 }
-                return;
+                finally
+                {
+                    System.Buffers.ArrayPool<long>.Shared.Return(sKeys);
+                }
             }
 
-            int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+            int chunkSize = (n + numThreads - 1) / numThreads;
             long[] keys = System.Buffers.ArrayPool<long>.Shared.Rent(n);
             long[] keysBuf = System.Buffers.ArrayPool<long>.Shared.Rent(n);
+            int[] indicesBuf = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+
+            int[] flatCounts = System.Buffers.ArrayPool<int>.Shared.Rent(numThreads * 256);
+            int[] flatOffsets = System.Buffers.ArrayPool<int>.Shared.Rent(numThreads * 256);
 
             try
             {
-                // Vectorized and parallelized key transform step
-                fixed (int* pIdx = indices)
+                fixed (double* pData = data)
+                fixed (long* pKeys = keys, pKeysBuf = keysBuf)
+                fixed (int* pIdx = indices, pIdxBuf = indicesBuf)
+                fixed (int* pCounts = flatCounts, pOffsets = flatOffsets)
                 {
-                    ConvertDoublesToSortableLongs(data, keys, pIdx);
-                }
+                    IntPtr pDataPtr = (IntPtr)pData;
+                    IntPtr pSrcKeys = (IntPtr)pKeys;
+                    IntPtr pDstKeys = (IntPtr)pKeysBuf;
+                    IntPtr pSrcIdx = (IntPtr)pIdx;
+                    IntPtr pDstIdx = (IntPtr)pIdxBuf;
+                    IntPtr pC = (IntPtr)pCounts;
+                    IntPtr pO = (IntPtr)pOffsets;
 
-                fixed (int* pIdx = indices)
-                fixed (int* pIdxBuf = indicesBuf)
-                fixed (long* pKeys = keys)
-                fixed (long* pKeysBuf = keysBuf)
-                {
-                    int* srcIdx = pIdx;
-                    int* dstIdx = pIdxBuf;
-                    long* srcKeys = pKeys;
-                    long* dstKeys = pKeysBuf;
-
-                    // 8 passes × 8 bits = 64-bit key (Cache-friendly!)
-                    for (int shift = 0; shift < 64; shift += 8)
+                    // Phase 0: Parallel Key Transform and Index Initialization
+                    Parallel.For(0, numThreads, t =>
                     {
-                        DoRadixPass64_8bit_Parallel(srcIdx, dstIdx, srcKeys, dstKeys, n, shift);
+                        double* d = (double*)pDataPtr;
+                        long* k = (long*)pSrcKeys;
+                        int* idx = (int*)pSrcIdx;
+
+                        int start = t * chunkSize;
+                        int end = Math.Min(start + chunkSize, n);
+
+                        if (isSequential)
+                        {
+                            int i = start;
+                            if (Vector256.IsHardwareAccelerated && (end - start) >= Vector256<double>.Count)
+                            {
+                                int step = Vector256<double>.Count;
+                                var vZero = Vector256<long>.Zero;
+                                var vSignBit = Vector256.Create(long.MinValue);
+                                var vAllOnes = Vector256.Create(-1L);
+
+                                int limit = end - step;
+                                for (; i <= limit; i += step)
+                                {
+                                    var vDouble = Vector256.Load(d + i);
+                                    var vBits = vDouble.As<double, long>();
+                                    var vNegMask = Vector256.LessThan(vBits, vZero);
+                                    var vXorMask = Vector256.ConditionalSelect(vNegMask, vAllOnes, vSignBit);
+                                    Vector256.Store(vBits ^ vXorMask, k + i);
+
+                                    idx[i] = i;
+                                    idx[i + 1] = i + 1;
+                                    idx[i + 2] = i + 2;
+                                    idx[i + 3] = i + 3;
+                                }
+                            }
+                            for (; i < end; i++)
+                            {
+                                long bits = BitConverter.DoubleToInt64Bits(d[i]);
+                                k[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                idx[i] = i;
+                            }
+                        }
+                        else
+                        {
+                            for (int i = start; i < end; i++)
+                            {
+                                long bits = BitConverter.DoubleToInt64Bits(d[idx[i]]);
+                                k[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                            }
+                        }
+                    });
+
+                    // 8-pass LSD Radix Sort
+                    for (int pass = 0; pass < 8; pass++)
+                    {
+                        int shift = pass * 8;
+                        Array.Clear(flatCounts, 0, numThreads * 256);
+
+                        // Phase 1: Parallel Count
+                        Parallel.For(0, numThreads, t =>
+                        {
+                            long* sKeys = (long*)pSrcKeys;
+                            int* tCounts = (int*)pC + (t * 256);
+                            int start = t * chunkSize;
+                            int end = Math.Min(start + chunkSize, n);
+
+                            int i = start;
+                            for (; i <= end - 4; i += 4)
+                            {
+                                tCounts[(int)((sKeys[i] >> shift) & 0xFF)]++;
+                                tCounts[(int)((sKeys[i + 1] >> shift) & 0xFF)]++;
+                                tCounts[(int)((sKeys[i + 2] >> shift) & 0xFF)]++;
+                                tCounts[(int)((sKeys[i + 3] >> shift) & 0xFF)]++;
+                            }
+                            for (; i < end; i++)
+                            {
+                                tCounts[(int)((sKeys[i] >> shift) & 0xFF)]++;
+                            }
+                        });
+
+                        // Phase 1.5: Check skip pass
+                        bool skip = false;
+                        for (int b = 0; b < 256; b++)
+                        {
+                            int sum = 0;
+                            for (int t = 0; t < numThreads; t++) sum += pCounts[t * 256 + b];
+                            if (sum == n) { skip = true; break; }
+                        }
+                        if (skip) continue;
+
+                        // Phase 2: Prefix sums
+                        int prefix = 0;
+                        for (int b = 0; b < 256; b++)
+                        {
+                            for (int t = 0; t < numThreads; t++)
+                            {
+                                pOffsets[t * 256 + b] = prefix;
+                                prefix += pCounts[t * 256 + b];
+                            }
+                        }
+
+                        // Phase 3: Parallel Scatter
+                        Parallel.For(0, numThreads, t =>
+                        {
+                            long* sKeys = (long*)pSrcKeys;
+                            long* dKeys = (long*)pDstKeys;
+                            int* sIdx = (int*)pSrcIdx;
+                            int* dIdx = (int*)pDstIdx;
+                            int* tOffsets = (int*)pO + (t * 256);
+                            int* offsets = stackalloc int[256];
+                            System.Runtime.CompilerServices.Unsafe.CopyBlock(offsets, tOffsets, 256 * sizeof(int));
+
+                            int start = t * chunkSize;
+                            int end = Math.Min(start + chunkSize, n);
+
+                            int i = start;
+                            for (; i <= end - 4; i += 4)
+                            {
+                                long k0 = sKeys[i];
+                                int b0 = (int)((k0 >> shift) & 0xFF);
+                                int pos0 = offsets[b0]++;
+                                dKeys[pos0] = k0;
+                                dIdx[pos0] = sIdx[i];
+
+                                long k1 = sKeys[i + 1];
+                                int b1 = (int)((k1 >> shift) & 0xFF);
+                                int pos1 = offsets[b1]++;
+                                dKeys[pos1] = k1;
+                                dIdx[pos1] = sIdx[i + 1];
+
+                                long k2 = sKeys[i + 2];
+                                int b2 = (int)((k2 >> shift) & 0xFF);
+                                int pos2 = offsets[b2]++;
+                                dKeys[pos2] = k2;
+                                dIdx[pos2] = sIdx[i + 2];
+
+                                long k3 = sKeys[i + 3];
+                                int b3 = (int)((k3 >> shift) & 0xFF);
+                                int pos3 = offsets[b3]++;
+                                dKeys[pos3] = k3;
+                                dIdx[pos3] = sIdx[i + 3];
+                            }
+                            for (; i < end; i++)
+                            {
+                                long k = sKeys[i];
+                                int b = (int)((k >> shift) & 0xFF);
+                                int pos = offsets[b]++;
+                                dKeys[pos] = k;
+                                dIdx[pos] = sIdx[i];
+                            }
+                        });
 
                         // Swap pointers
-                        int* tIdx = srcIdx; srcIdx = dstIdx; dstIdx = tIdx;
-                        long* tKeys = srcKeys; srcKeys = dstKeys; dstKeys = tKeys;
+                        IntPtr tk = pSrcKeys; pSrcKeys = pDstKeys; pDstKeys = tk;
+                        IntPtr ti = pSrcIdx; pSrcIdx = pDstIdx; pDstIdx = ti;
                     }
 
-                    // After 8 passes (even number), the result is back in pIdx.
-                    if (srcIdx != pIdx)
+                    if (pSrcIdx != (IntPtr)pIdx)
                     {
-                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, srcIdx, (uint)(n * sizeof(int)));
+                        System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, (void*)pSrcIdx, (uint)(n * sizeof(int)));
                     }
-                }
 
-                if (descending)
-                {
-                    for (int i = 0, j = n - 1; i < j; i++, j--)
+                    if (descending)
                     {
-                        int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+                        for (int i = 0, j = n - 1; i < j; i++, j--)
+                        {
+                            int t = pIdx[i]; pIdx[i] = pIdx[j]; pIdx[j] = t;
+                        }
                     }
                 }
             }
             finally
             {
-                System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
                 System.Buffers.ArrayPool<long>.Shared.Return(keys);
                 System.Buffers.ArrayPool<long>.Shared.Return(keysBuf);
+                System.Buffers.ArrayPool<int>.Shared.Return(indicesBuf);
+                System.Buffers.ArrayPool<int>.Shared.Return(flatCounts);
+                System.Buffers.ArrayPool<int>.Shared.Return(flatOffsets);
             }
         }
+
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private static unsafe void LocalRadixSort8Bit(Span<long> keysSpan, Span<int> indices)
