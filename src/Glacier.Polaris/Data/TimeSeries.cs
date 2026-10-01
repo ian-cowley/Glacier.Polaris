@@ -1,12 +1,14 @@
 using System;
 using Glacier.Polaris.Memory;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
     public sealed class TimeSeries : Series<long>
     {
         public TimeSeries(string name, int length) : base(name, length) { }
+        public TimeSeries(string name, int length, System.Buffers.IMemoryOwner<long> data) : base(name, length, data) { }
+        public TimeSeries(string name, int length, System.Buffers.IMemoryOwner<long> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
 
         public TimeSeries(string name, TimeSpan[] data) : base(name, data.Length)
         {
@@ -36,18 +38,10 @@ namespace Glacier.Polaris.Data
             return (int)((Memory.Span[i] / 1_000_000_000L) % 60);
         }
 
-        public override IArrowArray ToArrowArray()
+        public override ArrowColumn ToArrowColumn()
         {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-
-            return new Time64Array(
-                new Apache.Arrow.Types.Time64Type(Apache.Arrow.Types.TimeUnit.Nanosecond),
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
+            var field = new ArrowField(Name, ArrowType.Time64, isNullable: ValidityMask.HasNulls);
+            return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, AsBytesMemory());
         }
     }
 }

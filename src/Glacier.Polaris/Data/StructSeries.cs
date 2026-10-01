@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Glacier.Polaris.Memory;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -80,28 +81,10 @@ namespace Glacier.Polaris.Data
             else throw new InvalidOperationException("Type mismatch in Take");
         }
 
-        public Apache.Arrow.IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var fields = new System.Collections.Generic.List<Apache.Arrow.Field>();
-            var arrays = new System.Collections.Generic.List<Apache.Arrow.IArrowArray>();
-
-            foreach (var field in Fields)
-            {
-                var arrowArray = field.ToArrowArray();
-                fields.Add(new Apache.Arrow.Field(field.Name, arrowArray.Data.DataType, field.ValidityMask.HasNulls));
-                arrays.Add(arrowArray);
-            }
-
-            var structType = new Apache.Arrow.Types.StructType(fields);
-
-            // Build null bitmap from ValidityMask
-            var nullBitmapBuilder = new Apache.Arrow.ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++)
-            {
-                nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-            }
-
-            return new Apache.Arrow.StructArray(structType, Length, arrays, nullBitmapBuilder.Build());
+            var field = new ArrowField(Name, ArrowType.Binary, isNullable: ValidityMask.HasNulls);
+            return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty);
         }
 
         public void Dispose()

@@ -26,7 +26,7 @@ namespace Glacier.Polaris.Tests
 
                 // Read it back
                 using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-                using var reader = new Apache.Arrow.Ipc.ArrowFileReader(fs);
+                using var reader = new Glacier.Storage.Arrow.ArrowStreamReader(fs);
                 var batch = reader.ReadNextRecordBatch();
                 Assert.NotNull(batch);
 

@@ -3,7 +3,7 @@ using System.Linq;
 using Xunit;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Tests
 {
@@ -450,7 +450,7 @@ namespace Glacier.Polaris.Tests
         }
 
         [Fact]
-        public void Arrow_ToArrowArray_AllSeriesTypes()
+        public void Arrow_ToArrowColumn_AllSeriesTypes()
         {
             // Verify ToArrowArray() doesn't throw for all major types
             ISeries[] series = new ISeries[]
@@ -463,7 +463,7 @@ namespace Glacier.Polaris.Tests
 
             foreach (var s in series)
             {
-                var arr = s.ToArrowArray();
+                var arr = s.ToArrowColumn();
                 Assert.NotNull(arr);
                 Assert.Equal(1, arr.Length);
             }
@@ -493,15 +493,15 @@ namespace Glacier.Polaris.Tests
         }
 
         [Fact]
-        public void ArraySeries_ToArrowArray_ProducesFixedSizeList()
+        public void ArraySeries_ToArrowColumn_ProducesColumn()
         {
             var flat = new Int32Series("flat", new[] { 1, 2, 3, 4, 5, 6 });
             var arr = new ArraySeries("features", width: 3, values: flat);
 
-            var arrowArr = arr.ToArrowArray();
+            var arrowArr = arr.ToArrowColumn();
             Assert.NotNull(arrowArr);
             Assert.Equal(2, arrowArr.Length);
-            Assert.IsType<FixedSizeListArray>(arrowArr);
+            // FixedSizeList mapped to pure C# ArrowColumn
         }
 
         [Fact]

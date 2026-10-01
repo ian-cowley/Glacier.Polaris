@@ -24,8 +24,7 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Glacier.Storage" Version="1.0.0" />
-    <PackageReference Include="Apache.Arrow" Version="22.1.0" />
+    <ProjectReference Include="..\..\..\Glacier.Storage\src\Glacier.Storage\Glacier.Storage.csproj" />
     <PackageReference Include="Lokad.Utf8Regex" Version="0.2.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />

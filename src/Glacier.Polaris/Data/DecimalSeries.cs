@@ -1,6 +1,5 @@
 using Glacier.Polaris.Memory;
-using Apache.Arrow;
-using Apache.Arrow.Types;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -8,6 +7,12 @@ namespace Glacier.Polaris.Data
     {
         public int Precision { get; }
         public int Scale { get; }
+
+        public DecimalSeries(string name, int length, System.Buffers.IMemoryOwner<decimal> data, ValidityMask validityMask, int precision = 38, int scale = 9) : base(name, length, data, validityMask)
+        {
+            Precision = precision;
+            Scale = scale;
+        }
 
         public DecimalSeries(string name, int length, int precision = 38, int scale = 9) : base(name, length)
         {
@@ -35,19 +40,10 @@ namespace Glacier.Polaris.Data
 
         public decimal? GetValue(int i) => ValidityMask.IsValid(i) ? Memory.Span[i] : (decimal?)null;
 
-        public override IArrowArray ToArrowArray()
+        public override ArrowColumn ToArrowColumn()
         {
-            var type = new Decimal128Type(Precision, Scale);
-            var builder = new Decimal128Array.Builder(type);
-            var span = Memory.Span;
-            for (int i = 0; i < Length; i++)
-            {
-                if (ValidityMask.IsValid(i))
-                    builder.Append(span[i]);
-                else
-                    builder.AppendNull();
-            }
-            return builder.Build();
+            var field = new ArrowField(Name, ArrowType.Decimal128, isNullable: ValidityMask.HasNulls);
+            return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, AsBytesMemory());
         }
 
         public override ISeries CloneEmpty(int length)

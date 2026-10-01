@@ -1,6 +1,6 @@
 using Glacier.Polaris;
 using Xunit;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
 using System.Linq;
 
 namespace Glacier.Polaris.Tests
@@ -19,8 +19,8 @@ namespace Glacier.Polaris.Tests
 
             // To Arrow
             var batch = df.ToArrowRecordBatch();
-            Assert.Equal(3, batch.Length);
-            Assert.Equal(3, batch.ColumnCount);
+            Assert.Equal(3, batch.RowCount);
+            Assert.Equal(3, batch.Columns.Count);
 
             // Back to DataFrame
             var df2 = DataFrame.FromArrowRecordBatch(batch);

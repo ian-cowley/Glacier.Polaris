@@ -1,5 +1,5 @@
 using Glacier.Polaris.Memory;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -48,9 +48,10 @@ namespace Glacier.Polaris.Data
             else throw new InvalidOperationException("Type mismatch in Take");
         }
 
-        public IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            return new NullArray(Length);
+            var field = new ArrowField(Name, ArrowType.Null, isNullable: true);
+            return new ArrowColumn(field, Length, Length, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty);
         }
 
         public void Dispose() { }

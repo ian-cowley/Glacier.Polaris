@@ -1,6 +1,8 @@
+using System;
+using System.Buffers;
+using System.Runtime.InteropServices;
 using Glacier.Polaris.Memory;
-using Apache.Arrow;
-using Apache.Arrow.Types;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -32,8 +34,30 @@ namespace Glacier.Polaris.Data
             _validityMask = new ValidityMask(length);
         }
 
+        protected Series(string name, int length, System.Buffers.IMemoryOwner<T> data, ValidityMask validityMask)
+        {
+            Name = name;
+            Length = length;
+            _data = data;
+            _validityMask = validityMask;
+        }
+
         public Memory<T> Memory => _data.Memory;
         public ValidityMask ValidityMask => _validityMask;
+
+        /// <summary>
+        /// Returns a zero-copy ReadOnlyMemory view of the underlying unmanaged/managed column bytes.
+        /// </summary>
+        public unsafe ReadOnlyMemory<byte> AsBytesMemory()
+        {
+            if (_data is NativeMemoryOwner<T> nativeOwner)
+            {
+                return nativeOwner.AsBytesMemory();
+            }
+            if (Length == 0) return ReadOnlyMemory<byte>.Empty;
+            var handle = _data.Memory.Pin();
+            return new UnmanagedMemoryManager<byte>((byte*)handle.Pointer, Length * sizeof(T)).Memory;
+        }
 
         public T this[int i]
         {
@@ -87,9 +111,31 @@ namespace Glacier.Polaris.Data
             else throw new InvalidOperationException($"Type mismatch in Take: cannot take into {target.DataType.Name}");
         }
 
-        public virtual Apache.Arrow.IArrowArray ToArrowArray()
+        public virtual ArrowColumn ToArrowColumn()
         {
-            throw new NotSupportedException($"ToArrowArray not implemented for {typeof(T).Name}");
+            var arrowType = typeof(T) switch
+            {
+                Type t when t == typeof(sbyte) => ArrowType.Int8,
+                Type t when t == typeof(byte) => ArrowType.UInt8,
+                Type t when t == typeof(short) => ArrowType.Int16,
+                Type t when t == typeof(ushort) => ArrowType.UInt16,
+                Type t when t == typeof(int) => ArrowType.Int32,
+                Type t when t == typeof(uint) => ArrowType.UInt32,
+                Type t when t == typeof(long) => ArrowType.Int64,
+                Type t when t == typeof(ulong) => ArrowType.UInt64,
+                Type t when t == typeof(float) => ArrowType.Float,
+                Type t when t == typeof(double) => ArrowType.Double,
+                Type t when t == typeof(bool) => ArrowType.Boolean,
+                _ => ArrowType.Binary
+            };
+            var field = new ArrowField(Name, arrowType, isNullable: _validityMask.HasNulls);
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                ReadOnlyMemory<byte>.Empty,
+                AsBytesMemory());
         }
 
         public void Dispose() => _data.Dispose();
@@ -109,6 +155,7 @@ namespace Glacier.Polaris.Data
         public Int32Series(string name, int length) : base(name, length) { }
         public Int32Series(string name, int length, bool clear, bool setAllValid) : base(name, length, clear, setAllValid) { }
         public Int32Series(string name, int length, System.Buffers.IMemoryOwner<int> data) : base(name, length, data) { }
+        public Int32Series(string name, int length, System.Buffers.IMemoryOwner<int> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
 
         public static Int32Series FromMmf(string name, string filePath, int length)
         {
@@ -132,34 +179,66 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
-        public override IArrowArray ToArrowArray()
-        {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-
-            return new Int32Array(
-            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
-        }
+        
     }
 
     public sealed class Int8Series : Series<sbyte>
     {
         public Int8Series(string name, int length) : base(name, length) { }
+        public Int8Series(string name, int length, System.Buffers.IMemoryOwner<sbyte> data) : base(name, length, data) { }
+        public Int8Series(string name, int length, System.Buffers.IMemoryOwner<sbyte> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public Int8Series(string name, sbyte[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static Int8Series FromValues(string name, sbyte?[] values)
+        {
+            var series = new Int8Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class Int16Series : Series<short>
     {
         public Int16Series(string name, int length) : base(name, length) { }
+        public Int16Series(string name, int length, System.Buffers.IMemoryOwner<short> data) : base(name, length, data) { }
+        public Int16Series(string name, int length, System.Buffers.IMemoryOwner<short> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public Int16Series(string name, short[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static Int16Series FromValues(string name, short?[] values)
+        {
+            var series = new Int16Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class Int64Series : Series<long>
     {
         public Int64Series(string name, int length) : base(name, length) { }
         public Int64Series(string name, int length, System.Buffers.IMemoryOwner<long> data) : base(name, length, data) { }
+        public Int64Series(string name, int length, System.Buffers.IMemoryOwner<long> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+
+        public static Int64Series FromValues(string name, long?[] values)
+        {
+            var series = new Int64Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
 
         public static Int64Series FromMmf(string name, string filePath, int length)
         {
@@ -175,27 +254,88 @@ namespace Glacier.Polaris.Data
     public sealed class UInt8Series : Series<byte>
     {
         public UInt8Series(string name, int length) : base(name, length) { }
+        public UInt8Series(string name, int length, System.Buffers.IMemoryOwner<byte> data) : base(name, length, data) { }
+        public UInt8Series(string name, int length, System.Buffers.IMemoryOwner<byte> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public UInt8Series(string name, byte[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static UInt8Series FromValues(string name, byte?[] values)
+        {
+            var series = new UInt8Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class UInt16Series : Series<ushort>
     {
         public UInt16Series(string name, int length) : base(name, length) { }
+        public UInt16Series(string name, int length, System.Buffers.IMemoryOwner<ushort> data) : base(name, length, data) { }
+        public UInt16Series(string name, int length, System.Buffers.IMemoryOwner<ushort> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public UInt16Series(string name, ushort[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static UInt16Series FromValues(string name, ushort?[] values)
+        {
+            var series = new UInt16Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class UInt32Series : Series<uint>
     {
         public UInt32Series(string name, int length) : base(name, length) { }
+        public UInt32Series(string name, int length, System.Buffers.IMemoryOwner<uint> data) : base(name, length, data) { }
+        public UInt32Series(string name, int length, System.Buffers.IMemoryOwner<uint> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public UInt32Series(string name, uint[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static UInt32Series FromValues(string name, uint?[] values)
+        {
+            var series = new UInt32Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class UInt64Series : Series<ulong>
     {
         public UInt64Series(string name, int length) : base(name, length) { }
+        public UInt64Series(string name, int length, System.Buffers.IMemoryOwner<ulong> data) : base(name, length, data) { }
+        public UInt64Series(string name, int length, System.Buffers.IMemoryOwner<ulong> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
+        public UInt64Series(string name, ulong[] data) : base(name, data.Length) { data.CopyTo(Memory); }
+
+        public static UInt64Series FromValues(string name, ulong?[] values)
+        {
+            var series = new UInt64Series(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
     }
 
     public sealed class Float32Series : Series<float>
     {
         public Float32Series(string name, int length) : base(name, length) { }
         public Float32Series(string name, int length, System.Buffers.IMemoryOwner<float> data) : base(name, length, data) { }
+        public Float32Series(string name, int length, System.Buffers.IMemoryOwner<float> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
         public Float32Series(string name, float[] data) : base(name, data.Length)
         {
             data.CopyTo(Memory);
@@ -290,18 +430,7 @@ namespace Glacier.Polaris.Data
             return Compute.GpuPolarisAccelerator.VectorSum(Memory.Span, target);
         }
 
-        public override IArrowArray ToArrowArray()
-        {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-
-            return new FloatArray(
-                new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-                nullBitmapBuilder.Build(),
-                Length,
-                ValidityMask.NullCount,
-                0);
-        }
+        
     }
 
     public sealed class Float64Series : Series<double>
@@ -309,6 +438,7 @@ namespace Glacier.Polaris.Data
         public Float64Series(string name, int length) : base(name, length) { }
         public Float64Series(string name, int length, bool clear, bool setAllValid) : base(name, length, clear, setAllValid) { }
         public Float64Series(string name, int length, System.Buffers.IMemoryOwner<double> data) : base(name, length, data) { }
+        public Float64Series(string name, int length, System.Buffers.IMemoryOwner<double> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
 
         public static Float64Series FromMmf(string name, string filePath, int length)
         {
@@ -332,48 +462,61 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
-        public override IArrowArray ToArrowArray()
-        {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-
-            return new DoubleArray(
-            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
-        }
+        
     }
 
     public sealed class BooleanSeries : Series<bool>
     {
         public BooleanSeries(string name, int length) : base(name, length) { }
+        public BooleanSeries(string name, int length, System.Buffers.IMemoryOwner<bool> data) : base(name, length, data) { }
+        public BooleanSeries(string name, int length, System.Buffers.IMemoryOwner<bool> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
         public BooleanSeries(string name, bool[] data) : base(name, data.Length)
         {
             data.CopyTo(Memory);
         }
 
-        public override IArrowArray ToArrowArray()
+        public static BooleanSeries FromValues(string name, bool?[] values)
         {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
+            var series = new BooleanSeries(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
 
-            var valueBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) valueBitmapBuilder.Append(Memory.Span[i]);
-
-            return new BooleanArray(
-            valueBitmapBuilder.Build(),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
+        public override ArrowColumn ToArrowColumn()
+        {
+            int byteCount = (Length + 7) / 8;
+            var packed = new NativeMemoryOwner<byte>(byteCount);
+            var packedSpan = packed.Span;
+            packedSpan.Clear();
+            var boolSpan = Memory.Span;
+            for (int i = 0; i < Length; i++)
+            {
+                if (boolSpan[i])
+                {
+                    packedSpan[i >> 3] |= (byte)(1 << (i & 7));
+                }
+            }
+            var field = new ArrowField(Name, ArrowType.Boolean, isNullable: _validityMask.HasNulls);
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                ReadOnlyMemory<byte>.Empty,
+                packed.AsBytesMemory());
         }
     }
 
     public sealed class DateSeries : Series<int>
     {
         public DateSeries(string name, int length) : base(name, length) { }
+        public DateSeries(string name, int length, System.Buffers.IMemoryOwner<int> data) : base(name, length, data) { }
+        public DateSeries(string name, int length, System.Buffers.IMemoryOwner<int> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
         public DateSeries(string name, DateTime[] data) : base(name, data.Length)
         {
             var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -384,55 +527,90 @@ namespace Glacier.Polaris.Data
             }
         }
 
-        public override IArrowArray ToArrowArray()
+        public static DateSeries FromValues(string name, int?[] values)
         {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
+            var series = new DateSeries(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
 
-            return new Date32Array(
-            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
+        public override ArrowColumn ToArrowColumn()
+        {
+            var field = new ArrowField(Name, ArrowType.Date32, isNullable: _validityMask.HasNulls);
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                ReadOnlyMemory<byte>.Empty,
+                AsBytesMemory());
         }
     }
 
     public sealed class DatetimeSeries : Series<long>
     {
         public DatetimeSeries(string name, int length) : base(name, length) { }
+        public DatetimeSeries(string name, int length, System.Buffers.IMemoryOwner<long> data) : base(name, length, data) { }
+        public DatetimeSeries(string name, int length, System.Buffers.IMemoryOwner<long> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
 
-        public override IArrowArray ToArrowArray()
+        public static DatetimeSeries FromValues(string name, long?[] values)
         {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
+            var series = new DatetimeSeries(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
 
-            return new TimestampArray(
-            new TimestampType(TimeUnit.Nanosecond, (string?)null),
-            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
+        public override ArrowColumn ToArrowColumn()
+        {
+            var field = new ArrowField(Name, ArrowType.Timestamp, isNullable: _validityMask.HasNulls);
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                ReadOnlyMemory<byte>.Empty,
+                AsBytesMemory());
         }
     }
 
     public sealed class DurationSeries : Series<long>
     {
         public DurationSeries(string name, int length) : base(name, length) { }
+        public DurationSeries(string name, int length, System.Buffers.IMemoryOwner<long> data) : base(name, length, data) { }
+        public DurationSeries(string name, int length, System.Buffers.IMemoryOwner<long> data, ValidityMask validityMask) : base(name, length, data, validityMask) { }
 
-        public override IArrowArray ToArrowArray()
+        public static DurationSeries FromValues(string name, long?[] values)
         {
-            var nullBitmapBuilder = new ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
+            var series = new DurationSeries(name, values.Length);
+            var span = series.Memory.Span;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] == null) series.ValidityMask.SetNull(i);
+                else span[i] = values[i]!.Value;
+            }
+            return series;
+        }
 
-            return new DurationArray(
-            DurationType.Nanosecond,
-            new ArrowBuffer(System.Runtime.InteropServices.MemoryMarshal.AsBytes(Memory.Span).ToArray()),
-            nullBitmapBuilder.Build(),
-            Length,
-            ValidityMask.NullCount,
-            0);
+        public override ArrowColumn ToArrowColumn()
+        {
+            var field = new ArrowField(Name, ArrowType.Duration, isNullable: _validityMask.HasNulls);
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                ReadOnlyMemory<byte>.Empty,
+                AsBytesMemory());
         }
     }
 
@@ -443,11 +621,20 @@ namespace Glacier.Polaris.Data
         public Type DataType => typeof(string);
         public int Length { get; }
 
-        private readonly MemoryOwnerColumn<byte> _dataBytes;
-        private readonly MemoryOwnerColumn<int> _offsets;
+        private readonly System.Buffers.IMemoryOwner<byte> _dataBytes;
+        private readonly System.Buffers.IMemoryOwner<int> _offsets;
         private readonly Glacier.Polaris.Memory.ValidityMask _validityMask;
 
         public Glacier.Polaris.Memory.ValidityMask ValidityMask => _validityMask;
+
+        public Utf8StringSeries(string name, int length, System.Buffers.IMemoryOwner<int> offsets, System.Buffers.IMemoryOwner<byte> dataBytes, ValidityMask validityMask)
+        {
+            Name = name;
+            Length = length;
+            _offsets = offsets;
+            _dataBytes = dataBytes;
+            _validityMask = validityMask;
+        }
 
         public Utf8StringSeries(string name, int length)
         {
@@ -599,15 +786,29 @@ namespace Glacier.Polaris.Data
             else throw new InvalidOperationException("Type mismatch in Take.");
         }
 
-        public Apache.Arrow.IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var builder = new Apache.Arrow.StringArray.Builder();
-            for (int i = 0; i < Length; i++)
-            {
-                if (ValidityMask.IsNull(i)) builder.AppendNull();
-                else builder.Append(GetString(i));
-            }
-            return builder.Build();
+            var field = new ArrowField(Name, ArrowType.Utf8, isNullable: _validityMask.HasNulls);
+            ReadOnlyMemory<byte> offsetsMem;
+            if (_offsets is NativeMemoryOwner<int> nativeOffsets)
+                offsetsMem = nativeOffsets.AsBytesMemory();
+            else
+                offsetsMem = MemoryMarshal.AsBytes(_offsets.Memory.Span[..(Length + 1)]).ToArray();
+
+            int totalBytes = Length > 0 ? _offsets.Memory.Span[Length] : 0;
+            ReadOnlyMemory<byte> dataMem;
+            if (_dataBytes is NativeMemoryOwner<byte> nativeData)
+                dataMem = nativeData.AsBytesMemory().Slice(0, totalBytes);
+            else
+                dataMem = _dataBytes.Memory.Slice(0, totalBytes);
+
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                offsetsMem,
+                dataMem);
         }
 
         public ISeries CloneEmpty(int length)

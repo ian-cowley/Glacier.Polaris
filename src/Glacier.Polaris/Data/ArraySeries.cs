@@ -1,6 +1,5 @@
 using System;
-using Apache.Arrow;
-using Apache.Arrow.Types;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -86,17 +85,10 @@ namespace Glacier.Polaris.Data
              else target.ValidityMask.SetValid(targetIdx);
         }
 
-        public IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var valueArray = Values.ToArrowArray();
-            var nullBitmapBuilder = new Apache.Arrow.ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++)
-            {
-                if (ValidityMask.IsValid(i)) nullBitmapBuilder.Append(true);
-                else nullBitmapBuilder.Append(false);
-            }
-
-            return new FixedSizeListArray(new FixedSizeListType(valueArray.Data.DataType, Width), Length, valueArray, nullBitmapBuilder.Build());
+            var field = new ArrowField(Name, ArrowType.Binary, isNullable: ValidityMask.HasNulls);
+            return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, Values.ToArrowColumn().DataBuffer);
         }
     }
 }

@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
@@ -231,6 +233,79 @@ namespace Glacier.Polaris.Memory
 
             // 3. Set all valid
             resultMask.SetAllValid();
+        }
+
+        /// <summary>
+        /// Constructs a ValidityMask from an Arrow IPC null bitmap via direct little-endian bit blit.
+        /// </summary>
+        public static ValidityMask FromNullBitmap(int length, ReadOnlySpan<byte> nullBitmap)
+        {
+            var mask = new ValidityMask(length, setAllValid: false);
+            if (length == 0) return mask;
+
+            int bytesToCopy = Math.Min(nullBitmap.Length, (length + 7) / 8);
+            if (bytesToCopy > 0)
+            {
+                Span<byte> maskBytes = MemoryMarshal.AsBytes(mask.AsWritableSpan());
+                nullBitmap[..bytesToCopy].CopyTo(maskBytes);
+            }
+
+            // Set any padding bits in the last word beyond length to 1 so they aren't counted as null
+            int rem = length % 64;
+            if (rem != 0 && mask.WordCount > 0)
+            {
+                ulong paddingOnes = ~((1UL << rem) - 1UL);
+                mask.SetWord(mask.WordCount - 1, mask.GetWord(mask.WordCount - 1) | paddingOnes);
+            }
+
+            return mask;
+        }
+
+        /// <summary>
+        /// Returns a zero-copy ReadOnlyMemory view of the null bitmap for Arrow IPC streaming.
+        /// Returns ReadOnlyMemory.Empty if there are no nulls.
+        /// </summary>
+        public ReadOnlyMemory<byte> GetNullBitmapMemory()
+        {
+            if (!HasNulls || Length == 0) return ReadOnlyMemory<byte>.Empty;
+            int nullBytes = (Length + 7) / 8;
+            return new ValidityMaskMemoryManager(_mask, nullBytes).Memory;
+        }
+
+        /// <summary>
+        /// Copies the little-endian validity bitmap bytes to a destination span.
+        /// </summary>
+        public void CopyToNullBitmap(Span<byte> destination)
+        {
+            int bytesToCopy = Math.Min(destination.Length, (Length + 7) / 8);
+            if (bytesToCopy > 0)
+            {
+                MemoryMarshal.AsBytes(AsSpan())[..bytesToCopy].CopyTo(destination);
+            }
+        }
+
+        private sealed unsafe class ValidityMaskMemoryManager : MemoryManager<byte>
+        {
+            private readonly ulong[] _mask;
+            private readonly int _length;
+            private GCHandle _handle;
+            private byte* _ptr;
+
+            public ValidityMaskMemoryManager(ulong[] mask, int length)
+            {
+                _mask = mask;
+                _length = length;
+                _handle = GCHandle.Alloc(mask, GCHandleType.Pinned);
+                _ptr = (byte*)_handle.AddrOfPinnedObject();
+            }
+
+            public override Span<byte> GetSpan() => new Span<byte>(_ptr, _length);
+            public override MemoryHandle Pin(int elementIndex = 0) => new MemoryHandle(_ptr + elementIndex);
+            public override void Unpin() { }
+            protected override void Dispose(bool disposing)
+            {
+                if (_handle.IsAllocated) _handle.Free();
+            }
         }
     }
 }

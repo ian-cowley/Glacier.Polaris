@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -90,15 +90,15 @@ namespace Glacier.Polaris.Data
         /// Serialise to Arrow as a StringArray (each value is ToString()'d).
         /// This is a lossy conversion: round-tripping yields Utf8StringSeries.
         /// </summary>
-        public IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var builder = new StringArray.Builder();
+            var strings = new string?[Length];
             for (int i = 0; i < Length; i++)
             {
-                if (ValidityMask.IsNull(i)) builder.AppendNull();
-                else builder.Append(_data[i]?.ToString() ?? string.Empty);
+                strings[i] = ValidityMask.IsNull(i) ? null : (_data[i]?.ToString() ?? string.Empty);
             }
-            return builder.Build();
+            using var utf8 = Utf8StringSeries.FromStrings(Name, strings);
+            return utf8.ToArrowColumn();
         }
 
         public void Dispose() { /* managed array */ }

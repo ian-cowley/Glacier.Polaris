@@ -1,4 +1,5 @@
 using System;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris.Data
 {
@@ -112,20 +113,11 @@ namespace Glacier.Polaris.Data
             throw new NotSupportedException("ListSeries.Take(int,int) is not supported.");
         }
 
-        public Apache.Arrow.IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var valueArray = Values.ToArrowArray();
-            var offsetBuf = new Apache.Arrow.ArrowBuffer.Builder<int>();
-            var offsetSpan = Offsets.Memory.Span;
-            for (int i = 0; i <= Length; i++) offsetBuf.Append(offsetSpan[i]);
-            var nullBitmapBuilder = new Apache.Arrow.ArrowBuffer.BitmapBuilder(Length);
-            for (int i = 0; i < Length; i++) nullBitmapBuilder.Append(ValidityMask.IsValid(i));
-            return new Apache.Arrow.ListArray(
-                new Apache.Arrow.Types.ListType(valueArray.Data.DataType),
-                Length,
-                offsetBuf.Build(),
-                valueArray,
-                nullBitmapBuilder.Build());
+            var field = new ArrowField(Name, ArrowType.Binary, isNullable: ValidityMask.HasNulls);
+            var offsetBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(Offsets.Memory.Span[..(Length + 1)]).ToArray();
+            return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), offsetBytes, Values.ToArrowColumn().DataBuffer);
         }
         public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
         public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);

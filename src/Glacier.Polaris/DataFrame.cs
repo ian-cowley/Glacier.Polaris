@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Apache.Arrow;
-using Apache.Arrow.Ipc;
-using Apache.Arrow.Types;
+using Glacier.Storage.Arrow;
 
 namespace Glacier.Polaris
 {
@@ -508,142 +506,23 @@ namespace Glacier.Polaris
             return target;
         }
 
-        public RecordBatch ToArrowRecordBatch()
+        public ArrowRecordBatch ToArrowRecordBatch() => IO.GlacierStorageBridge.ToGlacierRecordBatch(this);
+        public ArrowRecordBatch ToArrow() => ToArrowRecordBatch();
+        public ArrowRecordBatch ToGlacierRecordBatch() => IO.GlacierStorageBridge.ToGlacierRecordBatch(this);
+        public void ToArrowIpc(System.IO.Stream destinationStream, bool leaveOpen = false) => IO.GlacierStorageBridge.ToArrowIpc(this, destinationStream, leaveOpen);
+        public void ToArrowIpc(string filePath)
         {
-            var schemaBuilder = new Schema.Builder();
-            var arrays = new List<IArrowArray>();
-
-            foreach (var col in Columns)
-            {
-                var arrowArr = col.ToArrowArray();
-                schemaBuilder.Field(f => f.Name(col.Name).DataType(arrowArr.Data.DataType).Nullable(col.ValidityMask.HasNulls));
-                arrays.Add(arrowArr);
-            }
-
-            return new RecordBatch(schemaBuilder.Build(), arrays, RowCount);
+            using var fs = System.IO.File.Create(filePath);
+            ToArrowIpc(fs);
         }
-
-        public RecordBatch ToArrow() => ToArrowRecordBatch();
-
-        public static DataFrame FromArrowRecordBatch(RecordBatch batch)
+        public static DataFrame FromArrowRecordBatch(ArrowRecordBatch batch) => IO.GlacierStorageBridge.FromGlacierRecordBatch(batch);
+        public static DataFrame FromArrow(ArrowRecordBatch batch) => FromArrowRecordBatch(batch);
+        public static DataFrame FromGlacierRecordBatch(ArrowRecordBatch batch) => IO.GlacierStorageBridge.FromGlacierRecordBatch(batch);
+        public static DataFrame FromArrowIpc(System.IO.Stream sourceStream, bool leaveOpen = false) => IO.GlacierStorageBridge.FromArrowIpc(sourceStream, leaveOpen);
+        public static DataFrame FromArrowIpc(string filePath)
         {
-            var columns = new List<ISeries>();
-            for (int i = 0; i < batch.ColumnCount; i++)
-            {
-                var field = batch.Schema.GetFieldByIndex(i);
-                var array = batch.Column(i);
-                columns.Add(FromArrowArray(field.Name, array));
-            }
-            return new DataFrame(columns);
-        }
-
-        public static DataFrame FromArrow(RecordBatch batch) => FromArrowRecordBatch(batch);
-
-        private static ISeries FromArrowArray(string name, IArrowArray array)
-        {
-            if (array is Int32Array i32)
-            {
-                var s = new Data.Int32Series(name, i32.Length);
-                i32.Values.CopyTo(s.Memory.Span);
-                for (int i = 0; i < i32.Length; i++)
-                {
-                    if (i32.IsNull(i)) s.ValidityMask.SetNull(i);
-                    else s.ValidityMask.SetValid(i);
-                }
-                return s;
-            }
-            if (array is DoubleArray f64)
-            {
-                var s = new Data.Float64Series(name, f64.Length);
-                f64.Values.CopyTo(s.Memory.Span);
-                for (int i = 0; i < f64.Length; i++)
-                {
-                    if (f64.IsNull(i)) s.ValidityMask.SetNull(i);
-                    else s.ValidityMask.SetValid(i);
-                }
-                return s;
-            }
-            if (array is StringArray str)
-            {
-                var strings = new string?[str.Length];
-                for (int i = 0; i < str.Length; i++) strings[i] = str.GetString(i);
-                return Data.Utf8StringSeries.FromStrings(name, strings);
-            }
-            if (array is BooleanArray bl)
-            {
-                var s = new Data.BooleanSeries(name, bl.Length);
-                for (int i = 0; i < bl.Length; i++)
-                {
-                    var val = bl.GetValue(i);
-                    if (val.HasValue)
-                    {
-                        s.Memory.Span[i] = val.Value;
-                        s.ValidityMask.SetValid(i);
-                    }
-                    else s.ValidityMask.SetNull(i);
-                }
-                return s;
-            }
-            if (array is StructArray sa)
-            {
-                var structType = (StructType)sa.Data.DataType;
-                var fields = new ISeries[sa.Fields.Count];
-                for (int i = 0; i < sa.Fields.Count; i++)
-                {
-                    fields[i] = FromArrowArray(structType.Fields[i].Name, sa.Fields[i]);
-                }
-                var s = new Data.StructSeries(name, fields);
-                for (int i = 0; i < sa.Length; i++)
-                {
-                    if (sa.IsNull(i)) s.ValidityMask.SetNull(i);
-                    else s.ValidityMask.SetValid(i);
-                }
-                return s;
-            }
-
-            if (array is Decimal128Array dec)
-            {
-                var decType = (Decimal128Type)dec.Data.DataType;
-                var values = new decimal?[dec.Length];
-                for (int i = 0; i < dec.Length; i++)
-                    values[i] = dec.IsNull(i) ? null : dec.GetValue(i);
-                return new Data.DecimalSeries(name, values, decType.Precision, decType.Scale);
-            }
-            if (array is BinaryArray bin)
-            {
-                var values = new byte[]?[bin.Length];
-                for (int i = 0; i < bin.Length; i++)
-                {
-                    if (bin.IsNull(i)) values[i] = null;
-                    else
-                    {
-                        var slice = bin.Data.Buffers[2].Span;
-                        int start = bin.ValueOffsets[i];
-                        int end = bin.ValueOffsets[i + 1];
-                        values[i] = slice.Slice(start, end - start).ToArray();
-                    }
-                }
-                return new Data.BinarySeries(name, values);
-            }
-            if (array is NullArray nullArr)
-            {
-                return new Data.NullSeries(name, nullArr.Length);
-            }
-            if (array is Time64Array time)
-            {
-                var values = new long[time.Length];
-                for (int i = 0; i < time.Length; i++)
-                    values[i] = time.IsNull(i) ? 0 : time.GetValue(i)!.Value;
-                var s = new Data.TimeSeries(name, time.Length);
-                values.CopyTo(s.Memory.Span);
-                for (int i = 0; i < time.Length; i++)
-                {
-                    if (time.IsNull(i)) s.ValidityMask.SetNull(i);
-                    else s.ValidityMask.SetValid(i);
-                }
-                return s;
-            }
-            throw new NotSupportedException($"Arrow type {array.Data.DataType.Name} not supported yet.");
+            using var fs = System.IO.File.OpenRead(filePath);
+            return FromArrowIpc(fs);
         }
         /// <summary>
         /// Returns a new DataFrame containing only the last n rows.
@@ -1239,7 +1118,7 @@ public DataFrame Kde(string column, double bandwidth, int gridPoints = 100)
         Glacier.Polaris.Memory.ValidityMask ValidityMask { get; }
         object? Get(int i);
         ISeries CloneEmpty(int length);
-        Apache.Arrow.IArrowArray ToArrowArray();
+        Glacier.Storage.Arrow.ArrowColumn ToArrowColumn();
         void CopyTo(ISeries target, int offset);
         void Take(ISeries target, ReadOnlySpan<int> indices);
         void Take(ISeries target, int srcIdx, int targetIdx);

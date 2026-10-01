@@ -53,7 +53,7 @@ namespace Glacier.Polaris.Tests
         {
             var original = new DecimalSeries("amount", new decimal?[] { 1.23m, null, 456.789m }, precision: 18, scale: 3);
 
-            var arrowArray = original.ToArrowArray();
+            var arrowArray = original.ToArrowColumn();
             Assert.NotNull(arrowArray);
 
             // Round-trip through DataFrame Arrow interop
@@ -155,19 +155,17 @@ namespace Glacier.Polaris.Tests
         }
 
         [Fact]
-        public void ObjectSeries_ToArrowArray_SerialisesAsStrings()
+        public void ObjectSeries_ToArrowColumn_SerialisesAsStrings()
         {
             var s = new ObjectSeries("o", new object?[] { 42, "hi", null });
-            var arr = s.ToArrowArray();
+            var arr = s.ToArrowColumn();
 
             Assert.NotNull(arr);
             Assert.Equal(3, arr.Length);
-            // Arrow type will be StringArray (lossy serialisation)
-            Assert.IsType<Apache.Arrow.StringArray>(arr);
-            var sa = (Apache.Arrow.StringArray)arr;
-            Assert.Equal("42", sa.GetString(0));
-            Assert.Equal("hi", sa.GetString(1));
-            Assert.True(sa.IsNull(2));
+            Assert.Equal(Glacier.Storage.Arrow.ArrowTypeId.Utf8, arr.Field.DataType.Id);
+            Assert.Equal("42", arr.GetString(0));
+            Assert.Equal("hi", arr.GetString(1));
+            Assert.True(arr.IsNull(2));
         }
 
         [Fact]
@@ -197,13 +195,13 @@ namespace Glacier.Polaris.Tests
         }
 
         [Fact]
-        public void NullSeries_ArrowRoundTrip_ProducesNullArray()
+        public void NullSeries_ArrowRoundTrip_ProducesNullColumn()
         {
             var s = new NullSeries("n", 4);
-            var arr = s.ToArrowArray();
+            var arr = s.ToArrowColumn();
 
             Assert.NotNull(arr);
-            Assert.IsType<Apache.Arrow.NullArray>(arr);
+            Assert.Equal(Glacier.Storage.Arrow.ArrowTypeId.Null, arr.Field.DataType.Id);
             Assert.Equal(4, arr.Length);
         }
 

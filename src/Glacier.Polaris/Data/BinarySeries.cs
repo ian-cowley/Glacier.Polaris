@@ -1,6 +1,7 @@
 using System;
 using Glacier.Polaris.Memory;
-using Apache.Arrow;
+using Glacier.Storage.Arrow;
+using System.Runtime.InteropServices;
 
 namespace Glacier.Polaris.Data
 {
@@ -11,11 +12,20 @@ namespace Glacier.Polaris.Data
         public Type DataType => typeof(byte[]);
         public int Length { get; }
 
-        private readonly MemoryOwnerColumn<byte> _dataBytes;
-        private readonly MemoryOwnerColumn<int> _offsets;
+        private readonly System.Buffers.IMemoryOwner<byte> _dataBytes;
+        private readonly System.Buffers.IMemoryOwner<int> _offsets;
         private readonly ValidityMask _validityMask;
 
         public ValidityMask ValidityMask => _validityMask;
+
+        public BinarySeries(string name, int length, System.Buffers.IMemoryOwner<int> offsets, System.Buffers.IMemoryOwner<byte> dataBytes, ValidityMask validityMask)
+        {
+            Name = name;
+            Length = length;
+            _offsets = offsets;
+            _dataBytes = dataBytes;
+            _validityMask = validityMask;
+        }
 
         public BinarySeries(string name, int length, int totalBytes)
         {
@@ -113,15 +123,29 @@ namespace Glacier.Polaris.Data
             return GetSpan(i).ToArray();
         }
 
-        public IArrowArray ToArrowArray()
+        public ArrowColumn ToArrowColumn()
         {
-            var builder = new BinaryArray.Builder();
-            for (int i = 0; i < Length; i++)
-            {
-                if (ValidityMask.IsNull(i)) builder.AppendNull();
-                else builder.Append(GetSpan(i));
-            }
-            return builder.Build();
+            var field = new ArrowField(Name, ArrowType.Binary, isNullable: _validityMask.HasNulls);
+            ReadOnlyMemory<byte> offsetsMem;
+            if (_offsets is NativeMemoryOwner<int> nativeOffsets)
+                offsetsMem = nativeOffsets.AsBytesMemory();
+            else
+                offsetsMem = MemoryMarshal.AsBytes(_offsets.Memory.Span[..(Length + 1)]).ToArray();
+
+            int totalBytes = Length > 0 ? _offsets.Memory.Span[Length] : 0;
+            ReadOnlyMemory<byte> dataMem;
+            if (_dataBytes is NativeMemoryOwner<byte> nativeData)
+                dataMem = nativeData.AsBytesMemory().Slice(0, totalBytes);
+            else
+                dataMem = _dataBytes.Memory.Slice(0, totalBytes);
+
+            return new ArrowColumn(
+                field,
+                Length,
+                _validityMask.NullCount,
+                _validityMask.GetNullBitmapMemory(),
+                offsetsMem,
+                dataMem);
         }
 
         public void Dispose()
