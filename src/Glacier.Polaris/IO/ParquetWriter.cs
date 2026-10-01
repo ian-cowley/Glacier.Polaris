@@ -51,47 +51,98 @@ namespace Glacier.Polaris.IO
             // Write as a single row group
             using var rowGroup = writer.CreateRowGroup();
 
+            var dataColumns = new DataColumn[colCount];
+            System.Threading.Tasks.Parallel.For(0, colCount, i =>
+            {
+                dataColumns[i] = new DataColumn(dataFields[i], fieldData[i].GetValues(rowCount));
+            });
+
             for (int i = 0; i < colCount; i++)
             {
-                var dataColumn = new DataColumn(dataFields[i], fieldData[i].GetValues(rowCount));
-                await rowGroup.WriteColumnAsync(dataColumn, ct);
+                await rowGroup.WriteColumnAsync(dataColumns[i], ct);
             }
         }
 
         private static (DataField field, ColData data) CreateParquetColumn(ISeries series)
         {
+            bool hasNulls = series.ValidityMask.HasNulls;
+
             if (series is Int32Series i32)
-                return (new DataField<int?>(series.Name), new Int32ColData(i32));
+            {
+                return hasNulls
+                    ? (new DataField<int?>(series.Name), new Int32ColData(i32))
+                    : (new DataField<int>(series.Name), new NonNullInt32ColData(i32));
+            }
             if (series is Int64Series i64)
-                return (new DataField<long?>(series.Name), new Int64ColData(i64));
+            {
+                return hasNulls
+                    ? (new DataField<long?>(series.Name), new Int64ColData(i64))
+                    : (new DataField<long>(series.Name), new NonNullInt64ColData(i64));
+            }
             if (series is Float64Series f64)
-                return (new DataField<double?>(series.Name), new Float64ColData(f64));
-            if (series is Utf8StringSeries u8)
-                return (new DataField<string>(series.Name), new StringColData(u8));
-            if (series is BooleanSeries bl)
-                return (new DataField<bool?>(series.Name), new BoolColData(bl));
-            if (series is Int8Series i8)
-                return (new DataField<int>(series.Name), new Int32ColData(FromInt8(i8)));
-            if (series is Int16Series i16)
-                return (new DataField<int>(series.Name), new Int32ColData(FromInt16(i16)));
-            if (series is UInt8Series u8s)
-                return (new DataField<int>(series.Name), new Int32ColData(FromUInt8(u8s)));
-            if (series is UInt16Series u16)
-                return (new DataField<int>(series.Name), new Int32ColData(FromUInt16(u16)));
-            if (series is UInt32Series u32)
-                return (new DataField<long>(series.Name), new Int64ColData(FromUInt32(u32)));
+            {
+                return hasNulls
+                    ? (new DataField<double?>(series.Name), new Float64ColData(f64))
+                    : (new DataField<double>(series.Name), new NonNullFloat64ColData(f64));
+            }
             if (series is Float32Series f32)
-                return (new DataField<float?>(series.Name), new Float32ColData(f32));
+            {
+                return hasNulls
+                    ? (new DataField<float?>(series.Name), new Float32ColData(f32))
+                    : (new DataField<float>(series.Name), new NonNullFloat32ColData(f32));
+            }
+            if (series is BooleanSeries bl)
+            {
+                return hasNulls
+                    ? (new DataField<bool?>(series.Name), new BoolColData(bl))
+                    : (new DataField<bool>(series.Name), new NonNullBoolColData(bl));
+            }
+            if (series is Utf8StringSeries u8)
+            {
+                return hasNulls
+                    ? (new DataField<string?>(series.Name), new StringColData(u8))
+                    : (new DataField<string>(series.Name), new NonNullStringColData(u8));
+            }
+            if (series is Int8Series i8)
+                return (new DataField<int>(series.Name), new NonNullInt32ColData(FromInt8(i8)));
+            if (series is Int16Series i16)
+                return (new DataField<int>(series.Name), new NonNullInt32ColData(FromInt16(i16)));
+            if (series is UInt8Series u8s)
+                return (new DataField<int>(series.Name), new NonNullInt32ColData(FromUInt8(u8s)));
+            if (series is UInt16Series u16)
+                return (new DataField<int>(series.Name), new NonNullInt32ColData(FromUInt16(u16)));
+            if (series is UInt32Series u32)
+                return (new DataField<long>(series.Name), new NonNullInt64ColData(FromUInt32(u32)));
             if (series is DateSeries date)
-                return (new DataField<DateTime>(series.Name), new DateColData(date));
+            {
+                return hasNulls
+                    ? (new DataField<DateTime?>(series.Name), new DateColData(date))
+                    : (new DataField<DateTime>(series.Name), new NonNullDateColData(date));
+            }
             if (series is DatetimeSeries dt)
-                return (new DataField<DateTime>(series.Name), new DatetimeColData(dt));
+            {
+                return hasNulls
+                    ? (new DataField<DateTime?>(series.Name), new DatetimeColData(dt))
+                    : (new DataField<DateTime>(series.Name), new NonNullDatetimeColData(dt));
+            }
             if (series is DecimalSeries dec)
-                return (new DataField<decimal>(series.Name), new DecimalColData(dec));
+            {
+                return hasNulls
+                    ? (new DataField<decimal?>(series.Name), new DecimalColData(dec))
+                    : (new DataField<decimal>(series.Name), new NonNullDecimalColData(dec));
+            }
             if (series is TimeSeries time)
-                return (new DataField<TimeSpan>(series.Name), new TimeColData(time));
+            {
+                return hasNulls
+                    ? (new DataField<TimeSpan?>(series.Name), new TimeColData(time))
+                    : (new DataField<TimeSpan>(series.Name), new NonNullTimeColData(time));
+            }
             if (series is DurationSeries dur)
-                return (new DataField<TimeSpan>(series.Name), new DurationColData(dur));
+            {
+                return hasNulls
+                    ? (new DataField<TimeSpan?>(series.Name), new DurationColData(dur))
+                    : (new DataField<TimeSpan>(series.Name), new NonNullDurationColData(dur));
+            }
 
             // Fallback: treat as string
             var strings = new string?[series.Length];
@@ -357,6 +408,129 @@ namespace Glacier.Polaris.IO
                     {
                         result[i] = TimeSpan.FromTicks(_s.Memory.Span[i] / 100);
                     }
+                }
+                return result;
+            }
+        }
+
+        private sealed class NonNullInt32ColData : ColData
+        {
+            private readonly Int32Series _s;
+            public NonNullInt32ColData(Int32Series s) => _s = s;
+            public override Array GetValues(int length) => _s.Memory.Span.Slice(0, length).ToArray();
+        }
+
+        private sealed class NonNullInt64ColData : ColData
+        {
+            private readonly Int64Series _s;
+            public NonNullInt64ColData(Int64Series s) => _s = s;
+            public override Array GetValues(int length) => _s.Memory.Span.Slice(0, length).ToArray();
+        }
+
+        private sealed class NonNullFloat64ColData : ColData
+        {
+            private readonly Float64Series _s;
+            public NonNullFloat64ColData(Float64Series s) => _s = s;
+            public override Array GetValues(int length) => _s.Memory.Span.Slice(0, length).ToArray();
+        }
+
+        private sealed class NonNullFloat32ColData : ColData
+        {
+            private readonly Float32Series _s;
+            public NonNullFloat32ColData(Float32Series s) => _s = s;
+            public override Array GetValues(int length) => _s.Memory.Span.Slice(0, length).ToArray();
+        }
+
+        private sealed class NonNullBoolColData : ColData
+        {
+            private readonly BooleanSeries _s;
+            public NonNullBoolColData(BooleanSeries s) => _s = s;
+            public override Array GetValues(int length) => _s.Memory.Span.Slice(0, length).ToArray();
+        }
+
+        private sealed class NonNullStringColData : ColData
+        {
+            private readonly Utf8StringSeries _s;
+            public NonNullStringColData(Utf8StringSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new string[length];
+                for (int i = 0; i < length; i++)
+                    result[i] = _s.GetString(i) ?? string.Empty;
+                return result;
+            }
+        }
+
+        private sealed class NonNullDateColData : ColData
+        {
+            private readonly DateSeries _s;
+            public NonNullDateColData(DateSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new DateTime[length];
+                for (int i = 0; i < length; i++)
+                {
+                    var dateOnly = DateOnly.FromDayNumber((int)_s.Memory.Span[i]);
+                    result[i] = dateOnly.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+                }
+                return result;
+            }
+        }
+
+        private sealed class NonNullDatetimeColData : ColData
+        {
+            private readonly DatetimeSeries _s;
+            public NonNullDatetimeColData(DatetimeSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new DateTime[length];
+                for (int i = 0; i < length; i++)
+                {
+                    result[i] = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(_s.Memory.Span[i] * 10);
+                }
+                return result;
+            }
+        }
+
+        private sealed class NonNullDecimalColData : ColData
+        {
+            private readonly DecimalSeries _s;
+            public NonNullDecimalColData(DecimalSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new decimal[length];
+                for (int i = 0; i < length; i++)
+                    result[i] = _s.GetValue(i) ?? 0m;
+                return result;
+            }
+        }
+
+        private sealed class NonNullTimeColData : ColData
+        {
+            private readonly TimeSeries _s;
+            public NonNullTimeColData(TimeSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new TimeSpan[length];
+                for (int i = 0; i < length; i++)
+                {
+                    long nanos = _s.Memory.Span[i];
+                    result[i] = new TimeSpan(nanos / 100);
+                }
+                return result;
+            }
+        }
+
+        private sealed class NonNullDurationColData : ColData
+        {
+            private readonly DurationSeries _s;
+            public NonNullDurationColData(DurationSeries s) => _s = s;
+            public override Array GetValues(int length)
+            {
+                var result = new TimeSpan[length];
+                for (int i = 0; i < length; i++)
+                {
+                    result[i] = TimeSpan.FromTicks(_s.Memory.Span[i] / 100);
                 }
                 return result;
             }
