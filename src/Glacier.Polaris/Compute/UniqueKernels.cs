@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Glacier.Polaris.Data;
 
 namespace Glacier.Polaris.Compute
@@ -11,7 +14,9 @@ namespace Glacier.Polaris.Compute
         {
             if (series is Int32Series i32)
             {
-                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                int len = i32.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastIntSet(cap);
                 var span = i32.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                 {
@@ -23,7 +28,9 @@ namespace Glacier.Polaris.Compute
             }
             if (series is Float64Series f64)
             {
-                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                int len = f64.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastDoubleSet(cap);
                 var span = f64.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                 {
@@ -45,17 +52,21 @@ namespace Glacier.Polaris.Compute
             var fallback = new Int32Series(series.Name + "_nunique", 1);
             fallback.Memory.Span[0] = 0;
             return fallback;
-        }                /// <summary>
-                         /// Returns the indices of unique elements, preserving first occurrence order.
-                         /// Uses sort-based approach for Int32/Float64 for better cache locality.
-                         /// </summary>
+        }
+
+        /// <summary>
+        /// Returns the indices of unique elements, preserving first occurrence order.
+        /// </summary>
         public static List<int> UniqueIndices(ISeries series)
         {
+            int len = series.Length;
+            if (len == 0) return new List<int>(0);
+
             if (series is Int32Series i32)
             {
-                int len = i32.Length;
-                var set = new FastIntSet(Math.Min(1024, len));
-                var unique = new List<int>();
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastIntSet(cap);
+                var unique = new List<int>(Math.Min(len, 32768));
                 var span = i32.Memory.Span;
                 for (int i = 0; i < len; i++)
                 {
@@ -65,9 +76,9 @@ namespace Glacier.Polaris.Compute
             }
             if (series is Float64Series f64)
             {
-                int len = f64.Length;
-                var set = new FastDoubleSet(Math.Min(1024, len));
-                var unique = new List<int>();
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastDoubleSet(cap);
+                var unique = new List<int>(Math.Min(len, 32768));
                 var span = f64.Memory.Span;
                 for (int i = 0; i < len; i++)
                 {
@@ -85,46 +96,127 @@ namespace Glacier.Polaris.Compute
                 return unique;
             }
             return Enumerable.Range(0, series.Length).ToList();
-        }                /// <summary>Returns unique values using fast open addressing hash set for Int32/Float64, order-preserving.</summary>
+        }
+
+        /// <summary>Returns unique values using fast open addressing hash set for Int32/Float64, order-preserving.</summary>
         public static ISeries Unique(ISeries series)
         {
             if (series is Int32Series i32)
             {
                 int len = i32.Length;
                 if (len == 0) return new Int32Series(series.Name, 0);
+
                 var span = i32.Memory.Span;
-                var set = new FastIntSet(Math.Min(1024, len));
-                var unique = new List<int>();
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                int mask = cap - 1;
+                int[] entries = new int[cap];
+                ref int entriesRef = ref MemoryMarshal.GetArrayDataReference(entries);
+
+                int[] outBuffer = GC.AllocateUninitializedArray<int>(len);
+                int count = 0;
+                bool hasZero = false;
+
                 for (int i = 0; i < len; i++)
                 {
-                    if (set.Add(span[i])) unique.Add(span[i]);
+                    int val = span[i];
+                    if (val == 0)
+                    {
+                        if (!hasZero)
+                        {
+                            hasZero = true;
+                            outBuffer[count++] = 0;
+                        }
+                        continue;
+                    }
+
+                    uint hash = (uint)val * 2654435761u;
+                    int pos = (int)(hash & (uint)mask);
+
+                    while (true)
+                    {
+                        ref int slot = ref Unsafe.Add(ref entriesRef, pos);
+                        int entry = slot;
+                        if (entry == 0)
+                        {
+                            slot = val;
+                            outBuffer[count++] = val;
+                            break;
+                        }
+                        if (entry == val) break;
+                        pos = (pos + 1) & mask;
+                    }
                 }
-                var arr = new Int32Series(series.Name, unique.Count);
-                var dst = arr.Memory.Span;
-                for (int i = 0; i < unique.Count; i++) dst[i] = unique[i];
+
+                if (count == len)
+                {
+                    return new Int32Series(series.Name, outBuffer);
+                }
+                var arr = new Int32Series(series.Name, count);
+                outBuffer.AsSpan(0, count).CopyTo(arr.Memory.Span);
                 return arr;
             }
             if (series is Float64Series f64)
             {
                 int len = f64.Length;
                 if (len == 0) return new Float64Series(series.Name, 0);
+
                 var span = f64.Memory.Span;
-                var set = new FastDoubleSet(Math.Min(1024, len));
-                var unique = new List<double>();
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                int mask = cap - 1;
+                long[] entries = new long[cap];
+                ref long entriesRef = ref MemoryMarshal.GetArrayDataReference(entries);
+
+                double[] outBuffer = GC.AllocateUninitializedArray<double>(len);
+                int count = 0;
+                bool hasZero = false;
+
                 for (int i = 0; i < len; i++)
                 {
-                    if (set.Add(span[i])) unique.Add(span[i]);
+                    double val = span[i];
+                    if (val == 0.0) val = 0.0;
+                    long bits = double.IsNaN(val) ? 0x7FF8000000000000L : BitConverter.DoubleToInt64Bits(val);
+
+                    if (bits == 0L)
+                    {
+                        if (!hasZero)
+                        {
+                            hasZero = true;
+                            outBuffer[count++] = val;
+                        }
+                        continue;
+                    }
+
+                    ulong hash = (ulong)bits * 11400714819323198485ul;
+                    int pos = (int)((hash >> 32) & (uint)mask);
+
+                    while (true)
+                    {
+                        ref long slot = ref Unsafe.Add(ref entriesRef, pos);
+                        long entry = slot;
+                        if (entry == 0L)
+                        {
+                            slot = bits;
+                            outBuffer[count++] = val;
+                            break;
+                        }
+                        if (entry == bits) break;
+                        pos = (pos + 1) & mask;
+                    }
                 }
-                var arr = new Float64Series(series.Name, unique.Count);
-                var dst = arr.Memory.Span;
-                for (int i = 0; i < unique.Count; i++) dst[i] = unique[i];
+
+                if (count == len)
+                {
+                    return new Float64Series(series.Name, outBuffer);
+                }
+                var arr = new Float64Series(series.Name, count);
+                outBuffer.AsSpan(0, count).CopyTo(arr.Memory.Span);
                 return arr;
             }
             // Fallback: HashSet for strings (not benchmarked heavily)
             if (series is Utf8StringSeries u8)
             {
-                var set = new System.Collections.Generic.HashSet<string>();
-                var list = new System.Collections.Generic.List<string>();
+                var set = new HashSet<string>();
+                var list = new List<string>();
                 for (int i = 0; i < u8.Length; i++)
                 {
                     if (u8.ValidityMask.IsValid(i))
@@ -136,12 +228,14 @@ namespace Glacier.Polaris.Compute
                 return Utf8StringSeries.FromStrings(series.Name, list.ToArray());
             }
             return new NullSeries(series.Name, 0);
-        }/// <summary>Returns a BooleanSeries where true indicates the value appears more than once.</summary>
+        }
+
+
+        /// <summary>Returns a BooleanSeries where true indicates the value appears more than once.</summary>
         public static Data.BooleanSeries IsDuplicated(ISeries series)
         {
             int len = series.Length;
             var result = new Data.BooleanSeries(series.Name + "_is_duplicated", len);
-            // Count occurrences of each value using a dictionary
             var counts = new Dictionary<object, int>();
             for (int i = 0; i < len; i++)
             {
@@ -180,12 +274,13 @@ namespace Glacier.Polaris.Compute
             }
             return result;
         }
-        private struct FastIntSet
+
+        internal struct FastIntSet
         {
             private int[] _entries;
-            private byte[] _states;
             private int _count;
             private int _mask;
+            private bool _hasZero;
 
             public int Count => _count;
 
@@ -194,59 +289,87 @@ namespace Glacier.Polaris.Compute
                 int size = 16;
                 while (size < capacity) size <<= 1;
                 _entries = new int[size];
-                _states = new byte[size];
                 _mask = size - 1;
                 _count = 0;
+                _hasZero = false;
             }
 
-            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Add(int value)
             {
-                if (_count * 2 >= _entries.Length) Resize();
-                int hash = (int)((uint)value * 2654435761u);
-                int pos = hash & _mask;
-                while (_states[pos] != 0)
+                if (value == 0)
                 {
-                    if (_entries[pos] == value) return false;
-                    pos = (pos + 1) & _mask;
+                    if (_hasZero) return false;
+                    _hasZero = true;
+                    _count++;
+                    return true;
                 }
-                _entries[pos] = value;
-                _states[pos] = 1;
-                _count++;
-                return true;
+
+                if (_count * 2 >= _entries.Length) Resize();
+                uint hash = (uint)value * 2654435761u;
+                int mask = _mask;
+                int pos = (int)(hash & (uint)mask);
+                ref int entriesRef = ref MemoryMarshal.GetArrayDataReference(_entries);
+                while (true)
+                {
+                    ref int slot = ref Unsafe.Add(ref entriesRef, pos);
+                    int entry = slot;
+                    if (entry == 0)
+                    {
+                        slot = value;
+                        _count++;
+                        return true;
+                    }
+                    if (entry == value) return false;
+                    pos = (pos + 1) & mask;
+                }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool Contains(int value)
+            {
+                if (value == 0) return _hasZero;
+                uint hash = (uint)value * 2654435761u;
+                int mask = _mask;
+                int pos = (int)(hash & (uint)mask);
+                ref int entriesRef = ref MemoryMarshal.GetArrayDataReference(_entries);
+                while (true)
+                {
+                    int entry = Unsafe.Add(ref entriesRef, pos);
+                    if (entry == 0) return false;
+                    if (entry == value) return true;
+                    pos = (pos + 1) & mask;
+                }
             }
 
             private void Resize()
             {
                 int newSize = _entries.Length * 2;
                 var newEntries = new int[newSize];
-                var newStates = new byte[newSize];
                 int newMask = newSize - 1;
 
                 for (int i = 0; i < _entries.Length; i++)
                 {
-                    if (_states[i] == 1)
+                    int val = _entries[i];
+                    if (val != 0)
                     {
-                        int val = _entries[i];
-                        int hash = (int)((uint)val * 2654435761u);
-                        int pos = hash & newMask;
-                        while (newStates[pos] != 0) pos = (pos + 1) & newMask;
+                        uint hash = (uint)val * 2654435761u;
+                        int pos = (int)(hash & (uint)newMask);
+                        while (newEntries[pos] != 0) pos = (pos + 1) & newMask;
                         newEntries[pos] = val;
-                        newStates[pos] = 1;
                     }
                 }
                 _entries = newEntries;
-                _states = newStates;
                 _mask = newMask;
             }
         }
 
-        private struct FastDoubleSet
+        internal struct FastDoubleSet
         {
-            private double[] _entries;
-            private byte[] _states;
+            private long[] _entries;
             private int _count;
             private int _mask;
+            private bool _hasZero;
 
             public int Count => _count;
 
@@ -254,55 +377,87 @@ namespace Glacier.Polaris.Compute
             {
                 int size = 16;
                 while (size < capacity) size <<= 1;
-                _entries = new double[size];
-                _states = new byte[size];
+                _entries = new long[size];
                 _mask = size - 1;
                 _count = 0;
+                _hasZero = false;
             }
 
-            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Add(double value)
             {
-                if (_count * 2 >= _entries.Length) Resize();
-                long bits = BitConverter.DoubleToInt64Bits(value);
-                int hash = (int)((ulong)bits * 11400714819323198485ul >> 32);
-                int pos = hash & _mask;
-                while (_states[pos] != 0)
+                if (value == 0.0) value = 0.0;
+                long bits = double.IsNaN(value) ? 0x7FF8000000000000L : BitConverter.DoubleToInt64Bits(value);
+                if (bits == 0L)
                 {
-                    if (_entries[pos] == value) return false;
-                    pos = (pos + 1) & _mask;
+                    if (_hasZero) return false;
+                    _hasZero = true;
+                    _count++;
+                    return true;
                 }
-                _entries[pos] = value;
-                _states[pos] = 1;
-                _count++;
-                return true;
+
+                if (_count * 2 >= _entries.Length) Resize();
+                ulong hash = (ulong)bits * 11400714819323198485ul;
+                int mask = _mask;
+                int pos = (int)((hash >> 32) & (uint)mask);
+                ref long entriesRef = ref MemoryMarshal.GetArrayDataReference(_entries);
+                while (true)
+                {
+                    ref long slot = ref Unsafe.Add(ref entriesRef, pos);
+                    long entry = slot;
+                    if (entry == 0L)
+                    {
+                        slot = bits;
+                        _count++;
+                        return true;
+                    }
+                    if (entry == bits) return false;
+                    pos = (pos + 1) & mask;
+                }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool Contains(double value)
+            {
+                if (value == 0.0) value = 0.0;
+                long bits = double.IsNaN(value) ? 0x7FF8000000000000L : BitConverter.DoubleToInt64Bits(value);
+                if (bits == 0L) return _hasZero;
+
+                ulong hash = (ulong)bits * 11400714819323198485ul;
+                int mask = _mask;
+                int pos = (int)((hash >> 32) & (uint)mask);
+                ref long entriesRef = ref MemoryMarshal.GetArrayDataReference(_entries);
+                while (true)
+                {
+                    long entry = Unsafe.Add(ref entriesRef, pos);
+                    if (entry == 0L) return false;
+                    if (entry == bits) return true;
+                    pos = (pos + 1) & mask;
+                }
             }
 
             private void Resize()
             {
                 int newSize = _entries.Length * 2;
-                var newEntries = new double[newSize];
-                var newStates = new byte[newSize];
+                var newEntries = new long[newSize];
                 int newMask = newSize - 1;
 
                 for (int i = 0; i < _entries.Length; i++)
                 {
-                    if (_states[i] == 1)
+                    long val = _entries[i];
+                    if (val != 0L)
                     {
-                        double val = _entries[i];
-                        long bits = BitConverter.DoubleToInt64Bits(val);
-                        int hash = (int)((ulong)bits * 11400714819323198485ul >> 32);
-                        int pos = hash & newMask;
-                        while (newStates[pos] != 0) pos = (pos + 1) & newMask;
+                        ulong hash = (ulong)val * 11400714819323198485ul;
+                        int pos = (int)((hash >> 32) & (uint)newMask);
+                        while (newEntries[pos] != 0L) pos = (pos + 1) & newMask;
                         newEntries[pos] = val;
-                        newStates[pos] = 1;
                     }
                 }
                 _entries = newEntries;
-                _states = newStates;
                 _mask = newMask;
             }
         }
+
         public static ISeries IsFirst(ISeries series)
         {
             var result = new Data.BooleanSeries(series.Name, series.Length);
@@ -310,14 +465,18 @@ namespace Glacier.Polaris.Compute
 
             if (series is Int32Series i32)
             {
-                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                int len = i32.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastIntSet(cap);
                 var span = i32.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                     resultSpan[i] = set.Add(span[i]);
             }
             else if (series is Float64Series f64)
             {
-                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                int len = f64.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastDoubleSet(cap);
                 var span = f64.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                     resultSpan[i] = set.Add(span[i]);
@@ -330,7 +489,7 @@ namespace Glacier.Polaris.Compute
                     if (u8.ValidityMask.IsValid(i))
                         resultSpan[i] = set.Add(u8.GetString(i)!);
                     else
-                        resultSpan[i] = set.Add("\0__NULL__\0");
+                        resultSpan[i] = set.Add(" __NULL__ ");
                 }
             }
             else
@@ -342,11 +501,14 @@ namespace Glacier.Polaris.Compute
 
             return result;
         }
+
         public static int ApproxNUnique(ISeries series)
         {
             if (series is Int32Series i32)
             {
-                var set = new FastIntSet(Math.Min(1024, i32.Length));
+                int len = i32.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastIntSet(cap);
                 var span = i32.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                     set.Add(span[i]);
@@ -354,7 +516,9 @@ namespace Glacier.Polaris.Compute
             }
             if (series is Float64Series f64)
             {
-                var set = new FastDoubleSet(Math.Min(1024, f64.Length));
+                int len = f64.Length;
+                int cap = Math.Max(16, (int)Math.Min(1 << 24, BitOperations.RoundUpToPowerOf2((uint)Math.Max(16, len * 2))));
+                var set = new FastDoubleSet(cap);
                 var span = f64.Memory.Span;
                 for (int i = 0; i < span.Length; i++)
                     set.Add(span[i]);
@@ -370,99 +534,100 @@ namespace Glacier.Polaris.Compute
             return 0;
         }
 
-public static DataFrame ValueCounts(ISeries series, bool sort, bool parallel)
-{
-ISeries keysCol;
-ISeries countsCol;
+        public static DataFrame ValueCounts(ISeries series, bool sort, bool parallel)
+        {
+            ISeries keysCol;
+            ISeries countsCol;
 
-if (series is Int32Series i32)
-{
-var dict = new Dictionary<int, int>();
-var span = i32.Memory.Span;
-for (int i = 0; i < span.Length; i++)
-{
-int val = span[i];
-dict.TryGetValue(val, out int c);
-dict[val] = c + 1;
-}
-
-var entries = dict.ToList();
-if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
-
-keysCol = new Int32Series(series.Name, entries.Select(e => e.Key).ToArray());
-countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
-}
-else if (series is Float64Series f64)
-{
-var dict = new Dictionary<double, int>();
-var span = f64.Memory.Span;
-for (int i = 0; i < span.Length; i++)
-{
-double val = span[i];
-dict.TryGetValue(val, out int c);
-dict[val] = c + 1;
-}
-
-var entries = dict.ToList();
-if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
-
-keysCol = new Float64Series(series.Name, entries.Select(e => e.Key).ToArray());
-countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
-}
-else if (series is Utf8StringSeries u8)
-{
-var dict = new Dictionary<string, int>();
-for (int i = 0; i < u8.Length; i++)
-{
-if (u8.ValidityMask.IsValid(i))
-{
-string val = u8.GetString(i)!;
-dict.TryGetValue(val, out int c);
-dict[val] = c + 1;
-}
-else
-{
-dict.TryGetValue("null", out int c);
-dict["null"] = c + 1;
-}
-}
-
-var entries = dict.ToList();
-if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
-
-keysCol = new Utf8StringSeries(series.Name, entries.Select(e => e.Key).ToArray());
-countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
-}
-else
-{
-            var dict = new Dictionary<object, int>();
-            int nullCount = 0;
-            for (int i = 0; i < series.Length; i++)
+            if (series is Int32Series i32)
             {
-                var val = series.Get(i);
-                if (val == null)
+                var dict = new Dictionary<int, int>();
+                var span = i32.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
                 {
-                    nullCount++;
-                }
-                else
-                {
+                    int val = span[i];
                     dict.TryGetValue(val, out int c);
                     dict[val] = c + 1;
                 }
-            }
 
-            var entries = dict.Select(kvp => new KeyValuePair<object?, int>(kvp.Key, kvp.Value)).ToList();
-            if (nullCount > 0)
+                var entries = dict.ToList();
+                if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                keysCol = new Int32Series(series.Name, entries.Select(e => e.Key).ToArray());
+                countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+            }
+            else if (series is Float64Series f64)
             {
-                entries.Add(new KeyValuePair<object?, int>(null, nullCount));
+                var dict = new Dictionary<double, int>();
+                var span = f64.Memory.Span;
+                for (int i = 0; i < span.Length; i++)
+                {
+                    double val = span[i];
+                    dict.TryGetValue(val, out int c);
+                    dict[val] = c + 1;
+                }
+
+                var entries = dict.ToList();
+                if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                keysCol = new Float64Series(series.Name, entries.Select(e => e.Key).ToArray());
+                countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+            }
+            else if (series is Utf8StringSeries u8)
+            {
+                var dict = new Dictionary<string, int>();
+                for (int i = 0; i < u8.Length; i++)
+                {
+                    if (u8.ValidityMask.IsValid(i))
+                    {
+                        string val = u8.GetString(i)!;
+                        dict.TryGetValue(val, out int c);
+                        dict[val] = c + 1;
+                    }
+                    else
+                    {
+                        dict.TryGetValue("null", out int c);
+                        dict["null"] = c + 1;
+                    }
+                }
+
+                var entries = dict.ToList();
+                if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                keysCol = new Utf8StringSeries(series.Name, entries.Select(e => e.Key).ToArray());
+                countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
+            }
+            else
+            {
+                var dict = new Dictionary<object, int>();
+                int nullCount = 0;
+                for (int i = 0; i < series.Length; i++)
+                {
+                    var val = series.Get(i);
+                    if (val == null)
+                    {
+                        nullCount++;
+                    }
+                    else
+                    {
+                        dict.TryGetValue(val, out int c);
+                        dict[val] = c + 1;
+                    }
+                }
+
+                var entries = dict.Select(kvp => new KeyValuePair<object?, int>(kvp.Key, kvp.Value)).ToList();
+                if (nullCount > 0)
+                {
+                    entries.Add(new KeyValuePair<object?, int>(null, nullCount));
+                }
+
+                if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                keysCol = new ObjectSeries(series.Name, entries.Select(e => e.Key).ToArray());
+                countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
             }
 
-            if (sort) entries.Sort((a, b) => b.Value.CompareTo(a.Value));
-
-            keysCol = new ObjectSeries(series.Name, entries.Select(e => e.Key).ToArray());
-            countsCol = new Int32Series("count", entries.Select(e => e.Value).ToArray());
-}
-
-return new DataFrame(new List<ISeries> { keysCol, countsCol });
-}    }
+            return new DataFrame(new List<ISeries> { keysCol, countsCol });
+        }
+    }
 }

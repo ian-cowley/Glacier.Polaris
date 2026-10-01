@@ -230,7 +230,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Unique N=1M | **24.80** | **15.96** | 1.55× | 🟡 Sub-25ms (39% speedup from SIMD hash table) |
+| Unique N=1M | **10.62** | **15.96** | 0.67× | 🟢 **1.5× faster** (Zero-sentinel flat open-addressing table) |
 
 ### 3.9 String Operations
 
@@ -272,7 +272,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | **String ToUpper / Contains** | 🟢 C# wins | 3.1× (ToUpper) / 1.46× (Contains) |
 | **Join (Left)** | 🟡 Comparable | 1.92× |
 | **Join (Inner)** | 🟢 C# wins | 1.08–1.49× faster |
-| **Unique** | 🔴 Python wins | 2.55× |
+| **Unique** | 🟢 C# wins | 1.5× faster (10.62 ms vs 15.96 ms) |
 | **Sort Int32** | 🟡 Comparable | 1.9–2.4× of Rust (8.0–8.5x faster than System.Sort) |
 | **Sort Float64** | 🟡 Comparable | 2.2× of Rust (6.7x faster than System.Sort) |
 | **String Regex (Simple Literal)** | 🟢 C# wins | 1.46× faster (SIMD Direct Matcher) |
@@ -292,7 +292,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | O(n) sliding-window RollingStd (sum/sumsq) | RollingStd: 4.0× **faster** than Python |
 | ASCII branchless byte transforms (ToUpper) | ToUpper: 9× slower → 3.1× **faster** |
 | Flat allocation-free chained hash map with Fibonacci hashing | Joins (Inner SmallRight): Beating Python by **1.27–1.92×** |
-| Custom open-addressing HashSet (Unique) | Unique: 3.8× → 1.41× |
+| Inlined Single-Array Zero-Sentinel Flat HashSet (`UniqueKernels.Unique`) | Unique: 24.80 ms → **10.62 ms** (**1.5× faster than Python Polars**) |
 | Bitmap-level FillNull (64-bit word-level, `fixed` pointers) | FillNull: C# 4.8–5.5× **faster** |
 | Out-of-Core K-Way External Merge Sort (`ExternalMergeSort`) | Spills memory runs to disk with Loser Tree PriorityQueue merging, preventing OOM on massive tables |
 | Unified Generic SIMD Filter Engine (`FilterGeneric<T>`) | Vectorized comparisons for **all 10 numeric primitive types** (`sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`) with 100% SIMD coverage and zero duplicated code |
