@@ -76,66 +76,70 @@ namespace Glacier.Polaris.Compute
                 fixed (ulong* pBits = &mask.GetRawBitsRef())
                 fixed (ulong* pResBits = &result.ValidityMask.GetRawBitsRef())
                 {
-                    int lastVal = 0;
-                    bool hasVal = false;
                     int wordCount = (n + 63) / 64;
-
-                    for (int w = 0; w < wordCount; w++)
+                    int numChunks = Math.Min(Environment.ProcessorCount, (wordCount + 1023) / 1024);
+                    if (numChunks <= 1)
                     {
-                        ulong word = pBits[w];
-                        int startIdx = w * 64;
-                        int endIdx = startIdx + 64 > n ? n : startIdx + 64;
-                        ulong resWord = 0;
+                        ForwardFillChunkInt32(pSrc, pDst, pBits, pResBits, 0, wordCount, n, 0, false, out _, out _);
+                    }
+                    else
+                    {
+                        int wordsPerChunk = (wordCount + numChunks - 1) / numChunks;
+                        var chunkLastVal = new int[numChunks];
+                        var chunkHasValid = new bool[numChunks];
+                        IntPtr srcPtr = (IntPtr)pSrc;
+                        IntPtr dstPtr = (IntPtr)pDst;
+                        IntPtr bitsPtr = (IntPtr)pBits;
+                        IntPtr resBitsPtr = (IntPtr)pResBits;
 
-                        if (word == 0)
+                        Parallel.For(0, numChunks, c =>
                         {
-                            if (hasVal)
+                            int wStart = c * wordsPerChunk;
+                            int wEnd = Math.Min(wordCount, wStart + wordsPerChunk);
+                            ulong* pB = (ulong*)bitsPtr;
+                            int* pS = (int*)srcPtr;
+                            for (int w = wEnd - 1; w >= wStart; w--)
                             {
-                                for (int i = startIdx; i < endIdx; i++)
-                                    pDst[i] = lastVal;
-                                resWord = ulong.MaxValue;
+                                ulong wVal = pB[w];
+                                if (w == wordCount - 1 && n % 64 != 0)
+                                {
+                                    wVal &= (1ul << (n % 64)) - 1;
+                                }
+                                if (wVal != 0)
+                                {
+                                    int lastBit = 63 - System.Numerics.BitOperations.LeadingZeroCount(wVal);
+                                    int idx = w * 64 + lastBit;
+                                    if (idx < n)
+                                    {
+                                        chunkLastVal[c] = pS[idx];
+                                        chunkHasValid[c] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                        var initVal = new int[numChunks];
+                        var hasInitVal = new bool[numChunks];
+                        int running = 0;
+                        bool hasRunning = false;
+                        for (int c = 0; c < numChunks; c++)
+                        {
+                            initVal[c] = running;
+                            hasInitVal[c] = hasRunning;
+                            if (chunkHasValid[c])
+                            {
+                                running = chunkLastVal[c];
+                                hasRunning = true;
                             }
                         }
-                        else if (word == ulong.MaxValue && endIdx - startIdx == 64)
-                        {
-                            System.Runtime.CompilerServices.Unsafe.CopyBlock(
-                                pDst + startIdx, pSrc + startIdx, 64 * sizeof(int));
-                            lastVal = pSrc[endIdx - 1];
-                            hasVal = true;
-                            resWord = ulong.MaxValue;
-                        }
-                        else
-                        {
-                            ulong bit = 1;
-                            for (int i = startIdx; i < endIdx; i++)
-                            {
-                                if ((word & 1) == 1)
-                                {
-                                    int v = pSrc[i];
-                                    pDst[i] = v;
-                                    lastVal = v;
-                                    hasVal = true;
-                                }
-                                else if (hasVal)
-                                {
-                                    pDst[i] = lastVal;
-                                }
 
-                                if (hasVal)
-                                {
-                                    resWord |= bit;
-                                }
-
-                                word >>= 1;
-                                bit <<= 1;
-                            }
-                        }
-
-                        if (w == wordCount - 1 && n % 64 != 0)
+                        Parallel.For(0, numChunks, c =>
                         {
-                            resWord |= (ulong.MaxValue << (n % 64));
-                        }
-                        pResBits[w] = resWord;
+                            int wStart = c * wordsPerChunk;
+                            int wEnd = Math.Min(wordCount, wStart + wordsPerChunk);
+                            ForwardFillChunkInt32((int*)srcPtr, (int*)dstPtr, (ulong*)bitsPtr, (ulong*)resBitsPtr, wStart, wEnd, n, initVal[c], hasInitVal[c], out _, out _);
+                        });
                     }
                 }
                 return result;
@@ -171,8 +175,7 @@ namespace Glacier.Polaris.Compute
                         {
                             if (hasVal)
                             {
-                                for (int i = endIdx - 1; i >= startIdx; i--)
-                                    pDst[i] = lastVal;
+                                new Span<int>(pDst + startIdx, count).Fill(lastVal);
                                 resWord = ulong.MaxValue;
                             }
                         }
@@ -186,29 +189,48 @@ namespace Glacier.Polaris.Compute
                         }
                         else
                         {
-                            ulong shiftedWord = count == 64 ? word : (word << (64 - count));
-                            ulong maskBit = 1ul << 63;
-
-                            for (int i = endIdx - 1; i >= startIdx; i--)
+                            if (hasVal)
                             {
-                                if ((shiftedWord & maskBit) != 0)
+                                resWord = ulong.MaxValue;
+                                ulong shiftedWord = count == 64 ? word : (word << (64 - count));
+                                ulong maskBit = 1ul << 63;
+
+                                for (int i = endIdx - 1; i >= startIdx; i--)
                                 {
-                                    int v = pSrc[i];
-                                    pDst[i] = v;
-                                    lastVal = v;
-                                    hasVal = true;
-                                }
-                                else if (hasVal)
-                                {
+                                    if ((shiftedWord & maskBit) != 0)
+                                    {
+                                        lastVal = pSrc[i];
+                                    }
                                     pDst[i] = lastVal;
+                                    shiftedWord <<= 1;
                                 }
+                            }
+                            else
+                            {
+                                ulong shiftedWord = count == 64 ? word : (word << (64 - count));
+                                ulong maskBit = 1ul << 63;
 
-                                if (hasVal)
+                                for (int i = endIdx - 1; i >= startIdx; i--)
                                 {
-                                    resWord |= (1ul << (i - startIdx));
-                                }
+                                    if ((shiftedWord & maskBit) != 0)
+                                    {
+                                        int v = pSrc[i];
+                                        pDst[i] = v;
+                                        lastVal = v;
+                                        hasVal = true;
+                                    }
+                                    else if (hasVal)
+                                    {
+                                        pDst[i] = lastVal;
+                                    }
 
-                                shiftedWord <<= 1;
+                                    if (hasVal)
+                                    {
+                                        resWord |= (1ul << (i - startIdx));
+                                    }
+
+                                    shiftedWord <<= 1;
+                                }
                             }
                         }
 
@@ -276,66 +298,71 @@ namespace Glacier.Polaris.Compute
                 fixed (ulong* pBits = &mask.GetRawBitsRef())
                 fixed (ulong* pResBits = &resMask.GetRawBitsRef())
                 {
-                    double lastVal = 0;
-                    bool hasVal = false;
                     int wordCount = (n + 63) / 64;
-
-                    for (int w = 0; w < wordCount; w++)
+                    int numChunks = Math.Min(Environment.ProcessorCount, (wordCount + 1023) / 1024);
+                    if (numChunks <= 1)
                     {
-                        ulong word = pBits[w];
-                        int startIdx = w * 64;
-                        int endIdx = startIdx + 64 > n ? n : startIdx + 64;
-                        ulong resWord = 0;
+                        ForwardFillChunkFloat64(pSrc, pDst, pBits, pResBits, 0, wordCount, n, 0, false, out _, out _);
+                    }
+                    else
+                    {
+                        int wordsPerChunk = (wordCount + numChunks - 1) / numChunks;
+                        IntPtr srcPtr = (IntPtr)pSrc;
+                        IntPtr dstPtr = (IntPtr)pDst;
+                        IntPtr bitsPtr = (IntPtr)pBits;
+                        IntPtr resBitsPtr = (IntPtr)pResBits;
 
-                        if (word == 0)
+                        var chunkLastVal = new double[numChunks];
+                        var chunkHasValid = new bool[numChunks];
+
+                        Parallel.For(0, numChunks, c =>
                         {
-                            if (hasVal)
+                            int wStart = c * wordsPerChunk;
+                            int wEnd = Math.Min(wordCount, wStart + wordsPerChunk);
+                            ulong* pB = (ulong*)bitsPtr;
+                            double* pS = (double*)srcPtr;
+                            for (int w = wEnd - 1; w >= wStart; w--)
                             {
-                                for (int i = startIdx; i < endIdx; i++)
-                                    pDst[i] = lastVal;
-                                resWord = ulong.MaxValue;
+                                ulong wVal = pB[w];
+                                if (w == wordCount - 1 && n % 64 != 0)
+                                {
+                                    wVal &= (1ul << (n % 64)) - 1;
+                                }
+                                if (wVal != 0)
+                                {
+                                    int lastBit = 63 - System.Numerics.BitOperations.LeadingZeroCount(wVal);
+                                    int idx = w * 64 + lastBit;
+                                    if (idx < n)
+                                    {
+                                        chunkLastVal[c] = pS[idx];
+                                        chunkHasValid[c] = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                        var initVal = new double[numChunks];
+                        var hasInitVal = new bool[numChunks];
+                        double running = 0;
+                        bool hasRunning = false;
+                        for (int c = 0; c < numChunks; c++)
+                        {
+                            initVal[c] = running;
+                            hasInitVal[c] = hasRunning;
+                            if (chunkHasValid[c])
+                            {
+                                running = chunkLastVal[c];
+                                hasRunning = true;
                             }
                         }
-                        else if (word == ulong.MaxValue && endIdx - startIdx == 64)
-                        {
-                            System.Runtime.CompilerServices.Unsafe.CopyBlock(
-                                pDst + startIdx, pSrc + startIdx, 64 * sizeof(double));
-                            lastVal = pSrc[endIdx - 1];
-                            hasVal = true;
-                            resWord = ulong.MaxValue;
-                        }
-                        else
-                        {
-                            ulong bit = 1;
-                            for (int i = startIdx; i < endIdx; i++)
-                            {
-                                if ((word & 1) == 1)
-                                {
-                                    double v = pSrc[i];
-                                    pDst[i] = v;
-                                    lastVal = v;
-                                    hasVal = true;
-                                }
-                                else if (hasVal)
-                                {
-                                    pDst[i] = lastVal;
-                                }
 
-                                if (hasVal)
-                                {
-                                    resWord |= bit;
-                                }
-
-                                word >>= 1;
-                                bit <<= 1;
-                            }
-                        }
-
-                        if (w == wordCount - 1 && n % 64 != 0)
+                        Parallel.For(0, numChunks, c =>
                         {
-                            resWord |= (ulong.MaxValue << (n % 64));
-                        }
-                        pResBits[w] = resWord;
+                            int wStart = c * wordsPerChunk;
+                            int wEnd = Math.Min(wordCount, wStart + wordsPerChunk);
+                            ForwardFillChunkFloat64((double*)srcPtr, (double*)dstPtr, (ulong*)bitsPtr, (ulong*)resBitsPtr, wStart, wEnd, n, initVal[c], hasInitVal[c], out _, out _);
+                        });
                     }
                 }
                 return result;
@@ -371,8 +398,7 @@ namespace Glacier.Polaris.Compute
                         {
                             if (hasVal)
                             {
-                                for (int i = endIdx - 1; i >= startIdx; i--)
-                                    pDst[i] = lastVal;
+                                new Span<double>(pDst + startIdx, count).Fill(lastVal);
                                 resWord = ulong.MaxValue;
                             }
                         }
@@ -386,29 +412,48 @@ namespace Glacier.Polaris.Compute
                         }
                         else
                         {
-                            ulong shiftedWord = count == 64 ? word : (word << (64 - count));
-                            ulong maskBit = 1ul << 63;
-
-                            for (int i = endIdx - 1; i >= startIdx; i--)
+                            if (hasVal)
                             {
-                                if ((shiftedWord & maskBit) != 0)
+                                resWord = ulong.MaxValue;
+                                ulong shiftedWord = count == 64 ? word : (word << (64 - count));
+                                ulong maskBit = 1ul << 63;
+
+                                for (int i = endIdx - 1; i >= startIdx; i--)
                                 {
-                                    double v = pSrc[i];
-                                    pDst[i] = v;
-                                    lastVal = v;
-                                    hasVal = true;
-                                }
-                                else if (hasVal)
-                                {
+                                    if ((shiftedWord & maskBit) != 0)
+                                    {
+                                        lastVal = pSrc[i];
+                                    }
                                     pDst[i] = lastVal;
+                                    shiftedWord <<= 1;
                                 }
+                            }
+                            else
+                            {
+                                ulong shiftedWord = count == 64 ? word : (word << (64 - count));
+                                ulong maskBit = 1ul << 63;
 
-                                if (hasVal)
+                                for (int i = endIdx - 1; i >= startIdx; i--)
                                 {
-                                    resWord |= (1ul << (i - startIdx));
-                                }
+                                    if ((shiftedWord & maskBit) != 0)
+                                    {
+                                        double v = pSrc[i];
+                                        pDst[i] = v;
+                                        lastVal = v;
+                                        hasVal = true;
+                                    }
+                                    else if (hasVal)
+                                    {
+                                        pDst[i] = lastVal;
+                                    }
 
-                                shiftedWord <<= 1;
+                                    if (hasVal)
+                                    {
+                                        resWord |= (1ul << (i - startIdx));
+                                    }
+
+                                    shiftedWord <<= 1;
+                                }
                             }
                         }
 
@@ -484,6 +529,220 @@ namespace Glacier.Polaris.Compute
             }
 
             return Data.Utf8StringSeries.FromStrings(source.Name, data);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void ForwardFillChunkInt32(
+            int* pSrc, int* pDst, ulong* pBits, ulong* pResBits,
+            int wStart, int wEnd, int n, int initVal, bool hasInitVal,
+            out int outLastVal, out bool outHasVal)
+        {
+            int lastVal = initVal;
+            bool hasVal = hasInitVal;
+            int totalWords = (n + 63) / 64;
+
+            for (int w = wStart; w < wEnd; w++)
+            {
+                ulong word = pBits[w];
+                int startIdx = w * 64;
+                int endIdx = startIdx + 64 > n ? n : startIdx + 64;
+                int count = endIdx - startIdx;
+                ulong resWord = 0;
+
+                if (word == 0)
+                {
+                    if (hasVal)
+                    {
+                        new Span<int>(pDst + startIdx, count).Fill(lastVal);
+                        resWord = ulong.MaxValue;
+                    }
+                }
+                else if (word == ulong.MaxValue && count == 64)
+                {
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDst + startIdx, pSrc + startIdx, 64 * sizeof(int));
+                    lastVal = pSrc[endIdx - 1];
+                    hasVal = true;
+                    resWord = ulong.MaxValue;
+                }
+                else
+                {
+                    if (hasVal)
+                    {
+                        resWord = ulong.MaxValue;
+                        ulong wBits = word;
+                        int i = startIdx;
+                        int unrolledLimit = startIdx + (count & ~7);
+                        for (; i < unrolledLimit; i += 8)
+                        {
+                            if ((wBits & 0x01) != 0) lastVal = pSrc[i];
+                            pDst[i] = lastVal;
+                            if ((wBits & 0x02) != 0) lastVal = pSrc[i + 1];
+                            pDst[i + 1] = lastVal;
+                            if ((wBits & 0x04) != 0) lastVal = pSrc[i + 2];
+                            pDst[i + 2] = lastVal;
+                            if ((wBits & 0x08) != 0) lastVal = pSrc[i + 3];
+                            pDst[i + 3] = lastVal;
+                            if ((wBits & 0x10) != 0) lastVal = pSrc[i + 4];
+                            pDst[i + 4] = lastVal;
+                            if ((wBits & 0x20) != 0) lastVal = pSrc[i + 5];
+                            pDst[i + 5] = lastVal;
+                            if ((wBits & 0x40) != 0) lastVal = pSrc[i + 6];
+                            pDst[i + 6] = lastVal;
+                            if ((wBits & 0x80) != 0) lastVal = pSrc[i + 7];
+                            pDst[i + 7] = lastVal;
+                            wBits >>= 8;
+                        }
+                        for (; i < endIdx; i++)
+                        {
+                            if ((wBits & 1) != 0) lastVal = pSrc[i];
+                            pDst[i] = lastVal;
+                            wBits >>= 1;
+                        }
+                    }
+                    else
+                    {
+                        ulong bit = 1;
+                        for (int i = startIdx; i < endIdx; i++)
+                        {
+                            if ((word & 1) == 1)
+                            {
+                                int v = pSrc[i];
+                                pDst[i] = v;
+                                lastVal = v;
+                                hasVal = true;
+                            }
+                            else if (hasVal)
+                            {
+                                pDst[i] = lastVal;
+                            }
+
+                            if (hasVal)
+                            {
+                                resWord |= bit;
+                            }
+
+                            word >>= 1;
+                            bit <<= 1;
+                        }
+                    }
+                }
+
+                if (w == totalWords - 1 && n % 64 != 0)
+                {
+                    resWord |= (ulong.MaxValue << (n % 64));
+                }
+                pResBits[w] = resWord;
+            }
+            outLastVal = lastVal;
+            outHasVal = hasVal;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private static unsafe void ForwardFillChunkFloat64(
+            double* pSrc, double* pDst, ulong* pBits, ulong* pResBits,
+            int wStart, int wEnd, int n, double initVal, bool hasInitVal,
+            out double outLastVal, out bool outHasVal)
+        {
+            double lastVal = initVal;
+            bool hasVal = hasInitVal;
+            int totalWords = (n + 63) / 64;
+
+            for (int w = wStart; w < wEnd; w++)
+            {
+                ulong word = pBits[w];
+                int startIdx = w * 64;
+                int endIdx = startIdx + 64 > n ? n : startIdx + 64;
+                int count = endIdx - startIdx;
+                ulong resWord = 0;
+
+                if (word == 0)
+                {
+                    if (hasVal)
+                    {
+                        new Span<double>(pDst + startIdx, count).Fill(lastVal);
+                        resWord = ulong.MaxValue;
+                    }
+                }
+                else if (word == ulong.MaxValue && count == 64)
+                {
+                    System.Runtime.CompilerServices.Unsafe.CopyBlock(
+                        pDst + startIdx, pSrc + startIdx, 64 * sizeof(double));
+                    lastVal = pSrc[endIdx - 1];
+                    hasVal = true;
+                    resWord = ulong.MaxValue;
+                }
+                else
+                {
+                    if (hasVal)
+                    {
+                        resWord = ulong.MaxValue;
+                        ulong wBits = word;
+                        int i = startIdx;
+                        int unrolledLimit = startIdx + (count & ~7);
+                        for (; i < unrolledLimit; i += 8)
+                        {
+                            if ((wBits & 0x01) != 0) lastVal = pSrc[i];
+                            pDst[i] = lastVal;
+                            if ((wBits & 0x02) != 0) lastVal = pSrc[i + 1];
+                            pDst[i + 1] = lastVal;
+                            if ((wBits & 0x04) != 0) lastVal = pSrc[i + 2];
+                            pDst[i + 2] = lastVal;
+                            if ((wBits & 0x08) != 0) lastVal = pSrc[i + 3];
+                            pDst[i + 3] = lastVal;
+                            if ((wBits & 0x10) != 0) lastVal = pSrc[i + 4];
+                            pDst[i + 4] = lastVal;
+                            if ((wBits & 0x20) != 0) lastVal = pSrc[i + 5];
+                            pDst[i + 5] = lastVal;
+                            if ((wBits & 0x40) != 0) lastVal = pSrc[i + 6];
+                            pDst[i + 6] = lastVal;
+                            if ((wBits & 0x80) != 0) lastVal = pSrc[i + 7];
+                            pDst[i + 7] = lastVal;
+                            wBits >>= 8;
+                        }
+                        for (; i < endIdx; i++)
+                        {
+                            if ((wBits & 1) != 0) lastVal = pSrc[i];
+                            pDst[i] = lastVal;
+                            wBits >>= 1;
+                        }
+                    }
+                    else
+                    {
+                        ulong bit = 1;
+                        for (int i = startIdx; i < endIdx; i++)
+                        {
+                            if ((word & 1) == 1)
+                            {
+                                double v = pSrc[i];
+                                pDst[i] = v;
+                                lastVal = v;
+                                hasVal = true;
+                            }
+                            else if (hasVal)
+                            {
+                                pDst[i] = lastVal;
+                            }
+
+                            if (hasVal)
+                            {
+                                resWord |= bit;
+                            }
+
+                            word >>= 1;
+                            bit <<= 1;
+                        }
+                    }
+                }
+
+                if (w == totalWords - 1 && n % 64 != 0)
+                {
+                    resWord |= (ulong.MaxValue << (n % 64));
+                }
+                pResBits[w] = resWord;
+            }
+            outLastVal = lastVal;
+            outHasVal = hasVal;
         }
     }
 }
