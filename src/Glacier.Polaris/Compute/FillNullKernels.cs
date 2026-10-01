@@ -56,7 +56,7 @@ namespace Glacier.Polaris.Compute
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private static unsafe ISeries FillInt32(Data.Int32Series source, FillStrategy strategy)
         {
-            var result = new Data.Int32Series(source.Name, source.Length);
+            var result = new Data.Int32Series(source.Name, source.Length, clear: false, setAllValid: false);
             var srcSpan = source.Memory.Span;
             var resSpan = result.Memory.Span;
             var mask = source.ValidityMask;
@@ -277,7 +277,7 @@ namespace Glacier.Polaris.Compute
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private static unsafe ISeries FillFloat64(Data.Float64Series source, FillStrategy strategy)
         {
-            var result = new Data.Float64Series(source.Name, source.Length);
+            var result = new Data.Float64Series(source.Name, source.Length, clear: false, setAllValid: false);
             var srcSpan = source.Memory.Span;
             var resSpan = result.Memory.Span;
             var mask = source.ValidityMask;
@@ -575,22 +575,49 @@ namespace Glacier.Polaris.Compute
                         int unrolledLimit = startIdx + (count & ~7);
                         for (; i < unrolledLimit; i += 8)
                         {
-                            if ((wBits & 0x01) != 0) lastVal = pSrc[i];
-                            pDst[i] = lastVal;
-                            if ((wBits & 0x02) != 0) lastVal = pSrc[i + 1];
-                            pDst[i + 1] = lastVal;
-                            if ((wBits & 0x04) != 0) lastVal = pSrc[i + 2];
-                            pDst[i + 2] = lastVal;
-                            if ((wBits & 0x08) != 0) lastVal = pSrc[i + 3];
-                            pDst[i + 3] = lastVal;
-                            if ((wBits & 0x10) != 0) lastVal = pSrc[i + 4];
-                            pDst[i + 4] = lastVal;
-                            if ((wBits & 0x20) != 0) lastVal = pSrc[i + 5];
-                            pDst[i + 5] = lastVal;
-                            if ((wBits & 0x40) != 0) lastVal = pSrc[i + 6];
-                            pDst[i + 6] = lastVal;
-                            if ((wBits & 0x80) != 0) lastVal = pSrc[i + 7];
-                            pDst[i + 7] = lastVal;
+                            byte b = (byte)wBits;
+                            if (b == 0xFF)
+                            {
+                                pDst[i] = pSrc[i];
+                                pDst[i + 1] = pSrc[i + 1];
+                                pDst[i + 2] = pSrc[i + 2];
+                                pDst[i + 3] = pSrc[i + 3];
+                                pDst[i + 4] = pSrc[i + 4];
+                                pDst[i + 5] = pSrc[i + 5];
+                                pDst[i + 6] = pSrc[i + 6];
+                                pDst[i + 7] = pSrc[i + 7];
+                                lastVal = pSrc[i + 7];
+                            }
+                            else if (b == 0)
+                            {
+                                pDst[i] = lastVal;
+                                pDst[i + 1] = lastVal;
+                                pDst[i + 2] = lastVal;
+                                pDst[i + 3] = lastVal;
+                                pDst[i + 4] = lastVal;
+                                pDst[i + 5] = lastVal;
+                                pDst[i + 6] = lastVal;
+                                pDst[i + 7] = lastVal;
+                            }
+                            else
+                            {
+                                if ((b & 0x01) != 0) lastVal = pSrc[i];
+                                pDst[i] = lastVal;
+                                if ((b & 0x02) != 0) lastVal = pSrc[i + 1];
+                                pDst[i + 1] = lastVal;
+                                if ((b & 0x04) != 0) lastVal = pSrc[i + 2];
+                                pDst[i + 2] = lastVal;
+                                if ((b & 0x08) != 0) lastVal = pSrc[i + 3];
+                                pDst[i + 3] = lastVal;
+                                if ((b & 0x10) != 0) lastVal = pSrc[i + 4];
+                                pDst[i + 4] = lastVal;
+                                if ((b & 0x20) != 0) lastVal = pSrc[i + 5];
+                                pDst[i + 5] = lastVal;
+                                if ((b & 0x40) != 0) lastVal = pSrc[i + 6];
+                                pDst[i + 6] = lastVal;
+                                if ((b & 0x80) != 0) lastVal = pSrc[i + 7];
+                                pDst[i + 7] = lastVal;
+                            }
                             wBits >>= 8;
                         }
                         for (; i < endIdx; i++)
@@ -682,22 +709,49 @@ namespace Glacier.Polaris.Compute
                         int unrolledLimit = startIdx + (count & ~7);
                         for (; i < unrolledLimit; i += 8)
                         {
-                            if ((wBits & 0x01) != 0) lastVal = pSrc[i];
-                            pDst[i] = lastVal;
-                            if ((wBits & 0x02) != 0) lastVal = pSrc[i + 1];
-                            pDst[i + 1] = lastVal;
-                            if ((wBits & 0x04) != 0) lastVal = pSrc[i + 2];
-                            pDst[i + 2] = lastVal;
-                            if ((wBits & 0x08) != 0) lastVal = pSrc[i + 3];
-                            pDst[i + 3] = lastVal;
-                            if ((wBits & 0x10) != 0) lastVal = pSrc[i + 4];
-                            pDst[i + 4] = lastVal;
-                            if ((wBits & 0x20) != 0) lastVal = pSrc[i + 5];
-                            pDst[i + 5] = lastVal;
-                            if ((wBits & 0x40) != 0) lastVal = pSrc[i + 6];
-                            pDst[i + 6] = lastVal;
-                            if ((wBits & 0x80) != 0) lastVal = pSrc[i + 7];
-                            pDst[i + 7] = lastVal;
+                            byte b = (byte)wBits;
+                            if (b == 0xFF)
+                            {
+                                pDst[i] = pSrc[i];
+                                pDst[i + 1] = pSrc[i + 1];
+                                pDst[i + 2] = pSrc[i + 2];
+                                pDst[i + 3] = pSrc[i + 3];
+                                pDst[i + 4] = pSrc[i + 4];
+                                pDst[i + 5] = pSrc[i + 5];
+                                pDst[i + 6] = pSrc[i + 6];
+                                pDst[i + 7] = pSrc[i + 7];
+                                lastVal = pSrc[i + 7];
+                            }
+                            else if (b == 0)
+                            {
+                                pDst[i] = lastVal;
+                                pDst[i + 1] = lastVal;
+                                pDst[i + 2] = lastVal;
+                                pDst[i + 3] = lastVal;
+                                pDst[i + 4] = lastVal;
+                                pDst[i + 5] = lastVal;
+                                pDst[i + 6] = lastVal;
+                                pDst[i + 7] = lastVal;
+                            }
+                            else
+                            {
+                                if ((b & 0x01) != 0) lastVal = pSrc[i];
+                                pDst[i] = lastVal;
+                                if ((b & 0x02) != 0) lastVal = pSrc[i + 1];
+                                pDst[i + 1] = lastVal;
+                                if ((b & 0x04) != 0) lastVal = pSrc[i + 2];
+                                pDst[i + 2] = lastVal;
+                                if ((b & 0x08) != 0) lastVal = pSrc[i + 3];
+                                pDst[i + 3] = lastVal;
+                                if ((b & 0x10) != 0) lastVal = pSrc[i + 4];
+                                pDst[i + 4] = lastVal;
+                                if ((b & 0x20) != 0) lastVal = pSrc[i + 5];
+                                pDst[i + 5] = lastVal;
+                                if ((b & 0x40) != 0) lastVal = pSrc[i + 6];
+                                pDst[i + 6] = lastVal;
+                                if ((b & 0x80) != 0) lastVal = pSrc[i + 7];
+                                pDst[i + 7] = lastVal;
+                            }
                             wBits >>= 8;
                         }
                         for (; i < endIdx; i++)

@@ -13,13 +13,18 @@ namespace Glacier.Polaris.Memory
         private T[]? _rentedArray;
         private readonly int _length;
 
-        public MemoryOwnerColumn(int length)
+        public MemoryOwnerColumn(int length) : this(length, true) { }
+
+        public MemoryOwnerColumn(int length, bool clear)
         {
             _length = length;
             // Rent from ArrayPool
             _rentedArray = ArrayPool<T>.Shared.Rent(length);
-            // Clear the active slice to prevent garbage/data leakage
-            Array.Clear(_rentedArray, 0, length);
+            if (clear)
+            {
+                // Clear the active slice to prevent garbage/data leakage
+                Array.Clear(_rentedArray, 0, length);
+            }
         }
 
         public Memory<T> Memory

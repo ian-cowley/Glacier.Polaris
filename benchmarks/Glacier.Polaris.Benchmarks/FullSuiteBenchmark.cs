@@ -86,6 +86,9 @@ namespace Glacier.Polaris.Benchmarks
 
         private static double Time(string label, Action action)
         {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
             action(); // warmup
             var sw = Stopwatch.StartNew();
             for (int i = 0; i < 3; i++) action();

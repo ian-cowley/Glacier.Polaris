@@ -24,12 +24,17 @@ namespace Glacier.Polaris.Memory
         /// <summary>Total number of 64-bit mask words.</summary>
         public int WordCount => UlongCount;
 
-        public ValidityMask(int length)
+        public ValidityMask(int length) : this(length, true) { }
+
+        public ValidityMask(int length, bool setAllValid)
         {
             Length = length;
             int ulongCount = (length + 63) / 64;
             _mask = new ulong[ulongCount];
-            Array.Fill(_mask, ulong.MaxValue);
+            if (setAllValid)
+            {
+                Array.Fill(_mask, ulong.MaxValue);
+            }
         }
 
         public bool HasNulls

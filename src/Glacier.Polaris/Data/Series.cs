@@ -14,12 +14,14 @@ namespace Glacier.Polaris.Data
         protected readonly System.Buffers.IMemoryOwner<T> _data;
         protected readonly ValidityMask _validityMask;
 
-        protected Series(string name, int length)
+        protected Series(string name, int length) : this(name, length, true, true) { }
+
+        protected Series(string name, int length, bool clear, bool setAllValid)
         {
             Name = name;
             Length = length;
-            _data = new MemoryOwnerColumn<T>(length);
-            _validityMask = new ValidityMask(length);
+            _data = new MemoryOwnerColumn<T>(length, clear);
+            _validityMask = new ValidityMask(length, setAllValid);
         }
 
         protected Series(string name, int length, System.Buffers.IMemoryOwner<T> data)
@@ -105,6 +107,7 @@ namespace Glacier.Polaris.Data
     public sealed class Int32Series : Series<int>
     {
         public Int32Series(string name, int length) : base(name, length) { }
+        public Int32Series(string name, int length, bool clear, bool setAllValid) : base(name, length, clear, setAllValid) { }
         public Int32Series(string name, int length, System.Buffers.IMemoryOwner<int> data) : base(name, length, data) { }
 
         public static Int32Series FromMmf(string name, string filePath, int length)
@@ -304,6 +307,7 @@ namespace Glacier.Polaris.Data
     public sealed class Float64Series : Series<double>
     {
         public Float64Series(string name, int length) : base(name, length) { }
+        public Float64Series(string name, int length, bool clear, bool setAllValid) : base(name, length, clear, setAllValid) { }
         public Float64Series(string name, int length, System.Buffers.IMemoryOwner<double> data) : base(name, length, data) { }
 
         public static Float64Series FromMmf(string name, string filePath, int length)
