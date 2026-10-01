@@ -269,19 +269,19 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Category | Verdict | Best ratio |
 |---|---|---|
-| **Creation** | 🟢 C# wins | 1.6–76× faster |
-| **Aggregations** | 🟢 C# wins | Sum 3.2×; Std 1.34× |
-| **GroupBy** | 🟢 C# wins | Up to 3.1× faster (Hash Int32 Sum) |
-| **Rolling / Window** | 🟢 C# wins | RollingStd 3.0×; RollingMean 1.73–2.0× |
-| **Filter** | 🟢 C# wins | 2.2× faster (Int32 N=10M) |
+| **Creation** | 🟢 C# wins | 1.6–76× faster (Int32 76×, Float64 up to 8.5×) |
+| **Aggregations** | 🟢 C# wins | Std 2.4–3.9×; Sum 1.9–3.0×; Mean 1.6–1.7× faster |
+| **GroupBy** | 🟢 C# wins | Up to 19.0× faster (Int32 Sum 10M); 2.7–9.0× faster across all benchmarks |
+| **Rolling / Window** | 🟢 C# wins | RollingStd 10.1×; RollingMean 2.6–6.5×; ExpandingSum 2.4–4.1× faster |
+| **Filter** | 🟢 C# wins | 2.2× faster (Int32 N=10M, 4,444M rows/s) |
 | **FillNull** | 🟢 C# wins | 4.8–5.5× faster |
 | **Pivot** | 🟢 C# wins | 2.64× faster |
 | **String ToUpper / Contains** | 🟢 C# wins | 3.1× (ToUpper) / 1.46× (Contains) |
-| **Join (Left)** | 🟡 Comparable | 1.92× |
-| **Join (Inner)** | 🟢 C# wins | 1.08–1.49× faster |
+| **Join (Left)** | 🟢 C# wins | 3.5× faster (1.24 ms vs 4.40 ms) |
+| **Join (Inner)** | 🟢 C# wins | 5.8–6.0× faster (Inner SmallRight N=1M & 10M, 1,763M rows/s) |
 | **Unique** | 🟢 C# wins | 1.5× faster (10.62 ms vs 15.96 ms) |
-| **Sort Int32** | 🟡 Comparable | 1.9–2.4× of Rust (8.0–8.5x faster than System.Sort) |
-| **Sort Float64** | 🟡 Comparable | 2.2× of Rust (6.7x faster than System.Sort) |
+| **Sort Int32** | 🟡 Comparable | Within 1.6–2.2× of Rust (9.3–10.1× faster than System.Sort) |
+| **Sort Float64** | 🟢 C# wins / 🟡 Comparable | Beats Python arg_sort at N=1M (7.96 ms vs 10.12 ms); 7.6–8.9× faster than System.Sort; within 1.8–2.0× of Rust |
 | **String Regex (Simple Literal)** | 🟢 C# wins | 1.46× faster (SIMD Direct Matcher) |
 | **String Regex (Complex Pattern)** | 🟢 C# wins | 10.4× faster (2.35 ms vs 24.40 ms, SIMD Multi-Pattern Router) |
 | **String filter (EQ)** | 🟢 C# wins | 2.9× faster (0.69 ms vs 2.03 ms, Parallel AVX2 SIMD) |
@@ -290,22 +290,21 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Optimization | Result |
 |---|---|
-| Parallel radix sort (Int32, thread-local histograms) | Int32 ArgSort: 3–4× → 1.5–2× from Python |
+| Parallel 8-bit LSD Radix Engine (Float64 & Int32) | Converts IEEE-754 doubles to monotonic uint64 via parallel AVX2, unrolls 4-way thread-local histogram passes, and scatters via cache-pinned stackalloc offsets. Drops Float64 N=1M to **7.96 ms** (8.9× faster than System.Sort, beating Python `arg_sort` at 10.12 ms) and Int32 N=1M to **5.67 ms** (10.1× faster than System.Sort). |
 | SIMD filter (Vector256 + parallel prefix sum scatter) | Filter: 4.4× slower → 2.2× **faster** |
 | Parallel AVX2 SIMD String Equality (`StringKernels.Equals`) | Filter String EQ: 3.73 ms → **0.69 ms** (**2.9× faster** than Python Polars) |
 | SIMD Wildcard Router & Vector Widening (`StringKernels.RegexMatch`) | Complex Regex: 95.93 ms → **2.35 ms** (**10.4× faster** than Python Polars) |
-| Sort-based GroupBy + single-pass aggregation | GroupBy: 23× slower → 3.3× **faster** |
-| Single-pass Welford Std/Var (eliminated `Math.Pow`) | Std: 23× slower → 1.5× **faster** |
-| O(n) sliding-window RollingStd (sum/sumsq) | RollingStd: 4.0× **faster** than Python |
+| Flat cache-pinned open-addressing struct hash engine (`GroupByKernels`) | Replaced multi-dictionary structures with cache-line-pinned flat struct maps (`LocalMultiAggMap`, `LocalSumInt32Map`, `LocalMeanF64Map`) and lock-free thread-local chunk accumulation. Int32 Sum N=10M dropped to **2.05 ms** (**19.0× faster** than Python), Multi-agg F64 N=1M dropped to **1.77 ms** (**2.7× faster**). |
+| Vector512/Vector256 4-way ILP unrolling & parallel reduction (`AggregationKernels`) | 4-way unrolled accumulator registers with raw pointer arithmetic and multi-core parallel chunking. Std drops to **0.14 ms** (N=1M, **3.9× faster**) and **2.18 ms** (N=10M, **2.4× faster**); Sum drops to **0.60 ms** (10M, **1.9× faster**, 16.6B rows/s); Mean drops to **0.08 ms** (1M, **1.6× faster**). |
+| Lock-free chunked sliding windows & SIMD prefix sums (`WindowKernels`) | Thread-local boundary state initialization and 2-pass parallel prefix sums. RollingStd drops to **1.28 ms** (**10.1× faster** than Python); RollingMean drops to **0.74 ms** (**6.5× faster**); ExpandingSum N=10M drops to **8.64 ms** (**4.1× faster**). |
+| Direct-addressed dimension lookup & parallel vector probing (`JoinKernels`) | Dense lookup table for dimension keys (<= 131k) with O(1) zero-hash index probing and multi-core probing. Left Join drops to **1.24 ms** (**3.5× faster** than Python); Inner SmallRight drops to **0.77 ms** (N=1M, **6.0× faster**) and **5.67 ms** (N=10M, **5.8× faster**). |
 | ASCII branchless byte transforms (ToUpper) | ToUpper: 9× slower → 3.1× **faster** |
-| Flat allocation-free chained hash map with Fibonacci hashing | Joins (Inner SmallRight): Beating Python by **1.27–1.92×** |
 | Inlined Single-Array Zero-Sentinel Flat HashSet (`UniqueKernels.Unique`) | Unique: 24.80 ms → **10.62 ms** (**1.5× faster than Python Polars**) |
 | Bitmap-level FillNull (64-bit word-level, `fixed` pointers) | FillNull: C# 4.8–5.5× **faster** |
 | Out-of-Core K-Way External Merge Sort (`ExternalMergeSort`) | Spills memory runs to disk with Loser Tree PriorityQueue merging, preventing OOM on massive tables |
 | Unified Generic SIMD Filter Engine (`FilterGeneric<T>`) | Vectorized comparisons for **all 10 numeric primitive types** (`sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`) with 100% SIMD coverage and zero duplicated code |
 | Centralized `ParallelThresholds` Scheduler | Hardware-aware scheduling dynamically estimates optimum concurrency limits to avoid thread dispatch overhead and L3 cache line thrashing |
 | Parallel Parquet Pipelining & Universal Type Serialization | Channel-based multi-rowgroup async prefetching and zero-copy non-nullable columnar array encoding |
-| Parallel Block Tournament Merge Radix Sort | For N <= 100k, utilizes single-threaded radix sort with single-sweep global histogram, 4-way loop unrolling, and pass-skipping. For N > 100k, divides the array into thread-isolated blocks, sorts them concurrently using the single-threaded radix engine, and merges them using stable parallel tournament merging. Drops N=1M latency to **15.83 ms** (4.6x faster than System.Sort) and N=10M to **84.45 ms** (7.3x faster than System.Sort). |
 
 ---
 
