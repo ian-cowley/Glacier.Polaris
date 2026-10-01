@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- NuGet Packaging Properties -->
-    <Version>1.0.18</Version>
+    <Version>1.0.19</Version>
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
@@ -24,7 +24,7 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\..\Glacier.Storage\src\Glacier.Storage\Glacier.Storage.csproj" />
+    <PackageReference Include="Glacier.Storage" Version="1.0.1" />
     <PackageReference Include="Lokad.Utf8Regex" Version="0.2.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
