@@ -619,16 +619,35 @@ namespace Glacier.Polaris.Compute
             {
                 var col = df.GetColumn(columnNames[i]);
                 bool desc = descending.Length > i && descending[i];
-                if (col is Data.Int32Series intCol)
-                    ArgSort(intCol.Memory.Span, indices, desc);
-                else if (col is Data.Float64Series doubleCol)
-                    ArgSort(doubleCol.Memory.Span, indices, desc);
-                else if (col is Data.Utf8StringSeries u8)
+                if (col.ValidityMask.HasNulls)
                 {
-                    var comparer = new Utf8IndexComparer(u8);
                     indices = desc
-                        ? indices.OrderByDescending(idx => idx, comparer).ToArray()
-                        : indices.OrderBy(idx => idx, comparer).ToArray();
+                        ? indices.OrderBy(idx => col.ValidityMask.IsNull(idx) ? 1 : 0)
+                                 .ThenByDescending(idx => col.Get(idx) as IComparable)
+                                 .ToArray()
+                        : indices.OrderBy(idx => col.ValidityMask.IsNull(idx) ? 1 : 0)
+                                 .ThenBy(idx => col.Get(idx) as IComparable)
+                                 .ToArray();
+                }
+                else
+                {
+                    if (col is Data.Int32Series intCol)
+                        ArgSort(intCol.Memory.Span, indices, desc);
+                    else if (col is Data.Float64Series doubleCol)
+                        ArgSort(doubleCol.Memory.Span, indices, desc);
+                    else if (col is Data.Utf8StringSeries u8)
+                    {
+                        var comparer = new Utf8IndexComparer(u8);
+                        indices = desc
+                            ? indices.OrderByDescending(idx => idx, comparer).ToArray()
+                            : indices.OrderBy(idx => idx, comparer).ToArray();
+                    }
+                    else
+                    {
+                        indices = desc
+                            ? indices.OrderByDescending(idx => col.Get(idx) as IComparable).ToArray()
+                            : indices.OrderBy(idx => col.Get(idx) as IComparable).ToArray();
+                    }
                 }
             }
             return indices;

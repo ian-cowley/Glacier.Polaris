@@ -18,8 +18,14 @@ namespace Glacier.Polaris.Memory
         /// <summary>Returns the raw mask words span for zero-copy SIMD processing.</summary>
         public ReadOnlySpan<ulong> AsSpan() => _mask;
 
+        /// <summary>Returns the writable mask words span for zero-copy deserialization.</summary>
+        public Span<ulong> AsWritableSpan() => _mask;
+
         /// <summary>Returns the 64-bit mask word at the given word index.</summary>
         public ulong GetWord(int index) => _mask[index];
+
+        /// <summary>Sets the 64-bit mask word at the given word index.</summary>
+        public void SetWord(int index, ulong word) => _mask[index] = word;
 
         /// <summary>Total number of 64-bit mask words.</summary>
         public int WordCount => UlongCount;

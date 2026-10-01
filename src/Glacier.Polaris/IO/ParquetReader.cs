@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Glacier.Polaris.Data;
 using Parquet;
 using Parquet.Data;
+using Parquet.Schema;
 
 namespace Glacier.Polaris.IO
 {
@@ -33,7 +34,7 @@ namespace Glacier.Polaris.IO
         public async IAsyncEnumerable<DataFrame> ReadAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             using var fileStream = File.OpenRead(_filePath);
-            using var reader = await Parquet.ParquetReader.CreateAsync(fileStream, cancellationToken: cancellationToken);
+            using var reader = await Parquet.ParquetReader.CreateAsync(fileStream, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             var fields = reader.Schema.GetDataFields();
             if (_columns != null && _columns.Length > 0)
@@ -41,230 +42,487 @@ namespace Glacier.Polaris.IO
                 fields = fields.Where(f => _columns.Contains(f.Name)).ToArray();
             }
 
-            for (int i = 0; i < reader.RowGroupCount; i++)
+            if (reader.RowGroupCount <= 1)
             {
-                using var rowGroupReader = reader.OpenRowGroupReader(i);
-                var columns = new List<ISeries>();
-
-                foreach (var field in fields)
+                for (int i = 0; i < reader.RowGroupCount; i++)
                 {
-                    var dataColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                    
-                    if (field.ClrType == typeof(int) || field.ClrType == typeof(int?))
+                    yield return await ReadRowGroupAsync(reader, i, fields, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var token = cts.Token;
+                var channel = System.Threading.Channels.Channel.CreateBounded<DataFrame>(new System.Threading.Channels.BoundedChannelOptions(2)
+                {
+                    SingleWriter = true,
+                    SingleReader = true,
+                    FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait
+                });
+
+                var producerTask = Task.Run(async () =>
+                {
+                    try
                     {
-                        var series = new Int32Series(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is int?[] nullableInts)
+                        for (int i = 0; i < reader.RowGroupCount; i++)
                         {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else
-                                {
-                                    series.Memory.Span[j] = nullableInts[j] ?? 0;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                            }
+                            token.ThrowIfCancellationRequested();
+                            var df = await ReadRowGroupAsync(reader, i, fields, token).ConfigureAwait(false);
+                            await channel.Writer.WriteAsync(df, token).ConfigureAwait(false);
                         }
-                        else if (rawData is int[] nonNullInts)
-                        {
-                            nonNullInts.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
+                        channel.Writer.Complete();
                     }
-                    else if (field.ClrType == typeof(long) || field.ClrType == typeof(long?))
+                    catch (Exception ex)
                     {
-                        var series = new Int64Series(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is long?[] nullableLongs)
-                        {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else
-                                {
-                                    series.Memory.Span[j] = nullableLongs[j] ?? 0;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                            }
-                        }
-                        else if (rawData is long[] nonNullLongs)
-                        {
-                            nonNullLongs.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
+                        channel.Writer.Complete(ex is OperationCanceledException ? null : ex);
                     }
-                    else if (field.ClrType == typeof(double) || field.ClrType == typeof(double?))
+                }, token);
+
+                try
+                {
+                    await foreach (var df in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                     {
-                        var series = new Float64Series(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is double?[] nullableDoubles)
-                        {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else
-                                {
-                                    series.Memory.Span[j] = nullableDoubles[j] ?? 0;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                            }
-                        }
-                        else if (rawData is double[] nonNullDoubles)
-                        {
-                            nonNullDoubles.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
-                    }
-                    else if (field.ClrType == typeof(float) || field.ClrType == typeof(float?))
-                    {
-                        var series = new Float32Series(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is float?[] nullableFloats)
-                        {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else
-                                {
-                                    series.Memory.Span[j] = nullableFloats[j] ?? 0f;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                            }
-                        }
-                        else if (rawData is float[] nonNullFloats)
-                        {
-                            nonNullFloats.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
-                    }
-                    else if (field.ClrType == typeof(bool) || field.ClrType == typeof(bool?))
-                    {
-                        var series = new BooleanSeries(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is bool?[] nullableBools)
-                        {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else
-                                {
-                                    series.Memory.Span[j] = nullableBools[j] ?? false;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                            }
-                        }
-                        else if (rawData is bool[] nonNullBools)
-                        {
-                            nonNullBools.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
-                    }
-                    else if (field.ClrType == typeof(string))
-                    {
-                        if (dataColumn.Data is string?[] strArray)
-                        {
-                            var series = Utf8StringSeries.FromStrings(field.Name, strArray);
-                            columns.Add(series);
-                        }
-                    }
-                    else if (field.ClrType == typeof(DateTime) || field.ClrType == typeof(DateTime?))
-                    {
-                        var series = new DatetimeSeries(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-                        if (rawData is DateTime?[] nullableDates)
-                        {
-                            var defLevels = dataColumn.DefinitionLevels;
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (defLevels != null && defLevels[j] == 0)
-                                    series.ValidityMask.SetNull(j);
-                                else if (nullableDates[j].HasValue)
-                                {
-                                    series.Memory.Span[j] = (nullableDates[j]!.Value.ToUniversalTime().Ticks - epoch.Ticks) / 10;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                                else
-                                {
-                                    series.ValidityMask.SetNull(j);
-                                }
-                            }
-                        }
-                        else if (rawData is DateTime[] nonNullDates)
-                        {
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                series.Memory.Span[j] = (nonNullDates[j].ToUniversalTime().Ticks - epoch.Ticks) / 10;
-                            }
-                        }
-                        columns.Add(series);
-                    }
-                    else if (field.ClrType == typeof(decimal) || field.ClrType == typeof(decimal?))
-                    {
-                        var series = new DecimalSeries(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is decimal?[] nullableDecs)
-                        {
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (nullableDecs[j].HasValue)
-                                {
-                                    series.Memory.Span[j] = nullableDecs[j]!.Value;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                                else
-                                    series.ValidityMask.SetNull(j);
-                            }
-                        }
-                        else if (rawData is decimal[] nonNullDecs)
-                        {
-                            nonNullDecs.CopyTo(series.Memory);
-                        }
-                        columns.Add(series);
-                    }
-                    else if (field.ClrType == typeof(TimeSpan) || field.ClrType == typeof(TimeSpan?))
-                    {
-                        var series = new DurationSeries(field.Name, (int)rowGroupReader.RowCount);
-                        var rawData = dataColumn.Data;
-                        if (rawData is TimeSpan?[] nullableTimes)
-                        {
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                if (nullableTimes[j].HasValue)
-                                {
-                                    series.Memory.Span[j] = nullableTimes[j]!.Value.Ticks * 100;
-                                    series.ValidityMask.SetValid(j);
-                                }
-                                else
-                                {
-                                    series.ValidityMask.SetNull(j);
-                                }
-                            }
-                        }
-                        else if (rawData is TimeSpan[] nonNullTimes)
-                        {
-                            for (int j = 0; j < series.Length; j++)
-                            {
-                                series.Memory.Span[j] = nonNullTimes[j].Ticks * 100;
-                            }
-                        }
-                        columns.Add(series);
+                        yield return df;
                     }
                 }
-
-                yield return new DataFrame(columns);
+                finally
+                {
+                    cts.Cancel();
+                    try { await producerTask.ConfigureAwait(false); } catch { }
+                }
             }
+        }
+
+        private static async Task<DataFrame> ReadRowGroupAsync(
+            Parquet.ParquetReader reader,
+            int rowGroupIndex,
+            IReadOnlyList<DataField> fields,
+            CancellationToken cancellationToken)
+        {
+            using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
+            int rowCount = (int)rowGroupReader.RowCount;
+            var columns = new List<ISeries>(fields.Count);
+
+            foreach (var field in fields)
+            {
+                var dataColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken).ConfigureAwait(false);
+                var series = ConvertDataColumn(field, dataColumn, rowCount);
+                if (series != null)
+                {
+                    columns.Add(series);
+                }
+            }
+
+            return new DataFrame(columns);
+        }
+
+        private static ISeries? ConvertDataColumn(DataField field, DataColumn dataColumn, int rowCount)
+        {
+            var clrType = field.ClrType;
+
+            if (clrType == typeof(int) || clrType == typeof(int?))
+            {
+                var series = new Int32Series(field.Name, rowCount);
+                if (dataColumn.Data is int?[] nullableInts)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else
+                        {
+                            series.Memory.Span[j] = nullableInts[j] ?? 0;
+                            series.ValidityMask.SetValid(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is int[] nonNullInts)
+                {
+                    nonNullInts.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(long) || clrType == typeof(long?))
+            {
+                var series = new Int64Series(field.Name, rowCount);
+                if (dataColumn.Data is long?[] nullableLongs)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else
+                        {
+                            series.Memory.Span[j] = nullableLongs[j] ?? 0;
+                            series.ValidityMask.SetValid(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is long[] nonNullLongs)
+                {
+                    nonNullLongs.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(double) || clrType == typeof(double?))
+            {
+                var series = new Float64Series(field.Name, rowCount);
+                if (dataColumn.Data is double?[] nullableDoubles)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else
+                        {
+                            series.Memory.Span[j] = nullableDoubles[j] ?? 0;
+                            series.ValidityMask.SetValid(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is double[] nonNullDoubles)
+                {
+                    nonNullDoubles.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(float) || clrType == typeof(float?))
+            {
+                var series = new Float32Series(field.Name, rowCount);
+                if (dataColumn.Data is float?[] nullableFloats)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else
+                        {
+                            series.Memory.Span[j] = nullableFloats[j] ?? 0f;
+                            series.ValidityMask.SetValid(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is float[] nonNullFloats)
+                {
+                    nonNullFloats.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(bool) || clrType == typeof(bool?))
+            {
+                var series = new BooleanSeries(field.Name, rowCount);
+                if (dataColumn.Data is bool?[] nullableBools)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else
+                        {
+                            series.Memory.Span[j] = nullableBools[j] ?? false;
+                            series.ValidityMask.SetValid(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is bool[] nonNullBools)
+                {
+                    nonNullBools.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(string))
+            {
+                if (dataColumn.Data is string?[] strArray)
+                {
+                    return Utf8StringSeries.FromStrings(field.Name, strArray);
+                }
+                return null;
+            }
+
+            if (clrType == typeof(sbyte) || clrType == typeof(sbyte?))
+            {
+                var series = new Int8Series(field.Name, rowCount);
+                if (dataColumn.Data is sbyte?[] nullableSbytes)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableSbytes[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableSbytes[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is sbyte[] nonNullSbytes)
+                {
+                    nonNullSbytes.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(byte) || clrType == typeof(byte?))
+            {
+                var series = new UInt8Series(field.Name, rowCount);
+                if (dataColumn.Data is byte?[] nullableBytes)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableBytes[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableBytes[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is byte[] nonNullBytes)
+                {
+                    nonNullBytes.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(short) || clrType == typeof(short?))
+            {
+                var series = new Int16Series(field.Name, rowCount);
+                if (dataColumn.Data is short?[] nullableShorts)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableShorts[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableShorts[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is short[] nonNullShorts)
+                {
+                    nonNullShorts.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(ushort) || clrType == typeof(ushort?))
+            {
+                var series = new UInt16Series(field.Name, rowCount);
+                if (dataColumn.Data is ushort?[] nullableUshorts)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableUshorts[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableUshorts[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is ushort[] nonNullUshorts)
+                {
+                    nonNullUshorts.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(uint) || clrType == typeof(uint?))
+            {
+                var series = new UInt32Series(field.Name, rowCount);
+                if (dataColumn.Data is uint?[] nullableUints)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableUints[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableUints[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is uint[] nonNullUints)
+                {
+                    nonNullUints.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(ulong) || clrType == typeof(ulong?))
+            {
+                var series = new UInt64Series(field.Name, rowCount);
+                if (dataColumn.Data is ulong?[] nullableUlongs)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableUlongs[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableUlongs[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is ulong[] nonNullUlongs)
+                {
+                    nonNullUlongs.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(DateTime) || clrType == typeof(DateTime?))
+            {
+                var series = new DatetimeSeries(field.Name, rowCount);
+                var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                if (dataColumn.Data is DateTime?[] nullableDates)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (defLevels != null && defLevels[j] == 0)
+                            series.ValidityMask.SetNull(j);
+                        else if (nullableDates[j].HasValue)
+                        {
+                            series.Memory.Span[j] = (nullableDates[j]!.Value.ToUniversalTime().Ticks - epoch.Ticks) / 10;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else
+                        {
+                            series.ValidityMask.SetNull(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is DateTime[] nonNullDates)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        series.Memory.Span[j] = (nonNullDates[j].ToUniversalTime().Ticks - epoch.Ticks) / 10;
+                    }
+                }
+                return series;
+            }
+
+            if (clrType == typeof(DateTimeOffset) || clrType == typeof(DateTimeOffset?))
+            {
+                var series = new DatetimeSeries(field.Name, rowCount);
+                var epoch = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero);
+                if (dataColumn.Data is DateTimeOffset?[] nullableOffsets)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableOffsets[j].HasValue)
+                        {
+                            series.Memory.Span[j] = (nullableOffsets[j]!.Value.ToUniversalTime().Ticks - epoch.Ticks) / 10;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else
+                        {
+                            series.ValidityMask.SetNull(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is DateTimeOffset[] nonNullOffsets)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        series.Memory.Span[j] = (nonNullOffsets[j].ToUniversalTime().Ticks - epoch.Ticks) / 10;
+                    }
+                }
+                return series;
+            }
+
+            if (clrType == typeof(DateOnly) || clrType == typeof(DateOnly?))
+            {
+                var series = new DateSeries(field.Name, rowCount);
+                var epoch = new DateOnly(1970, 1, 1);
+                if (dataColumn.Data is DateOnly?[] nullableDates)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableDates[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableDates[j]!.Value.DayNumber - epoch.DayNumber;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else
+                        {
+                            series.ValidityMask.SetNull(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is DateOnly[] nonNullDates)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        series.Memory.Span[j] = nonNullDates[j].DayNumber - epoch.DayNumber;
+                    }
+                }
+                return series;
+            }
+
+            if (clrType == typeof(decimal) || clrType == typeof(decimal?))
+            {
+                var series = new DecimalSeries(field.Name, rowCount);
+                if (dataColumn.Data is decimal?[] nullableDecs)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableDecs[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableDecs[j]!.Value;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else
+                            series.ValidityMask.SetNull(j);
+                    }
+                }
+                else if (dataColumn.Data is decimal[] nonNullDecs)
+                {
+                    nonNullDecs.CopyTo(series.Memory);
+                }
+                return series;
+            }
+
+            if (clrType == typeof(TimeSpan) || clrType == typeof(TimeSpan?))
+            {
+                var series = new DurationSeries(field.Name, rowCount);
+                if (dataColumn.Data is TimeSpan?[] nullableTimes)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if (nullableTimes[j].HasValue)
+                        {
+                            series.Memory.Span[j] = nullableTimes[j]!.Value.Ticks * 100;
+                            series.ValidityMask.SetValid(j);
+                        }
+                        else
+                        {
+                            series.ValidityMask.SetNull(j);
+                        }
+                    }
+                }
+                else if (dataColumn.Data is TimeSpan[] nonNullTimes)
+                {
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        series.Memory.Span[j] = nonNullTimes[j].Ticks * 100;
+                    }
+                }
+                return series;
+            }
+
+            return null;
         }
     }
 }

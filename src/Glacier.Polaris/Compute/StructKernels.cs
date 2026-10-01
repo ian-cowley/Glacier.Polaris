@@ -31,6 +31,25 @@ internal static class StructKernels
     }
 
     /// <summary>
+    /// Projects a subset of fields from a StructSeries, pruning unreferenced fields.
+    /// </summary>
+    public static StructSeries ProjectFields(StructSeries structSeries, IEnumerable<string> fieldNames)
+    {
+        var targetSet = new HashSet<string>(fieldNames, StringComparer.OrdinalIgnoreCase);
+        var selected = new List<ISeries>();
+        foreach (var field in structSeries.Fields)
+        {
+            if (targetSet.Contains(field.Name))
+            {
+                selected.Add(field);
+            }
+        }
+        var result = new StructSeries(structSeries.Name, selected.ToArray());
+        structSeries.ValidityMask.CopyTo(result.ValidityMask, 0);
+        return result;
+    }
+
+    /// <summary>
     /// Serialize each row of a StructSeries to a JSON string.
     /// </summary>
     public static Utf8StringSeries JsonEncode(StructSeries structSeries)

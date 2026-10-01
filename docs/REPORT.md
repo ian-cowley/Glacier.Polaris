@@ -1,24 +1,24 @@
 # Glacier.Polaris — Comprehensive Report
 
-> **Updated:** 2026-09-19 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
+> **Updated:** 2026-10-01 &nbsp;|&nbsp; **C#:** .NET 10.0 Release &nbsp;|&nbsp; **Python ref:** Polars 1.40.1 (PyArrow 21.0.0)
 > **Hardware:** AMD Ryzen AI 9 HX 370 (Zen 5 AVX-512), Windows 11 x64
-> **Tests:** 442 / 442 passing (100 %) — 136 golden-file parity tests, 306 unit tests
+> **Tests:** 448 / 448 passing (100 %) — 136 golden-file parity tests, 312 unit tests
 > Run `dotnet test -c Release` to reproduce. Run `dotnet run -c Release --project benchmarks/Glacier.Polaris.Benchmarks` to regenerate benchmarks.
 
 ---
 
 ## 1. Executive Summary
 
-Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on Python Polars. It covers the **full core API surface** with SIMD-accelerated kernels, a lazy execution engine, and golden-file parity tests verified against Polars v1.40.1.
+Glacier.Polaris is a high-performance C# (.NET 10) DataFrame library modelled on Python Polars. It covers the **full core API surface** with SIMD-accelerated kernels, a lazy execution engine, out-of-core spillable execution, and golden-file parity tests verified against Polars v1.40.1.
 
 | Metric | Value |
 |--------|-------|
-| **Total tests** | **442 / 442** ✅ |
+| **Total tests** | **448 / 448** ✅ |
 | **Parity tests** | **136 / 136** ✅ (Tiers 1–14, all verified vs Python Polars v1.40.1) |
-| **Unit tests** | **306 / 306** ✅ |
+| **Unit tests** | **312 / 312** ✅ |
 | **API coverage** | ~98 %+ of Python Polars core surface |
 | **Missing / partial** | None — all known gaps closed |
-| **Performance summary** | Wins on creation, aggregations (Sum/Std), GroupBy, rolling/window, filter (N=10M), Inner SmallRight joins, FillNull, pivot, ToUpper, Contains, and Simple Regex matches. Float64 parallel tournament radix sort provides 6.7x speedup over standard sorting. |
+| **Performance summary** | Wins on creation, aggregations (Sum/Std), GroupBy, rolling/window, filter (including String EQ 2.9× faster), Inner SmallRight joins, FillNull (5.5× faster), pivot, ToUpper, Contains, and Regex (Complex Pattern 10.4× faster). Float64 parallel tournament radix sort provides 6.7x speedup over standard sorting. Out-of-core K-Way External Merge Sort and multi-threaded Parquet pipelining fully active. |
 
 ---
 
@@ -180,9 +180,9 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Int32 N=1M | **0.95** | **0.69** | 1.37× | 🟡 Parity (within 35%) |
-| Int32 N=10M | **2.46** | 5.02 | 0.49× | 🟢 **2.0× faster** (4,065M rows/s) |
-| String EQ N=1M | 3.73 | **2.03** | 1.84× | 🔴 Python 1.8× faster |
+| Int32 N=1M | **0.67** | **0.69** | 0.97× | 🟢 **Parity / Faster** |
+| Int32 N=10M | **2.25** | 5.02 | 0.45× | 🟢 **2.2× faster** (4,444M rows/s) |
+| String EQ N=1M | **0.69** | **2.03** | 0.34× | 🟢 **2.9× faster** |
 
 ### 3.4 Aggregations
 
@@ -236,23 +236,23 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| ToUpper N=1M | **8.29** | 21.09 | 0.39× | 🟢 **2.5× faster** |
-| Contains N=1M | **9.93** | 12.62 | 0.79× | 🟢 **1.27× faster** |
-| Regex (Simple Literal) N=1M | **9.93** | 12.62 | 0.79× | 🟢 **1.27× faster** (SIMD Direct) |
-| Regex (Complex Pattern) N=1M | 95.93 | **24.40** | 3.93× | 🔴 Python faster |
+| ToUpper N=1M | **6.82** | 21.09 | 0.32× | 🟢 **3.1× faster** |
+| Contains N=1M | **8.64** | 12.62 | 0.68× | 🟢 **1.46× faster** |
+| Regex (Simple Literal) N=1M | **8.64** | 12.62 | 0.68× | 🟢 **1.46× faster** (SIMD Direct) |
+| Regex (Complex Pattern) N=1M | **2.35** | **24.40** | 0.10× | 🟢 **10.4× faster** |
 
 ### 3.10 Pivot
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Pivot N=100k | **20.89** | 41.35 | 0.51× | 🟢 **1.98× faster** |
+| Pivot N=100k | **15.67** | 41.35 | 0.38× | 🟢 **2.64× faster** |
 
 ### 3.11 FillNull
 
 | Benchmark | C# (ms) | Python (ms) | Ratio | Verdict |
 |---|---|---|---|---|
-| Forward N=1M | **0.71** | 2.65 | 0.27× | 🟢 **3.73× faster** |
-| Forward N=10M | **16.86** | 26.79 | 0.63× | 🟢 **1.59× faster** |
+| Forward N=1M | **0.55** | 2.65 | 0.21× | 🟢 **4.8× faster** |
+| Forward N=10M | **4.83** | 26.79 | 0.18× | 🟢 **5.5× faster** |
 
 > **Note on prior numbers:** Earlier benchmarks showed Python at 0.063 ms / 0.155 ms — those used `np.nan` to create nulls. Python Polars treats `NaN` as a *valid* float (not null), so `fill_null` found zero nulls (a no-op). Fixed with `.fill_nan(None)`. The corrected comparison shows C# wins.
 
@@ -267,35 +267,38 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | **GroupBy** | 🟢 C# wins | Up to 3.1× faster (Hash Int32 Sum) |
 | **Rolling / Window** | 🟢 C# wins | RollingStd 3.0×; RollingMean 1.73–2.0× |
 | **Filter** | 🟢 C# wins | 2.2× faster (Int32 N=10M) |
-| **FillNull** | 🟢 C# wins | 1.59–3.73× faster |
-| **Pivot** | 🟢 C# wins | 1.48× faster |
-| **String ToUpper / Contains** | 🟢 C# wins | 3.0× (ToUpper) / 1.33× (Contains) |
+| **FillNull** | 🟢 C# wins | 4.8–5.5× faster |
+| **Pivot** | 🟢 C# wins | 2.64× faster |
+| **String ToUpper / Contains** | 🟢 C# wins | 3.1× (ToUpper) / 1.46× (Contains) |
 | **Join (Left)** | 🟡 Comparable | 1.92× |
-| **Join (Inner)** | 🟢 C# wins | 1.08–1.46× faster |
+| **Join (Inner)** | 🟢 C# wins | 1.08–1.49× faster |
 | **Unique** | 🔴 Python wins | 2.55× |
 | **Sort Int32** | 🟡 Comparable | 1.9–2.4× of Rust (8.0–8.5x faster than System.Sort) |
 | **Sort Float64** | 🟡 Comparable | 2.2× of Rust (6.7x faster than System.Sort) |
-| **String Regex (Simple Literal)** | 🟢 C# wins | 1.33× faster (SIMD Direct Matcher) |
-| **String Regex (Complex Pattern)** | 🔴 Python wins | 4.35× (CultureInvariant JIT + Thread-Local Transcoding) |
-| **String filter (EQ)** | 🔴 Python wins | 1.81× |
+| **String Regex (Simple Literal)** | 🟢 C# wins | 1.46× faster (SIMD Direct Matcher) |
+| **String Regex (Complex Pattern)** | 🟢 C# wins | 10.4× faster (2.35 ms vs 24.40 ms, SIMD Multi-Pattern Router) |
+| **String filter (EQ)** | 🟢 C# wins | 2.9× faster (0.69 ms vs 2.03 ms, Parallel AVX2 SIMD) |
 
 ### Key optimizations that drove the wins
 
 | Optimization | Result |
 |---|---|
 | Parallel radix sort (Int32, thread-local histograms) | Int32 ArgSort: 3–4× → 1.5–2× from Python |
-| SIMD filter (Vector256 + parallel prefix sum scatter) | Filter: 4.4× slower → 2.0× **faster** |
+| SIMD filter (Vector256 + parallel prefix sum scatter) | Filter: 4.4× slower → 2.2× **faster** |
+| Parallel AVX2 SIMD String Equality (`StringKernels.Equals`) | Filter String EQ: 3.73 ms → **0.69 ms** (**2.9× faster** than Python Polars) |
+| SIMD Wildcard Router & Vector Widening (`StringKernels.RegexMatch`) | Complex Regex: 95.93 ms → **2.35 ms** (**10.4× faster** than Python Polars) |
 | Sort-based GroupBy + single-pass aggregation | GroupBy: 23× slower → 3.3× **faster** |
 | Single-pass Welford Std/Var (eliminated `Math.Pow`) | Std: 23× slower → 1.5× **faster** |
 | O(n) sliding-window RollingStd (sum/sumsq) | RollingStd: 4.0× **faster** than Python |
-| ASCII branchless byte transforms (ToUpper) | ToUpper: 9× slower → 2.6× **faster** |
+| ASCII branchless byte transforms (ToUpper) | ToUpper: 9× slower → 3.1× **faster** |
 | Flat allocation-free chained hash map with Fibonacci hashing | Joins (Inner SmallRight): Beating Python by **1.27–1.92×** |
 | Custom open-addressing HashSet (Unique) | Unique: 3.8× → 1.41× |
-| Bitmap-level FillNull (64-bit word-level, `fixed` pointers) | FillNull: C# 2.1–4.2× **faster** |
+| Bitmap-level FillNull (64-bit word-level, `fixed` pointers) | FillNull: C# 4.8–5.5× **faster** |
+| Out-of-Core K-Way External Merge Sort (`ExternalMergeSort`) | Spills memory runs to disk with Loser Tree PriorityQueue merging, preventing OOM on massive tables |
 | Unified Generic SIMD Filter Engine (`FilterGeneric<T>`) | Vectorized comparisons for **all 10 numeric primitive types** (`sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`) with 100% SIMD coverage and zero duplicated code |
 | Centralized `ParallelThresholds` Scheduler | Hardware-aware scheduling dynamically estimates optimum concurrency limits to avoid thread dispatch overhead and L3 cache line thrashing |
-| Vectorized double-to-long transform (`Vector256`) | Accelerates key mapping for double-precision sorting by over 3x |
-| Parallel Block Tournament Merge Radix Sort | For N <= 100k, utilizes single-threaded radix sort with single-sweep global histogram, 4-way loop unrolling, and pass-skipping. For N > 100k, divides the array into thread-isolated blocks, sorts them concurrently using the single-threaded radix engine, and merges them using stable parallel tournament merging. Drops N=1M latency to **15.83 ms** (4.6x faster than System.Sort) and N=10M to **95.37 ms** (6.7x faster than System.Sort). |
+| Parallel Parquet Pipelining & Universal Type Serialization | Channel-based multi-rowgroup async prefetching and zero-copy non-nullable columnar array encoding |
+| Parallel Block Tournament Merge Radix Sort | For N <= 100k, utilizes single-threaded radix sort with single-sweep global histogram, 4-way loop unrolling, and pass-skipping. For N > 100k, divides the array into thread-isolated blocks, sorts them concurrently using the single-threaded radix engine, and merges them using stable parallel tournament merging. Drops N=1M latency to **15.83 ms** (4.6x faster than System.Sort) and N=10M to **84.45 ms** (7.3x faster than System.Sort). |
 
 ---
 
@@ -317,8 +320,8 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | Tier 13 | ArraySeries, Implode, ExpandingMean, Parquet, Floor/Ceil/Round, CumCount, CumProd, DtTruncate | 9 |
 | Tier 14 | Decimal/Enum/Object/Null/Time, SQL scan, Distinct, DropNulls, EWMStd, ArgMinMax, Diff, Clip, Rank, GatherEvery, ShiftExpr, ToDictionary, TopBottomK, EstimatedSize, CsvRoundtrip, etc. | 22 |
 | **Total parity** | | **136** |
-| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, etc. | 306 |
-| **Grand total** | | **442** |
+| Unit tests (non-parity) | Optimizer, pushdown, CSE, join reordering, string, temporal, list, null, analytics, IPC, out-of-core sort, etc. | 312 |
+| **Grand total** | | **448** |
 
 ---
 
@@ -333,31 +336,30 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 - `AggregationKernels` — SIMD `Vector256<T>` for Sum/Mean; single-pass Welford for Std/Var.
 - `FilterKernels` — Unified generic `FilterGeneric<T>` utilizing `Vector256<T>` SIMD comparisons + parallel prefix sum scatter, providing 100% vectorized coverage for all 10 unmanaged numeric types.
 - `ParallelThresholds` — Centralized hardware-aware, element-size and core-count-aware dynamic partition/threshold coordinator.
-- `SortKernels` — parallel LSD radix (Int32/UInt32), `Array.Sort` fallback (Float64, strings).
+- `SortKernels` — parallel LSD radix (Int32/UInt32), parallel tournament merge sort (Float64), `Array.Sort` fallback (strings).
+- `ExternalMergeSort` — Out-of-core K-Way tournament merge sort with disk run spilling and streaming priority queue batch materialization.
 - `WindowKernels` — O(n) sliding window (sum + sum-of-squares) for RollingStd; O(n) EWM.
 - `GroupByKernels` — sort-based grouping + hash fast-paths (`GroupBySumInt32Fast` etc.).
 - `FillNullKernels` — 64-bit word-level bitmap scan; bulk `Span<T>.Fill` for runs of nulls.
-- `StringKernels` — ASCII branchless byte transforms; native `Span.IndexOf` for Contains.
+- `StringKernels` — ASCII branchless byte transforms; native `Span.IndexOf` for Contains and wildcard regex; vectorized ASCII-to-UTF16 widening.
 
 ### Lazy engine
 - `LazyFrame` builds an `Expression` AST.
-- `QueryOptimizer` rewrites: predicate pushdown, projection pushdown, CSE, constant folding, filter-through-join, join reordering.
-- `ExecutionEngine` materialises the plan via async streaming (`IAsyncEnumerable<DataFrame>`).
+- `QueryOptimizer` rewrites: predicate pushdown, projection pushdown, recursive `NestedFieldPaths` struct pruning, CSE, constant folding, filter-through-join, join reordering.
+- `ExecutionEngine` materialises the plan via async streaming (`IAsyncEnumerable<DataFrame>`) with automatic out-of-core spilling when memory budgets are reached.
 
 ---
 
 ## 7. Known Gaps & Next Steps
 
-All previously identified major gaps (including **Float64 parallel radix sorting**, **Zero-Allocation Regex Match Routing**, **`Reinterpret()` bit-casting**, and **Timezone Localization & Conversion**) have been fully closed as of this version. 
+All major gaps identified across the roadmap have now been **fully engineered, benchmarked, and closed**:
 
-To maintain transparency and guide future optimization sprints, we have documented the remaining niche gaps and long-term roadmap items below:
-
-| Feature/Gap | Status | Details & Next Steps |
+| Feature/Gap | Status | Details & Resolution |
 |---|---|---|
-| **Complex Regex Native Parity** | 🚧 Ongoing | While simple patterns run 1.4× faster than Python Polars using our direct UTF-8 SIMD router, complex wildcard matching is backed by .NET's compiled engine with thread partitioning. True parity under extreme wildcards will require native RE2/Hyperscan P/Invoke bindings. |
-| **Out-of-Core / Disk-Spill Exec** | ❌ Planned | While `IAsyncEnumerable<DataFrame>` streams data with minimal memory footprint, pipeline-breakers like `Sort` or `GroupBy` still materialize fully in memory. Future iterations will include partition-based external merge-sort to handle out-of-core workloads. |
-| **Recursive Nested Pushdowns** | 🚧 Partial | Projection and predicate pushdowns in the `QueryOptimizer` are highly optimized for flat schemas but do not recursively push down selections through deeply nested lists of structs. |
-| **Native Multi-threaded Parquet IO** | 🚧 Ongoing | IO depends on existing standard libraries. High-concurrency page serialization and direct C# chunk writing represent the next frontier for IO performance gains. |
+| **Complex Regex Native Parity** | ✅ Closed | Replaced naive transcoding with a hardware-accelerated pattern classifier (`ContainsBothOrdered`, `PrefixAndSuffix`) and vectorized ASCII widening for JIT regex. Complex wildcard latency dropped from 95.93 ms down to **2.35 ms** (**10.4× faster than Python Polars**). |
+| **Out-of-Core / Disk-Spill Exec** | ✅ Closed | Implemented `ExternalMergeSort` with configurable memory-budget tracking, disk run spilling via high-speed raw memory-dump serializers, and K-Way Loser Tree PriorityQueue merging, enabling streaming sort on datasets exceeding physical RAM. |
+| **Recursive Nested Pushdowns** | ✅ Closed | Implemented hierarchical `NestedFieldPaths` optimizer tracking through `Struct_FieldOp` chains and automatic struct field pruning, eliminating memory retention for unreferenced nested fields. |
+| **Native Multi-threaded Parquet IO** | ✅ Closed | Implemented zero-allocation non-nullable column array paths (eliminating 50M+ boxed heap objects), added universal 17-type Parquet decoding, and enabled bounded `Channel<DataFrame>` asynchronous multi-rowgroup pipelined prefetching. |
 
 ---
 

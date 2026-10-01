@@ -9,11 +9,14 @@ namespace Glacier.Polaris
 {
     public class QueryOptimizer : ExpressionVisitor
     {
+        public Dictionary<string, HashSet<string>> NestedFieldPaths { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+
         public Expression Optimize(Expression plan)
         {
             // 1. Analyze: Find all columns used in the entire query
             var tracker = new ColumnTrackerVisitor();
             tracker.Visit(plan);
+            NestedFieldPaths = tracker.NestedFieldPaths;
 
             // 2. Transform: Predicate Pushdown (re-order filters)
             var transformed = Visit(plan);
@@ -149,6 +152,7 @@ namespace Glacier.Polaris
     internal class ColumnTrackerVisitor : ExpressionVisitor
     {
         public HashSet<string> Columns { get; } = new HashSet<string>();
+        public Dictionary<string, HashSet<string>> NestedFieldPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool HasGlobalSelect { get; private set; } = false;
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
@@ -156,6 +160,37 @@ namespace Glacier.Polaris
             if (node.Method.Name == "Col")
             {
                 Columns.Add((string)((ConstantExpression)node.Arguments[0]).Value!);
+            }
+            else if (node.Method.Name == "Struct_FieldOp")
+            {
+                var path = new List<string>();
+                var current = (Expression)node;
+                while (current is MethodCallExpression mce && mce.Method.Name == "Struct_FieldOp")
+                {
+                    if (mce.Arguments[1] is ConstantExpression ce && ce.Value is string fname)
+                    {
+                        path.Add(fname);
+                    }
+                    current = mce.Arguments[0];
+                    if (current is ConstantExpression exprConst && exprConst.Value is Expr innerExpr)
+                    {
+                        current = innerExpr.Expression;
+                    }
+                }
+                if (current is MethodCallExpression colCall && colCall.Method.Name == "Col" &&
+                    colCall.Arguments[0] is ConstantExpression colConst && colConst.Value is string colName)
+                {
+                    Columns.Add(colName);
+                    path.Reverse();
+                    string fullPath = string.Join(".", path);
+                    if (!NestedFieldPaths.TryGetValue(colName, out var paths))
+                    {
+                        paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        NestedFieldPaths[colName] = paths;
+                    }
+                    paths.Add(fullPath);
+                    if (path.Count > 0) paths.Add(path[0]);
+                }
             }
             else if (node.Method.Name == nameof(LazyFrame.JoinOp))
             {
@@ -247,6 +282,13 @@ namespace Glacier.Polaris
 
     public class ExecutionEngine
     {
+        private readonly Dictionary<string, HashSet<string>>? _nestedFieldPaths;
+
+        public ExecutionEngine(Dictionary<string, HashSet<string>>? nestedFieldPaths = null)
+        {
+            _nestedFieldPaths = nestedFieldPaths;
+        }
+
         public IAsyncEnumerable<DataFrame> ExecuteAsync(Expression plan)
         {
             // The execution engine evaluates the optimized expression tree.
@@ -3229,40 +3271,10 @@ namespace Glacier.Polaris
         }
         private async IAsyncEnumerable<DataFrame> ApplySort(IAsyncEnumerable<DataFrame> source, string[] columnNames, bool[] descending)
         {
-            // Sorting is a blocking operation - we must collect all data
-            var chunks = new List<DataFrame>();
-            await foreach (var df in source)
+            await foreach (var df in Compute.ExternalMergeSort.SortAsync(source, columnNames, descending))
             {
-                chunks.Add(df);
+                yield return df;
             }
-
-            if (chunks.Count == 0) yield break;
-
-            var fullDf = chunks.Count == 1 ? chunks[0] : DataFrame.Concat(chunks);
-
-            // Perform sort
-            var indices = Compute.SortKernels.MultiColumnSort(fullDf, columnNames, descending);
-
-            // Apply indices to all columns
-            var sortedCols = new List<ISeries>();
-            foreach (var col in fullDf.Columns)
-            {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indices.Length; i++) totalBytes += u8.GetStringSpan(indices[i]).Length;
-                    newCol = new Data.Utf8StringSeries(u8.Name, indices.Length, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, indices.Length)!;
-                }
-                col.Take(newCol, indices);
-                sortedCols.Add(newCol);
-            }
-
-            yield return new DataFrame(sortedCols);
         }
         private async IAsyncEnumerable<DataFrame> ApplyJoin(IAsyncEnumerable<DataFrame> leftSource, IAsyncEnumerable<DataFrame> rightSource, string on, JoinType type)
         {

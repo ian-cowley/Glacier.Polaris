@@ -252,7 +252,7 @@ namespace Glacier.Polaris
             var optimizer = new QueryOptimizer();
             var optimizedPlan = optimizer.Optimize(Plan);
 
-            var executor = new ExecutionEngine();
+            var executor = new ExecutionEngine(optimizer.NestedFieldPaths);
             return executor.ExecuteAsync(optimizedPlan);
         }
         public LazyFrame Delay(int ms)
