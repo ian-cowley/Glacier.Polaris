@@ -280,6 +280,14 @@ var pivoted = salesDf.Pivot(index: "Region", pivot: "Product", values: "Sales", 
 var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B" }, variableName: "Product", valueName: "Sales");
 ```
 
+## 🆕 What's New in v1.0.19
+
+- **Monolithic Kernel Modularization (<800 lines)** — Partitioned 6 monolithic kernel and optimization files (`QueryOptimizer.cs`, `GroupByKernels.cs`, `StringKernels.cs`, `SortKernels.cs`, `AggregationKernels.cs`, `WindowKernels.cs`) into 29 cohesive partial classes organized by data type/operator family with zero public API breakage. All files are strictly under 800 lines (max 676 lines).
+- **Unmanaged Columnar Memory Fortification** — Hardened native columnar buffers across 10 touchpoints (`NativeMemoryOwner<T>`, `UnmanagedMemoryManager<T>`, `MemoryOwnerColumn<T>`, `ValidityMask`, etc.) with strict bounds checking and `ObjectDisposedException.ThrowIf` disposal guards.
+- **499 unit and parity tests** passing (100% green).
+
+---
+
 ## 🆕 What's New in v1.0.18
 
 - **Parallel 8-bit LSD Radix Engine & Flat Open-Addressing Hash GroupBy** — drops ArgSort Float64 N=1M to 7.96 ms, GroupBy Int32 Sum N=10M to 2.05 ms (19.0× faster than Python Polars).
