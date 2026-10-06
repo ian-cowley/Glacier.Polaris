@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Glacier.Polaris.Memory;
 using Glacier.Storage.Arrow;
 
@@ -15,6 +16,7 @@ namespace Glacier.Polaris.Data
 
         protected readonly System.Buffers.IMemoryOwner<T> _data;
         protected readonly ValidityMask _validityMask;
+        private int _disposed;
 
         protected Series(string name, int length) : this(name, length, true, true) { }
 
@@ -42,14 +44,30 @@ namespace Glacier.Polaris.Data
             _validityMask = validityMask;
         }
 
-        public Memory<T> Memory => _data.Memory;
-        public ValidityMask ValidityMask => _validityMask;
+        public Memory<T> Memory
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _data.Memory;
+            }
+        }
+
+        public ValidityMask ValidityMask
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _validityMask;
+            }
+        }
 
         /// <summary>
         /// Returns a zero-copy ReadOnlyMemory view of the underlying unmanaged/managed column bytes.
         /// </summary>
         public unsafe ReadOnlyMemory<byte> AsBytesMemory()
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (_data is NativeMemoryOwner<T> nativeOwner)
             {
                 return nativeOwner.AsBytesMemory();
@@ -61,12 +79,24 @@ namespace Glacier.Polaris.Data
 
         public T this[int i]
         {
-            get => Memory.Span[i];
-            set { Memory.Span[i] = value; _validityMask.SetValid(i); }
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
+                return Memory.Span[i];
+            }
+            set
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
+                Memory.Span[i] = value;
+                _validityMask.SetValid(i);
+            }
         }
 
         public void CopyTo(ISeries target, int offset)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (target is Series<T> other)
             {
                 Memory.Span.CopyTo(other.Memory.Span.Slice(offset));
@@ -78,6 +108,7 @@ namespace Glacier.Polaris.Data
         }
         public virtual void Take(ISeries target, ReadOnlySpan<int> indices)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (target is Series<T> other)
             {
                 Compute.ComputeKernels.TakeWithNulls<T>(Memory.Span, indices, other.Memory.Span, other.ValidityMask);
@@ -96,12 +127,17 @@ namespace Glacier.Polaris.Data
         }
         public virtual object? Get(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             if (ValidityMask.IsNull(i)) return null;
             return Memory.Span[i];
         }
 
         public void Take(ISeries target, int srcIdx, int targetIdx)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)srcIdx >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(srcIdx));
+            if ((uint)targetIdx >= (uint)target.Length) throw new ArgumentOutOfRangeException(nameof(targetIdx));
             if (target is Series<T> other)
             {
                 other.Memory.Span[targetIdx] = Memory.Span[srcIdx];
@@ -138,7 +174,13 @@ namespace Glacier.Polaris.Data
                 AsBytesMemory());
         }
 
-        public void Dispose() => _data.Dispose();
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _data.Dispose();
+            }
+        }
         public virtual ISeries CloneEmpty(int length)
         {
             return (ISeries)Activator.CreateInstance(this.GetType(), Name, length)!;
@@ -624,8 +666,16 @@ namespace Glacier.Polaris.Data
         private readonly System.Buffers.IMemoryOwner<byte> _dataBytes;
         private readonly System.Buffers.IMemoryOwner<int> _offsets;
         private readonly Glacier.Polaris.Memory.ValidityMask _validityMask;
+        private int _disposed;
 
-        public Glacier.Polaris.Memory.ValidityMask ValidityMask => _validityMask;
+        public Glacier.Polaris.Memory.ValidityMask ValidityMask
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _validityMask;
+            }
+        }
 
         public Utf8StringSeries(string name, int length, System.Buffers.IMemoryOwner<int> offsets, System.Buffers.IMemoryOwner<byte> dataBytes, ValidityMask validityMask)
         {
@@ -676,13 +726,32 @@ namespace Glacier.Polaris.Data
             offsetSpan[data.Length] = currentOffset;
         }
 
-        public Memory<byte> DataBytes => _dataBytes.Memory;
-        public Memory<int> Offsets => _offsets.Memory;
+        public Memory<byte> DataBytes
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _dataBytes.Memory;
+            }
+        }
+        public Memory<int> Offsets
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _offsets.Memory;
+            }
+        }
 
         public ReadOnlySpan<byte> GetStringSpan(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             var offsets = _offsets.Memory.Span;
-            return _dataBytes.Memory.Span.Slice(offsets[i], offsets[i + 1] - offsets[i]);
+            int start = offsets[i];
+            int end = offsets[i + 1];
+            if (end < start) throw new InvalidOperationException($"Corrupt string offsets: start={start}, end={end}");
+            return _dataBytes.Memory.Span.Slice(start, end - start);
         }
 
         public void CopyTo(ISeries target, int offset)
@@ -692,6 +761,7 @@ namespace Glacier.Polaris.Data
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (target is Utf8StringSeries other)
             {
                 var targetData = other.DataBytes.Span;
@@ -720,17 +790,24 @@ namespace Glacier.Polaris.Data
 
         public void Dispose()
         {
-            _offsets.Dispose();
-            _dataBytes.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _offsets.Dispose();
+                _dataBytes.Dispose();
+            }
         }
         public object? Get(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             if (ValidityMask.IsNull(i)) return null;
             var span = GetStringSpan(i);
             return System.Text.Encoding.UTF8.GetString(span);
         }
         public string? GetString(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             if (ValidityMask.IsNull(i)) return null;
             var span = GetStringSpan(i);
             return System.Text.Encoding.UTF8.GetString(span);
@@ -761,6 +838,9 @@ namespace Glacier.Polaris.Data
 
         public void Take(ISeries target, int srcIdx, int targetIdx)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)srcIdx >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(srcIdx));
+            if ((uint)targetIdx >= (uint)target.Length) throw new ArgumentOutOfRangeException(nameof(targetIdx));
             if (target is Utf8StringSeries other)
             {
                 var targetOffsets = other.Offsets.Span;

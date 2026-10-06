@@ -16,32 +16,55 @@ namespace Glacier.Polaris
         Anti
     }
 
-    public class DataFrame
+    public class DataFrame : IDisposable
     {
-        public List<ISeries> Columns { get; }
-        public int RowCount => Columns.Count > 0 ? Columns[0].Length : 0;
+        private readonly List<ISeries> _columns;
+        private int _disposed;
+
+        public List<ISeries> Columns
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _columns;
+            }
+        }
+
+        public int RowCount
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _columns.Count > 0 ? _columns[0].Length : 0;
+            }
+        }
 
         public virtual void Dispose()
         {
-            foreach (var col in Columns) col.Dispose();
+            if (System.Threading.Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                foreach (var col in _columns) col.Dispose();
+            }
         }
 
         public DataFrame()
         {
-            Columns = new List<ISeries>();
+            _columns = new List<ISeries>();
         }
 
         public DataFrame(IEnumerable<ISeries> columns)
         {
-            Columns = columns.ToList();
+            _columns = columns.ToList();
         }
         public LazyFrame Lazy()
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             return LazyFrame.FromDataFrame(this);
         }
 
         public DataFrame Select(params Expr[] exprs)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             return Lazy().Select(exprs).Collect().GetAwaiter().GetResult();
         }
 

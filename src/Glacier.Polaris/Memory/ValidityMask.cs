@@ -24,10 +24,18 @@ namespace Glacier.Polaris.Memory
         public Span<ulong> AsWritableSpan() => _mask;
 
         /// <summary>Returns the 64-bit mask word at the given word index.</summary>
-        public ulong GetWord(int index) => _mask[index];
+        public ulong GetWord(int index)
+        {
+            if ((uint)index >= (uint)WordCount) throw new ArgumentOutOfRangeException(nameof(index));
+            return _mask[index];
+        }
 
         /// <summary>Sets the 64-bit mask word at the given word index.</summary>
-        public void SetWord(int index, ulong word) => _mask[index] = word;
+        public void SetWord(int index, ulong word)
+        {
+            if ((uint)index >= (uint)WordCount) throw new ArgumentOutOfRangeException(nameof(index));
+            _mask[index] = word;
+        }
 
         /// <summary>Total number of 64-bit mask words.</summary>
         public int WordCount => UlongCount;
@@ -36,6 +44,7 @@ namespace Glacier.Polaris.Memory
 
         public ValidityMask(int length, bool setAllValid)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
             Length = length;
             int ulongCount = (length + 63) / 64;
             _mask = new ulong[ulongCount];
@@ -148,6 +157,7 @@ namespace Glacier.Polaris.Memory
 
         public void CopyTo(ValidityMask target, int offset)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
             if (offset + Length > target.Length) throw new ArgumentOutOfRangeException(nameof(offset));
             for (int i = 0; i < Length; i++)
             {
@@ -161,11 +171,10 @@ namespace Glacier.Polaris.Memory
         /// </summary>
         public void CopyToBulk(ValidityMask target, int targetOffset)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(targetOffset);
             if (targetOffset + Length > target.Length) throw new ArgumentOutOfRangeException(nameof(targetOffset));
             if (!HasNulls) return;
 
-            int srcWord = 0;
-            int srcBit = 0;
             int tgtStartWord = targetOffset / 64;
             int tgtStartBit = targetOffset % 64;
 

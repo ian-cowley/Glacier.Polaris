@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Glacier.Polaris.Memory;
 using Glacier.Storage.Arrow;
 using System.Runtime.InteropServices;
@@ -15,8 +16,16 @@ namespace Glacier.Polaris.Data
         private readonly System.Buffers.IMemoryOwner<byte> _dataBytes;
         private readonly System.Buffers.IMemoryOwner<int> _offsets;
         private readonly ValidityMask _validityMask;
+        private int _disposed;
 
-        public ValidityMask ValidityMask => _validityMask;
+        public ValidityMask ValidityMask
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _validityMask;
+            }
+        }
 
         public BinarySeries(string name, int length, System.Buffers.IMemoryOwner<int> offsets, System.Buffers.IMemoryOwner<byte> dataBytes, ValidityMask validityMask)
         {
@@ -65,13 +74,33 @@ namespace Glacier.Polaris.Data
             offsets[data.Length] = currentOffset;
         }
 
-        public Memory<byte> DataBytes => _dataBytes.Memory;
-        public Memory<int> Offsets => _offsets.Memory;
+        public Memory<byte> DataBytes
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _dataBytes.Memory;
+            }
+        }
+
+        public Memory<int> Offsets
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _offsets.Memory;
+            }
+        }
 
         public ReadOnlySpan<byte> GetSpan(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             var offsets = _offsets.Memory.Span;
-            return _dataBytes.Memory.Span.Slice(offsets[i], offsets[i + 1] - offsets[i]);
+            int start = offsets[i];
+            int end = offsets[i + 1];
+            if (end < start) throw new InvalidOperationException($"Corrupt binary offsets: start={start}, end={end}");
+            return _dataBytes.Memory.Span.Slice(start, end - start);
         }
 
         public void CopyTo(ISeries target, int offset)
@@ -81,6 +110,7 @@ namespace Glacier.Polaris.Data
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (target is BinarySeries other)
             {
                 var targetData = other.DataBytes.Span;
@@ -113,12 +143,16 @@ namespace Glacier.Polaris.Data
 
         public object? Get(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             if (ValidityMask.IsNull(i)) return null;
             return GetSpan(i).ToArray();
         }
 
         public byte[]? GetValue(int i)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if ((uint)i >= (uint)Length) throw new ArgumentOutOfRangeException(nameof(i));
             if (ValidityMask.IsNull(i)) return null;
             return GetSpan(i).ToArray();
         }
@@ -150,8 +184,11 @@ namespace Glacier.Polaris.Data
 
         public void Dispose()
         {
-            _offsets.Dispose();
-            _dataBytes.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _offsets.Dispose();
+                _dataBytes.Dispose();
+            }
         }
 
         public ISeries CloneEmpty(int length)

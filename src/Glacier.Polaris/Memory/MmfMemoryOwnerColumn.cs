@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Threading;
 
 namespace Glacier.Polaris.Memory
 {
@@ -16,9 +17,11 @@ namespace Glacier.Polaris.Memory
         private byte* _pointer;
         private readonly int _length;
         private readonly UnmanagedMemoryManager<T> _manager;
+        private int _disposed;
 
         public MmfMemoryOwnerColumn(string filePath, int length)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
             _length = length;
             long bytesRequired = (long)length * sizeof(T);
 
@@ -36,17 +39,28 @@ namespace Glacier.Polaris.Memory
             _manager = new UnmanagedMemoryManager<T>((T*)(_pointer + _accessor.PointerOffset), length);
         }
 
-        public Memory<T> Memory => _manager.Memory;
+        public Memory<T> Memory
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                return _manager.Memory;
+            }
+        }
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            ((IDisposable)_manager).Dispose();
             if (_pointer != null)
             {
                 _accessor?.SafeMemoryMappedViewHandle.ReleasePointer();
                 _pointer = null;
             }
             _accessor?.Dispose();
+            _accessor = null;
             _mmf?.Dispose();
+            _mmf = null;
         }
     }
 }

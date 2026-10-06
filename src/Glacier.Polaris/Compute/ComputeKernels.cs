@@ -212,6 +212,8 @@ namespace Glacier.Polaris.Compute
         /// </summary>
         public static unsafe void Take<T>(ReadOnlySpan<T> source, ReadOnlySpan<int> indices, Span<T> destination) where T : unmanaged
         {
+            if (destination.Length < indices.Length)
+                throw new ArgumentException("Destination span is too short for the number of indices.", nameof(destination));
             if (indices.Length == 0) return;
 
             int length = indices.Length;
@@ -286,6 +288,10 @@ namespace Glacier.Polaris.Compute
         /// </summary>
         public static unsafe void TakeWithNulls<T>(ReadOnlySpan<T> source, ReadOnlySpan<int> indices, Span<T> destination, Glacier.Polaris.Memory.ValidityMask mask) where T : unmanaged
         {
+            if (destination.Length < indices.Length)
+                throw new ArgumentException("Destination span is too short for the number of indices.", nameof(destination));
+            if (mask.Length < indices.Length)
+                throw new ArgumentException("Validity mask is too short for the number of indices.", nameof(mask));
             int length = indices.Length;
 
             fixed (T* pSource = source)

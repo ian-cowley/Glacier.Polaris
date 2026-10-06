@@ -17,6 +17,7 @@ namespace Glacier.Polaris.Memory
 
         public MemoryOwnerColumn(int length, bool clear)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
             _length = length;
             // Rent from ArrayPool
             _rentedArray = ArrayPool<T>.Shared.Rent(length);
@@ -31,17 +32,17 @@ namespace Glacier.Polaris.Memory
         {
             get
             {
-                if (_rentedArray == null) throw new ObjectDisposedException(nameof(MemoryOwnerColumn<T>));
+                ObjectDisposedException.ThrowIf(_rentedArray == null, this);
                 return new Memory<T>(_rentedArray, 0, _length);
             }
         }
 
         public void Dispose()
         {
-            if (_rentedArray != null)
+            var arr = System.Threading.Interlocked.Exchange(ref _rentedArray, null);
+            if (arr != null)
             {
-                ArrayPool<T>.Shared.Return(_rentedArray);
-                _rentedArray = null; // Prevent double return
+                ArrayPool<T>.Shared.Return(arr);
             }
         }
     }

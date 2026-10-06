@@ -45,6 +45,8 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
     public NativeMemoryOwner(void* pointer, int length, bool ownsMemory = true)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(length);
+        if (length > 0 && pointer == null)
+            throw new ArgumentNullException(nameof(pointer));
         _pointer = pointer;
         _length = length;
         _ownsMemory = ownsMemory;
@@ -77,6 +79,12 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
         // Unmanaged memory does not move; no unpinning required.
     }
 
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
@@ -90,7 +98,14 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
     }
 
     /// <summary>Raw unmanaged 64-byte aligned pointer.</summary>
-    public void* UnmanagedPointer => _pointer;
+    public void* UnmanagedPointer
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return _pointer;
+        }
+    }
 
     /// <summary>Number of elements of type T.</summary>
     public int Length => _length;
