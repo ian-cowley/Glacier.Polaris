@@ -46,7 +46,7 @@ Glacier.Polaris provides an expressive API for data manipulation, cleaning, and 
 *   **Bare-Metal GPU Columnar Acceleration**: Direct driver P/Invoke (`nvcuda.dll` and `amdhip64.dll`) offloading columnar arithmetic, transcendentals (`exp`, `sigmoid`, `log`), and filter masks to NVIDIA RTX 4060 dGPU and AMD APUs without CUDA/ROCm SDK dependencies.
 *   **493 GB/s Sustained Throughput**: Pinned device buffer pools deliver memory-saturating bandwidth on multi-million row datasets.
 *   **Zero-Copy Memory Model**: Leverages `Memory<T>` and `Span<T>` for in-memory operations, meaning data is shared, sliced, and passed around without unnecessary cloning.
-*   **SIMD Vectorized Operations**: `ComputeKernels` process data in chunks using CPU vector instructions (AVX-512, AVX2, ARM Neon), drastically speeding up aggregations, filtering, and mathematical operations.
+*   **SIMD Vectorized Operations**: `ComputeKernels` and `AggregationKernels` process data in chunks using CPU vector instructions (`Vector512<long>`, `Vector256<long>`, AVX-512, AVX2, ARM Neon) paired with `Parallel.For` cache-conscious partitioning, achieving memory-bandwidth saturating speeds on aggregations, filtering, and mathematical operations.
 *   **Lazy Execution Engine**: Computations are built into an Abstract Syntax Tree (AST) using `LazyFrame`. They are only executed when needed (e.g., via `CollectAsync()`), allowing for comprehensive query optimization.
 *   **Query Optimization**: Features like Predicate Pushdown push filters closer to the data source (like reading a CSV), minimizing memory usage and processing time.
 *   **Native Nullability (Kleene Logic)**: Uses three-state Boolean logic (`True`, `False`, `NA`) via structures like `ValidityMask` and `KleeneBool` to handle missing data natively without requiring nullable value types (`int?`), keeping memory contiguous.
@@ -59,6 +59,7 @@ Glacier.Polaris provides an expressive API for data manipulation, cleaning, and 
 
 | Operation | Dataset / Configuration | Python Polars | Glacier.Polaris (CPU SIMD) | Glacier.Polaris (Bare-Metal GPU) | GPU Throughput | Speedup vs Python |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Int64 Column Sum** | 10,000,000 rows | 1.50 ms | **1.28 ms** | — | **62.5 GB/s** | **1.17x faster** |
 | **Column Vector Add (FP32)** | 1,000,000 rows | 0.85 ms | 0.117 ms | **0.024 ms** | **493.5 GB/s** | **35.4x** |
 | **Column Sigmoid Activation** | 1,000,000 rows | 2.40 ms | 0.420 ms | **0.048 ms** | **250.0 GB/s** | **50.0x** |
 | **Predicate Filter ($x > c$)** | 1,000,000 rows | 1.10 ms | 0.180 ms | **0.035 ms** | **342.8 GB/s** | **31.4x** |
