@@ -188,6 +188,87 @@ namespace Glacier.Polaris.Compute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        internal static unsafe long SumInt64(ReadOnlySpan<long> span)
+        {
+            int n = span.Length;
+            if (n >= 250_000)
+            {
+                int numChunks = Math.Min(Environment.ProcessorCount, Math.Max(1, n / 32768));
+                int chunkSize = (n + numChunks - 1) / numChunks;
+                long[] partialSums = new long[numChunks];
+                fixed (long* p = span)
+                {
+                    long* ptr = p;
+                    Parallel.For(0, numChunks, c =>
+                    {
+                        int start = c * chunkSize;
+                        int length = Math.Min(chunkSize, n - start);
+                        if (length > 0)
+                            partialSums[c] = SumInt64Ptr(ptr + start, length);
+                    });
+                }
+                long total = 0;
+                for (int c = 0; c < numChunks; c++) total += partialSums[c];
+                return total;
+            }
+            fixed (long* p = span)
+            {
+                return SumInt64Ptr(p, n);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static unsafe long SumInt64Ptr(long* ptr, int len)
+        {
+            if (len == 0) return 0;
+            int i = 0;
+
+            if (Vector512.IsHardwareAccelerated && len >= 32)
+            {
+                var s0 = Vector512<long>.Zero;
+                var s1 = Vector512<long>.Zero;
+                var s2 = Vector512<long>.Zero;
+                var s3 = Vector512<long>.Zero;
+                int limit = len - 32;
+                for (; i <= limit; i += 32)
+                {
+                    s0 += Vector512.Load(ptr + i);
+                    s1 += Vector512.Load(ptr + i + 8);
+                    s2 += Vector512.Load(ptr + i + 16);
+                    s3 += Vector512.Load(ptr + i + 24);
+                }
+                var sTot = (s0 + s1) + (s2 + s3);
+                long acc = Vector512.Sum(sTot);
+                for (; i < len; i++) acc += ptr[i];
+                return acc;
+            }
+
+            if (Vector256.IsHardwareAccelerated && len >= 16)
+            {
+                var s0 = Vector256<long>.Zero;
+                var s1 = Vector256<long>.Zero;
+                var s2 = Vector256<long>.Zero;
+                var s3 = Vector256<long>.Zero;
+                int limit = len - 16;
+                for (; i <= limit; i += 16)
+                {
+                    s0 += Vector256.Load(ptr + i);
+                    s1 += Vector256.Load(ptr + i + 4);
+                    s2 += Vector256.Load(ptr + i + 8);
+                    s3 += Vector256.Load(ptr + i + 12);
+                }
+                var sTot = (s0 + s1) + (s2 + s3);
+                long acc = Vector256.Sum(sTot);
+                for (; i < len; i++) acc += ptr[i];
+                return acc;
+            }
+
+            long sum = 0;
+            for (; i < len; i++) sum += ptr[i];
+            return sum;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
         internal static unsafe double SqSumFloat64(ReadOnlySpan<double> span, double mean)
         {
             int n = span.Length;

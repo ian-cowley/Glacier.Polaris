@@ -177,6 +177,86 @@ namespace Glacier.Polaris.Compute
                 return result;
             }
 
+            if (series is Int64Series i64)
+            {
+                var span = i64.Memory.Span;
+                var mask = i64.ValidityMask;
+                if (!mask.HasNulls)
+                {
+                    var res = new Int64Series(series.Name + "_sum", 1);
+                    res.Memory.Span[0] = SumInt64(span);
+                    return res;
+                }
+
+                long sum = 0;
+                int fullWords = span.Length / 64;
+                var vSum = Vector256<long>.Zero;
+                ref long basePtr = ref MemoryMarshal.GetReference(span);
+
+                for (int w = 0; w < fullWords; w++)
+                {
+                    ulong word = mask.GetWord(w);
+                    int baseIdx = w * 64;
+
+                    if (word == ulong.MaxValue)
+                    {
+                        for (int v = 0; v < 16; v++)
+                        {
+                            var vData = Vector256.LoadUnsafe(ref Unsafe.Add(ref basePtr, baseIdx + v * 4));
+                            vSum = Vector256.Add(vSum, vData);
+                        }
+                    }
+                    else if (word == 0UL)
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        for (int v = 0; v < 16; v++)
+                        {
+                            int nibble = (int)((word >> (v * 4)) & 0x0F);
+                            if (nibble == 0x00) continue;
+
+                            var vData = Vector256.LoadUnsafe(ref Unsafe.Add(ref basePtr, baseIdx + v * 4));
+                            if (nibble != 0x0F)
+                                vData = Vector256.BitwiseAnd(vData, s_float64MaskLut[nibble]);
+
+                            vSum = Vector256.Add(vSum, vData);
+                        }
+                    }
+                }
+
+                int i = fullWords * 64;
+                int rem = span.Length - i;
+                int remVectors = rem / 4;
+                if (remVectors > 0)
+                {
+                    ulong remWord = mask.GetWord(fullWords);
+                    for (int v = 0; v < remVectors; v++)
+                    {
+                        int nibble = (int)((remWord >> (v * 4)) & 0x0F);
+                        if (nibble == 0x00) continue;
+
+                        var vData = Vector256.LoadUnsafe(ref Unsafe.Add(ref basePtr, i + v * 4));
+                        if (nibble != 0x0F)
+                            vData = Vector256.BitwiseAnd(vData, s_float64MaskLut[nibble]);
+
+                        vSum = Vector256.Add(vSum, vData);
+                    }
+                    i += remVectors * 4;
+                }
+
+                sum = Vector256.Sum(vSum);
+                for (; i < span.Length; i++)
+                {
+                    if (mask.IsValid(i)) sum += span[i];
+                }
+
+                var result = new Int64Series(series.Name + "_sum", 1);
+                result.Memory.Span[0] = sum;
+                return result;
+            }
+
             return new NullSeries(series.Name + "_sum", 1);
         }
 

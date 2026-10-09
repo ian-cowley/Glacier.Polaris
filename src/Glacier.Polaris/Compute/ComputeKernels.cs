@@ -148,6 +148,14 @@ namespace Glacier.Polaris.Compute
         }
 
         /// <summary>
+        /// Computes the sum of a Span of longs using AVX-512, AVX2, or scalar fallback with parallel chunking.
+        /// </summary>
+        public static long Sum(ReadOnlySpan<long> data)
+        {
+            return AggregationKernels.SumInt64(data);
+        }
+
+        /// <summary>
         /// Demonstrates Branchless conditional selects for filtering/masking.
         /// </summary>
         public static void BranchlessMask(ReadOnlySpan<int> data, ReadOnlySpan<int> mask, Span<int> result)
