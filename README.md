@@ -59,7 +59,8 @@ Glacier.Polaris provides an expressive API for data manipulation, cleaning, and 
 
 | Operation | Dataset / Configuration | Python Polars | Glacier.Polaris (CPU SIMD) | Glacier.Polaris (Bare-Metal GPU) | GPU Throughput | Speedup vs Python |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Int64 Column Sum** | 10,000,000 rows | 1.50 ms | **1.28 ms** | — | **62.5 GB/s** | **1.17x faster** |
+| **Int64 Column Sum** | 10,000,000 rows | 1.50 ms | **1.19 ms** | — | **67.2 GB/s** | **1.26x faster** |
+| **Predicate Filter ($v > 5M$)** | 10,000,000 rows | 2.99 ms | **2.02 ms** | — | — | **1.48x faster** |
 | **Column Vector Add (FP32)** | 1,000,000 rows | 0.85 ms | 0.117 ms | **0.024 ms** | **493.5 GB/s** | **35.4x** |
 | **Column Sigmoid Activation** | 1,000,000 rows | 2.40 ms | 0.420 ms | **0.048 ms** | **250.0 GB/s** | **50.0x** |
 | **Predicate Filter ($x > c$)** | 1,000,000 rows | 1.10 ms | 0.180 ms | **0.035 ms** | **342.8 GB/s** | **31.4x** |
