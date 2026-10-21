@@ -9,6 +9,8 @@
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Glacier.Polaris.svg)](https://www.nuget.org/packages/Glacier.Polaris/)
 [![Ecosystem](https://img.shields.io/badge/Glacier-Ecosystem-blue)](https://github.com/ian-cowley)
 [![DEV.to Story](https://img.shields.io/badge/DEV.to-Story-0a0a0a?style=for-the-badge&logo=devto&logoColor=white)](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)
+[![Website](https://img.shields.io/badge/Website-glaciersoftware.dev-66fcf1.svg)](https://glaciersoftware.dev/)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-orange.svg?logo=buy-me-a-coffee)](https://buymeacoffee.com/glaciersoftware)
 
 > 📖 **Read the Deep-Dive**: **[I built a native C# DataFrame engine to rival Python Polars. It’s actually faster on some things.](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)**
 
@@ -315,5 +317,13 @@ Developed by Ian Cowley and Antigravity (Google DeepMind) and Cline/DeepSeek.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+---
 
+## ❄️ Glacier Ecosystem & Support
 
+Part of the **[Glacier Ecosystem](https://glaciersoftware.dev/)** — high-performance, zero-allocation developer tooling and data engines natively built for modern C# and .NET 10.
+
+* 🌐 **Website & Documentation**: [glaciersoftware.dev](https://glaciersoftware.dev/)
+* ☕ **Buy Me a Coffee**: [buymeacoffee.com/glaciersoftware](https://buymeacoffee.com/glaciersoftware)
+* ❤️ **GitHub Sponsors**: [github.com/sponsors/ian-cowley](https://github.com/sponsors/ian-cowley)
+* 🐙 **All Repositories**: [github.com/ian-cowley](https://github.com/ian-cowley)
