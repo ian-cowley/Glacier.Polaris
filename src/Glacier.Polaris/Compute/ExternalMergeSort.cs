@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -16,14 +15,8 @@ namespace Glacier.Polaris.Compute
     /// </summary>
     public static class ExternalMergeSort
     {
-        /// <summary>
-        /// Default in-memory threshold before spilling runs to disk (256 MB).
-        /// </summary>
         public static long DefaultSpillBudget { get; set; } = 256L * 1024 * 1024;
 
-        /// <summary>
-        /// Asynchronously sorts an IAsyncEnumerable of DataFrames using in-memory or external merge sort.
-        /// </summary>
         public static async IAsyncEnumerable<DataFrame> SortAsync(
             IAsyncEnumerable<DataFrame> source,
             string[] columnNames,
@@ -58,7 +51,6 @@ namespace Glacier.Polaris.Compute
                     }
                 }
 
-                // If no runs were spilled, execute purely in-memory
                 if (spillFiles.Count == 0)
                 {
                     if (currentChunks.Count == 0) yield break;
@@ -69,7 +61,6 @@ namespace Glacier.Polaris.Compute
                     yield break;
                 }
 
-                // If we did spill, spill the last remaining chunk if non-empty
                 if (currentChunks.Count > 0)
                 {
                     var runDf = currentChunks.Count == 1 ? currentChunks[0] : DataFrame.Concat(currentChunks);
@@ -80,7 +71,6 @@ namespace Glacier.Polaris.Compute
                     currentChunks.Clear();
                 }
 
-                // K-Way Merge of all spill files
                 await foreach (var outDf in MergeSpillFilesAsync(spillFiles, columnNames, descending, outputBatchSize).ConfigureAwait(false))
                 {
                     yield return outDf;
@@ -88,7 +78,6 @@ namespace Glacier.Polaris.Compute
             }
             finally
             {
-                // Clean up any remaining spill files
                 foreach (var path in spillFiles)
                 {
                     if (File.Exists(path))
@@ -106,21 +95,7 @@ namespace Glacier.Polaris.Compute
 
             foreach (var col in df.Columns)
             {
-                ISeries newCol;
-                if (col is Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indices.Length; i++)
-                    {
-                        totalBytes += u8.GetStringSpan(indices[i]).Length;
-                    }
-                    newCol = new Utf8StringSeries(u8.Name, indices.Length, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, indices.Length)!;
-                }
-
+                var newCol = UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 sortedCols.Add(newCol);
             }
@@ -156,11 +131,7 @@ namespace Glacier.Polaris.Compute
 
                 if (queue.Count == 0) yield break;
 
-                // Template schema from first reader
                 var templateCols = readers[0].Columns;
-                var colTypes = templateCols.Select(c => c.GetType()).ToArray();
-                var colNames = templateCols.Select(c => c.Name).ToArray();
-
                 var selectedRows = new List<RunCursor>(batchSize);
 
                 while (queue.Count > 0)
@@ -177,44 +148,46 @@ namespace Glacier.Polaris.Compute
 
                     if (selectedRows.Count >= batchSize)
                     {
-                        yield return MaterializeBatch(readers, selectedRows, colTypes, colNames);
+                        yield return MaterializeBatch(readers, selectedRows, templateCols);
                         selectedRows.Clear();
                     }
                 }
 
                 if (selectedRows.Count > 0)
                 {
-                    yield return MaterializeBatch(readers, selectedRows, colTypes, colNames);
+                    yield return MaterializeBatch(readers, selectedRows, templateCols);
                 }
             }
             finally
             {
                 foreach (var r in readers) r.Dispose();
             }
+
+            await Task.CompletedTask;
         }
 
         private static DataFrame MaterializeBatch(
             List<SpillRunReader> readers,
             List<RunCursor> selectedRows,
-            Type[] colTypes,
-            string[] colNames)
+            List<ISeries> templateCols)
         {
             int totalRows = selectedRows.Count;
-            var resultCols = new List<ISeries>(colNames.Length);
+            var resultCols = new List<ISeries>(templateCols.Count);
 
-            for (int c = 0; c < colNames.Length; c++)
+            for (int c = 0; c < templateCols.Count; c++)
             {
-                var name = colNames[c];
-                var type = colTypes[c];
+                var templateCol = templateCols[c];
+                var name = templateCol.Name;
 
-                if (type == typeof(Utf8StringSeries))
+                if (templateCol is Utf8StringSeries)
                 {
                     int totalBytes = 0;
                     for (int i = 0; i < totalRows; i++)
                     {
                         var cursor = selectedRows[i];
                         var srcCol = (Utf8StringSeries)readers[cursor.RunIndex].Columns[c];
-                        totalBytes += srcCol.GetStringSpan(cursor.RowIndex).Length;
+                        if (!srcCol.ValidityMask.IsNull(cursor.RowIndex))
+                            totalBytes += srcCol.GetStringSpan(cursor.RowIndex).Length;
                     }
 
                     var newCol = new Utf8StringSeries(name, totalRows, totalBytes);
@@ -228,7 +201,7 @@ namespace Glacier.Polaris.Compute
                 }
                 else
                 {
-                    var newCol = (ISeries)Activator.CreateInstance(type, name, totalRows)!;
+                    var newCol = UniqueKernels.CloneWithName(templateCol, name, totalRows);
                     for (int i = 0; i < totalRows; i++)
                     {
                         var cursor = selectedRows[i];
@@ -292,8 +265,8 @@ namespace Glacier.Polaris.Compute
                     bool nullX = colX.ValidityMask.IsNull(x.RowIndex);
                     bool nullY = colY.ValidityMask.IsNull(y.RowIndex);
                     if (nullX && nullY) continue;
-                    if (nullX) return 1;  // nulls last
-                    if (nullY) return -1; // non-null first
+                    if (nullX) return 1;
+                    if (nullY) return -1;
 
                     int cmp = CompareNonNullValues(colX, x.RowIndex, colY, y.RowIndex);
                     if (cmp != 0)
@@ -333,34 +306,74 @@ namespace Glacier.Polaris.Compute
         {
             public List<ISeries> Columns { get; }
             public int RowCount { get; }
-            public int CurrentRow { get; private set; }
-            public bool IsExhausted => CurrentRow >= RowCount;
 
             public SpillRunReader(string filePath)
             {
                 var df = SpillRunWriter.ReadRun(filePath);
                 Columns = df.Columns.ToList();
                 RowCount = df.RowCount;
-                CurrentRow = 0;
-            }
-
-            public void Advance()
-            {
-                CurrentRow++;
             }
 
             public void Dispose()
             {
                 foreach (var c in Columns)
                 {
-                    if (c is IDisposable d) d.Dispose();
+                    c.Dispose();
                 }
             }
         }
 
+        private enum SpillColumnTag : byte
+        {
+            Utf8String = 1,
+            Int32 = 2,
+            Int64 = 3,
+            Float64 = 4,
+            Float32 = 5,
+            Boolean = 6,
+            Int8 = 7,
+            UInt8 = 8,
+            Int16 = 9,
+            UInt16 = 10,
+            UInt32 = 11,
+            UInt64 = 12,
+            Date = 13,
+            Datetime = 14,
+            Decimal = 15,
+            Duration = 16,
+            Time = 17,
+            Binary = 18,
+            Null = 19,
+            FallbackUtf8 = 255
+        }
+
         private static class SpillRunWriter
         {
-            private const uint Magic = 0x53504C52; // 'RPLS'
+            private const uint Magic = 0x53504C53; // 'SPLS' v2 tagged format
+
+            private static SpillColumnTag GetTag(ISeries col) => col switch
+            {
+                Utf8StringSeries => SpillColumnTag.Utf8String,
+                Int32Series => SpillColumnTag.Int32,
+                Int64Series => SpillColumnTag.Int64,
+                Float64Series => SpillColumnTag.Float64,
+                Float32Series => SpillColumnTag.Float32,
+                BooleanSeries => SpillColumnTag.Boolean,
+                Int8Series => SpillColumnTag.Int8,
+                UInt8Series => SpillColumnTag.UInt8,
+                Int16Series => SpillColumnTag.Int16,
+                UInt16Series => SpillColumnTag.UInt16,
+                UInt32Series => SpillColumnTag.UInt32,
+                UInt64Series => SpillColumnTag.UInt64,
+                DateSeries => SpillColumnTag.Date,
+                DatetimeSeries => SpillColumnTag.Datetime,
+                DecimalSeries => SpillColumnTag.Decimal,
+                DurationSeries => SpillColumnTag.Duration,
+                TimeSeries => SpillColumnTag.Time,
+                BinarySeries => SpillColumnTag.Binary,
+                NullSeries => SpillColumnTag.Null,
+                _ => SpillColumnTag.FallbackUtf8
+            };
 
             public static void WriteRun(DataFrame df, string filePath)
             {
@@ -373,11 +386,11 @@ namespace Glacier.Polaris.Compute
 
                 foreach (var col in df.Columns)
                 {
+                    var tag = GetTag(col);
                     writer.Write(col.Name);
-                    writer.Write(col.GetType().AssemblyQualifiedName!);
+                    writer.Write((byte)tag);
                     writer.Write(col.Length);
 
-                    // ValidityMask
                     writer.Write(col.ValidityMask.HasNulls);
                     if (col.ValidityMask.HasNulls)
                     {
@@ -389,82 +402,84 @@ namespace Glacier.Polaris.Compute
                         }
                     }
 
-                    // Data payload
-                    if (col is Utf8StringSeries u8)
+                    switch (col)
                     {
-                        writer.Write(u8.DataBytes.Length);
-                        writer.Write(u8.DataBytes.Span);
-                        var offsets = MemoryMarshal.AsBytes(u8.Offsets.Span);
-                        writer.Write(offsets.Length);
-                        writer.Write(offsets);
-                    }
-                    else if (col is Int32Series i32)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(i32.Memory.Span));
-                    }
-                    else if (col is Int64Series i64)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(i64.Memory.Span));
-                    }
-                    else if (col is Float64Series f64)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(f64.Memory.Span));
-                    }
-                    else if (col is Float32Series f32)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(f32.Memory.Span));
-                    }
-                    else if (col is BooleanSeries b)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(b.Memory.Span));
-                    }
-                    else if (col is Int8Series i8)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(i8.Memory.Span));
-                    }
-                    else if (col is UInt8Series u8col)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(u8col.Memory.Span));
-                    }
-                    else if (col is Int16Series i16)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(i16.Memory.Span));
-                    }
-                    else if (col is UInt16Series u16)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(u16.Memory.Span));
-                    }
-                    else if (col is UInt32Series u32)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(u32.Memory.Span));
-                    }
-                    else if (col is UInt64Series u64)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(u64.Memory.Span));
-                    }
-                    else if (col is DateSeries dt)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(dt.Memory.Span));
-                    }
-                    else if (col is DatetimeSeries dtm)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(dtm.Memory.Span));
-                    }
-                    else if (col is DecimalSeries dec)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(dec.Memory.Span));
-                    }
-                    else if (col is DurationSeries dur)
-                    {
-                        writer.Write(MemoryMarshal.AsBytes(dur.Memory.Span));
-                    }
-                    else
-                    {
-                        // Fallback object reflection or string
-                        for (int i = 0; i < col.Length; i++)
+                        case Utf8StringSeries u8:
                         {
-                            var v = col.Get(i);
-                            writer.Write(v?.ToString() ?? string.Empty);
+                            writer.Write(u8.DataBytes.Length);
+                            writer.Write(u8.DataBytes.Span);
+                            var offsets = MemoryMarshal.AsBytes(u8.Offsets.Span);
+                            writer.Write(offsets.Length);
+                            writer.Write(offsets);
+                            break;
+                        }
+                        case BinarySeries bin:
+                        {
+                            writer.Write(bin.DataBytes.Length);
+                            writer.Write(bin.DataBytes.Span);
+                            var offsets = MemoryMarshal.AsBytes(bin.Offsets.Span);
+                            writer.Write(offsets.Length);
+                            writer.Write(offsets);
+                            break;
+                        }
+                        case Int32Series i32:
+                            writer.Write(MemoryMarshal.AsBytes(i32.Memory.Span));
+                            break;
+                        case Int64Series i64:
+                            writer.Write(MemoryMarshal.AsBytes(i64.Memory.Span));
+                            break;
+                        case Float64Series f64:
+                            writer.Write(MemoryMarshal.AsBytes(f64.Memory.Span));
+                            break;
+                        case Float32Series f32:
+                            writer.Write(MemoryMarshal.AsBytes(f32.Memory.Span));
+                            break;
+                        case BooleanSeries b:
+                            writer.Write(MemoryMarshal.AsBytes(b.Memory.Span));
+                            break;
+                        case Int8Series i8:
+                            writer.Write(MemoryMarshal.AsBytes(i8.Memory.Span));
+                            break;
+                        case UInt8Series ui8:
+                            writer.Write(MemoryMarshal.AsBytes(ui8.Memory.Span));
+                            break;
+                        case Int16Series i16:
+                            writer.Write(MemoryMarshal.AsBytes(i16.Memory.Span));
+                            break;
+                        case UInt16Series ui16:
+                            writer.Write(MemoryMarshal.AsBytes(ui16.Memory.Span));
+                            break;
+                        case UInt32Series ui32:
+                            writer.Write(MemoryMarshal.AsBytes(ui32.Memory.Span));
+                            break;
+                        case UInt64Series ui64:
+                            writer.Write(MemoryMarshal.AsBytes(ui64.Memory.Span));
+                            break;
+                        case DateSeries dt:
+                            writer.Write(MemoryMarshal.AsBytes(dt.Memory.Span));
+                            break;
+                        case DatetimeSeries dtm:
+                            writer.Write(MemoryMarshal.AsBytes(dtm.Memory.Span));
+                            break;
+                        case DecimalSeries dec:
+                            writer.Write(MemoryMarshal.AsBytes(dec.Memory.Span));
+                            break;
+                        case DurationSeries dur:
+                            writer.Write(MemoryMarshal.AsBytes(dur.Memory.Span));
+                            break;
+                        case TimeSeries tm:
+                            writer.Write(MemoryMarshal.AsBytes(tm.Memory.Span));
+                            break;
+                        case NullSeries:
+                            break;
+                        default:
+                        {
+                            for (int i = 0; i < col.Length; i++)
+                            {
+                                var v = col.Get(i);
+                                writer.Write(v?.ToString() ?? string.Empty);
+                            }
+                            break;
                         }
                     }
                 }
@@ -478,7 +493,7 @@ namespace Glacier.Polaris.Compute
                 uint magic = reader.ReadUInt32();
                 if (magic != Magic) throw new InvalidDataException("Invalid Polaris spill run magic header.");
 
-                int rowCount = reader.ReadInt32();
+                _ = reader.ReadInt32(); // rowCount
                 int colCount = reader.ReadInt32();
 
                 var cols = new List<ISeries>(colCount);
@@ -486,9 +501,8 @@ namespace Glacier.Polaris.Compute
                 for (int c = 0; c < colCount; c++)
                 {
                     string name = reader.ReadString();
-                    string typeName = reader.ReadString();
+                    var tag = (SpillColumnTag)reader.ReadByte();
                     int length = reader.ReadInt32();
-                    Type seriesType = Type.GetType(typeName)!;
 
                     bool hasNulls = reader.ReadBoolean();
                     ulong[]? words = null;
@@ -503,128 +517,158 @@ namespace Glacier.Polaris.Compute
                     }
 
                     ISeries series;
+                    switch (tag)
+                    {
+                        case SpillColumnTag.Utf8String:
+                        {
+                            int dataByteLength = reader.ReadInt32();
+                            var dataBytes = reader.ReadBytes(dataByteLength);
+                            int offsetByteLength = reader.ReadInt32();
+                            var offsetBytes = reader.ReadBytes(offsetByteLength);
 
-                    if (seriesType == typeof(Utf8StringSeries))
-                    {
-                        int dataByteLength = reader.ReadInt32();
-                        var dataBytes = reader.ReadBytes(dataByteLength);
-                        int offsetByteLength = reader.ReadInt32();
-                        var offsetBytes = reader.ReadBytes(offsetByteLength);
+                            var u8 = new Utf8StringSeries(name, length, dataByteLength);
+                            dataBytes.CopyTo(u8.DataBytes);
+                            offsetBytes.CopyTo(MemoryMarshal.AsBytes(u8.Offsets.Span));
+                            series = u8;
+                            break;
+                        }
+                        case SpillColumnTag.Binary:
+                        {
+                            int dataByteLength = reader.ReadInt32();
+                            var dataBytes = reader.ReadBytes(dataByteLength);
+                            int offsetByteLength = reader.ReadInt32();
+                            var offsetBytes = reader.ReadBytes(offsetByteLength);
 
-                        var u8 = new Utf8StringSeries(name, length, dataByteLength);
-                        dataBytes.CopyTo(u8.DataBytes);
-                        var targetOffsets = MemoryMarshal.AsBytes(u8.Offsets.Span);
-                        offsetBytes.CopyTo(targetOffsets);
-                        series = u8;
-                    }
-                    else if (seriesType == typeof(Int32Series))
-                    {
-                        var s = new Int32Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(Int64Series))
-                    {
-                        var s = new Int64Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(Float64Series))
-                    {
-                        var s = new Float64Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(Float32Series))
-                    {
-                        var s = new Float32Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(BooleanSeries))
-                    {
-                        var s = new BooleanSeries(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(Int8Series))
-                    {
-                        var s = new Int8Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(UInt8Series))
-                    {
-                        var s = new UInt8Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(Int16Series))
-                    {
-                        var s = new Int16Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(UInt16Series))
-                    {
-                        var s = new UInt16Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(UInt32Series))
-                    {
-                        var s = new UInt32Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(UInt64Series))
-                    {
-                        var s = new UInt64Series(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(DateSeries))
-                    {
-                        var s = new DateSeries(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(DatetimeSeries))
-                    {
-                        var s = new DatetimeSeries(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(DecimalSeries))
-                    {
-                        var s = new DecimalSeries(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else if (seriesType == typeof(DurationSeries))
-                    {
-                        var s = new DurationSeries(name, length);
-                        var target = MemoryMarshal.AsBytes(s.Memory.Span);
-                        reader.BaseStream.ReadExactly(target);
-                        series = s;
-                    }
-                    else
-                    {
-                        series = (ISeries)Activator.CreateInstance(seriesType, name, length)!;
+                            var bin = new BinarySeries(name, length, dataByteLength);
+                            dataBytes.CopyTo(bin.DataBytes);
+                            offsetBytes.CopyTo(MemoryMarshal.AsBytes(bin.Offsets.Span));
+                            series = bin;
+                            break;
+                        }
+                        case SpillColumnTag.Int32:
+                        {
+                            var s = new Int32Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Int64:
+                        {
+                            var s = new Int64Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Float64:
+                        {
+                            var s = new Float64Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Float32:
+                        {
+                            var s = new Float32Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Boolean:
+                        {
+                            var s = new BooleanSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Int8:
+                        {
+                            var s = new Int8Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.UInt8:
+                        {
+                            var s = new UInt8Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Int16:
+                        {
+                            var s = new Int16Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.UInt16:
+                        {
+                            var s = new UInt16Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.UInt32:
+                        {
+                            var s = new UInt32Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.UInt64:
+                        {
+                            var s = new UInt64Series(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Date:
+                        {
+                            var s = new DateSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Datetime:
+                        {
+                            var s = new DatetimeSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Decimal:
+                        {
+                            var s = new DecimalSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Duration:
+                        {
+                            var s = new DurationSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Time:
+                        {
+                            var s = new TimeSeries(name, length);
+                            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(s.Memory.Span));
+                            series = s;
+                            break;
+                        }
+                        case SpillColumnTag.Null:
+                        {
+                            series = new NullSeries(name, length);
+                            break;
+                        }
+                        default:
+                        {
+                            var strings = new string?[length];
+                            for (int i = 0; i < length; i++) strings[i] = reader.ReadString();
+                            series = Utf8StringSeries.FromStrings(name, strings);
+                            break;
+                        }
                     }
 
                     if (hasNulls && words != null)

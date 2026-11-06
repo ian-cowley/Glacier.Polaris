@@ -1,8 +1,6 @@
 using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 
 namespace Glacier.Polaris.Memory
 {
@@ -23,17 +21,48 @@ namespace Glacier.Polaris.Memory
         /// <summary>Returns the writable mask words span for zero-copy deserialization.</summary>
         public Span<ulong> AsWritableSpan() => _mask;
 
+        private void MaskUnusedTailBits()
+        {
+            int rem = Length % 64;
+            if (rem != 0 && _mask.Length > 0)
+            {
+                _mask[^1] |= ~((1UL << rem) - 1UL);
+            }
+        }
+
+        private ulong GetEffectiveWord(int index)
+        {
+            ulong word = _mask[index];
+            if (index == UlongCount - 1)
+            {
+                int rem = Length % 64;
+                if (rem != 0)
+                {
+                    word |= ~((1UL << rem) - 1UL);
+                }
+            }
+            return word;
+        }
+
         /// <summary>Returns the 64-bit mask word at the given word index.</summary>
         public ulong GetWord(int index)
         {
             if ((uint)index >= (uint)WordCount) throw new ArgumentOutOfRangeException(nameof(index));
-            return _mask[index];
+            return GetEffectiveWord(index);
         }
 
         /// <summary>Sets the 64-bit mask word at the given word index.</summary>
         public void SetWord(int index, ulong word)
         {
             if ((uint)index >= (uint)WordCount) throw new ArgumentOutOfRangeException(nameof(index));
+            if (index == WordCount - 1)
+            {
+                int rem = Length % 64;
+                if (rem != 0)
+                {
+                    word |= ~((1UL << rem) - 1UL);
+                }
+            }
             _mask[index] = word;
         }
 
@@ -52,6 +81,10 @@ namespace Glacier.Polaris.Memory
             {
                 Array.Fill(_mask, ulong.MaxValue);
             }
+            else
+            {
+                MaskUnusedTailBits();
+            }
         }
 
         public bool HasNulls
@@ -60,7 +93,7 @@ namespace Glacier.Polaris.Memory
             {
                 for (int i = 0; i < UlongCount; i++)
                 {
-                    if (_mask[i] != ulong.MaxValue) return true;
+                    if (GetEffectiveWord(i) != ulong.MaxValue) return true;
                 }
                 return false;
             }
@@ -73,7 +106,7 @@ namespace Glacier.Polaris.Memory
                 int count = 0;
                 for (int i = 0; i < UlongCount; i++)
                 {
-                    count += 64 - System.Numerics.BitOperations.PopCount(_mask[i]);
+                    count += 64 - System.Numerics.BitOperations.PopCount(GetEffectiveWord(i));
                 }
                 return count;
             }
@@ -119,29 +152,34 @@ namespace Glacier.Polaris.Memory
         public void SetAllNull()
         {
             Array.Fill(_mask, 0UL);
+            MaskUnusedTailBits();
         }
 
         public void And(ValidityMask other)
         {
             if (other.Length != this.Length) throw new ArgumentException("Length mismatch");
             for (int i = 0; i < UlongCount; i++) _mask[i] &= other._mask[i];
+            MaskUnusedTailBits();
         }
 
         public void Or(ValidityMask other)
         {
             if (other.Length != this.Length) throw new ArgumentException("Length mismatch");
             for (int i = 0; i < UlongCount; i++) _mask[i] |= other._mask[i];
+            MaskUnusedTailBits();
         }
 
         public void Not()
         {
             for (int i = 0; i < UlongCount; i++) _mask[i] = ~_mask[i];
+            MaskUnusedTailBits();
         }
 
         public void CopyFrom(ValidityMask other)
         {
             if (other.Length != this.Length) throw new ArgumentException("Length mismatch");
             Array.Copy(other._mask, _mask, UlongCount);
+            MaskUnusedTailBits();
         }
 
         /// <summary>Fast bulk-enabled Take using bitmap scan for null propagation.</summary>
@@ -175,9 +213,6 @@ namespace Glacier.Polaris.Memory
             if (targetOffset + Length > target.Length) throw new ArgumentOutOfRangeException(nameof(targetOffset));
             if (!HasNulls) return;
 
-            int tgtStartWord = targetOffset / 64;
-            int tgtStartBit = targetOffset % 64;
-
             for (int i = 0; i < Length; i++)
             {
                 if (IsNull(i)) target.SetNull(targetOffset + i);
@@ -197,7 +232,7 @@ namespace Glacier.Polaris.Memory
             for (int w = wordIndex; w < UlongCount; w++)
             {
                 // Invert bits: 1 where null, 0 where valid
-                ulong nullBits = ~_mask[w];
+                ulong nullBits = ~GetEffectiveWord(w);
                 // Mask off bits before bitIndex in the first word
                 if (w == wordIndex) nullBits &= ~((1UL << bitIndex) - 1);
 
@@ -219,9 +254,9 @@ namespace Glacier.Polaris.Memory
         /// Sets the result mask to all-valid.
         /// </summary>
         public static void BulkFillNulls<T>(
-        ReadOnlySpan<T> source, Span<T> destination,
-        ValidityMask sourceMask, T fillValue,
-        ValidityMask resultMask) where T : unmanaged
+            ReadOnlySpan<T> source, Span<T> destination,
+            ValidityMask sourceMask, T fillValue,
+            ValidityMask resultMask) where T : unmanaged
         {
             // 1. Bulk copy all source data
             source.CopyTo(destination);
@@ -259,26 +294,21 @@ namespace Glacier.Polaris.Memory
                 nullBitmap[..bytesToCopy].CopyTo(maskBytes);
             }
 
-            // Set any padding bits in the last word beyond length to 1 so they aren't counted as null
-            int rem = length % 64;
-            if (rem != 0 && mask.WordCount > 0)
-            {
-                ulong paddingOnes = ~((1UL << rem) - 1UL);
-                mask.SetWord(mask.WordCount - 1, mask.GetWord(mask.WordCount - 1) | paddingOnes);
-            }
-
+            mask.MaskUnusedTailBits();
             return mask;
         }
 
         /// <summary>
-        /// Returns a zero-copy ReadOnlyMemory view of the null bitmap for Arrow IPC streaming.
+        /// Returns a managed ReadOnlyMemory copy of the null bitmap for Arrow IPC streaming without pinning.
         /// Returns ReadOnlyMemory.Empty if there are no nulls.
         /// </summary>
         public ReadOnlyMemory<byte> GetNullBitmapMemory()
         {
             if (!HasNulls || Length == 0) return ReadOnlyMemory<byte>.Empty;
             int nullBytes = (Length + 7) / 8;
-            return new ValidityMaskMemoryManager(_mask, nullBytes).Memory;
+            var bitmap = new byte[nullBytes];
+            CopyToNullBitmap(bitmap);
+            return bitmap;
         }
 
         /// <summary>
@@ -286,34 +316,20 @@ namespace Glacier.Polaris.Memory
         /// </summary>
         public void CopyToNullBitmap(Span<byte> destination)
         {
-            int bytesToCopy = Math.Min(destination.Length, (Length + 7) / 8);
+            int requiredBytes = (Length + 7) / 8;
+            int bytesToCopy = Math.Min(destination.Length, requiredBytes);
             if (bytesToCopy > 0)
             {
+                MaskUnusedTailBits();
                 MemoryMarshal.AsBytes(AsSpan())[..bytesToCopy].CopyTo(destination);
-            }
-        }
-
-        private sealed unsafe class ValidityMaskMemoryManager : MemoryManager<byte>
-        {
-            private readonly ulong[] _mask;
-            private readonly int _length;
-            private GCHandle _handle;
-            private byte* _ptr;
-
-            public ValidityMaskMemoryManager(ulong[] mask, int length)
-            {
-                _mask = mask;
-                _length = length;
-                _handle = GCHandle.Alloc(mask, GCHandleType.Pinned);
-                _ptr = (byte*)_handle.AddrOfPinnedObject();
-            }
-
-            public override Span<byte> GetSpan() => new Span<byte>(_ptr, _length);
-            public override MemoryHandle Pin(int elementIndex = 0) => new MemoryHandle(_ptr + elementIndex);
-            public override void Unpin() { }
-            protected override void Dispose(bool disposing)
-            {
-                if (_handle.IsAllocated) _handle.Free();
+                if (bytesToCopy == requiredBytes)
+                {
+                    int bitRem = Length % 8;
+                    if (bitRem != 0)
+                    {
+                        destination[bytesToCopy - 1] |= (byte)~((1 << bitRem) - 1);
+                    }
+                }
             }
         }
     }

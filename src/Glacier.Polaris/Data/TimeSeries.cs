@@ -43,5 +43,7 @@ namespace Glacier.Polaris.Data
             var field = new ArrowField(Name, ArrowType.Time64, isNullable: ValidityMask.HasNulls);
             return new ArrowColumn(field, Length, ValidityMask.NullCount, ValidityMask.GetNullBitmapMemory(), ReadOnlyMemory<byte>.Empty, AsBytesMemory());
         }
+
+        public override ISeries CloneEmpty(int length) => new TimeSeries(Name, length);
     }
 }

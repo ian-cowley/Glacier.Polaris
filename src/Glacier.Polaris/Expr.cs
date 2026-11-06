@@ -264,7 +264,7 @@ namespace Glacier.Polaris
         public static Expr Coalesce(params Expr[] exprs)
         {
             var method = typeof(Expr).GetMethod(nameof(CoalesceOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = System.Linq.Expressions.Expression.NewArrayInit(typeof(Expr), exprs.Select(e => System.Linq.Expressions.Expression.Constant(e, typeof(Expr))));
+            var arrayExpr = System.Linq.Expressions.Expression.Constant(exprs, typeof(Expr[]));
             return new Expr(System.Linq.Expressions.Expression.Call(null, method, arrayExpr));
         }
 
@@ -986,7 +986,7 @@ namespace Glacier.Polaris
         public Expr WithFields(params Expr[] fieldExprs)
         {
             var method = typeof(Expr).GetMethod("Struct_WithFieldsOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var exprsArray = System.Linq.Expressions.Expression.NewArrayInit(typeof(Expr), fieldExprs.Select(e => System.Linq.Expressions.Expression.Constant(e)));
+            var exprsArray = System.Linq.Expressions.Expression.Constant(fieldExprs, typeof(Expr[]));
             return new Expr(System.Linq.Expressions.Expression.Call(null, method, _expr.Expression, exprsArray));
         }
     }

@@ -20,7 +20,7 @@ namespace Glacier.Polaris
         {
             var method = typeof(LazyFrame).GetMethod("GroupByAggOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
             var columnsExpr = Expression.Constant(_columns);
-            var aggExprs = Expression.NewArrayInit(typeof(Expr), aggregations.Select(a => Expression.Constant(a, typeof(Expr))));
+            var aggExprs = Expression.Constant(aggregations, typeof(Expr[]));
             var methodCall = Expression.Call(null, method, _plan, columnsExpr, aggExprs);
             return new LazyFrame(methodCall);
         }

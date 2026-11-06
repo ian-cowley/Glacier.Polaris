@@ -1,4 +1,3 @@
-using Lokad.Utf8Regex;
 using System;
 using System.Collections.Concurrent;
 using System.Text;
@@ -8,30 +7,17 @@ namespace Glacier.Polaris.Compute
 {
     public static partial class StringKernels
     {
-        private static readonly ConcurrentDictionary<string, (Regex netRegex, Utf8Regex? utf8Regex)> _regexCache =
-            new ConcurrentDictionary<string, (Regex netRegex, Utf8Regex? utf8Regex)>(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, Regex> _regexCache =
+            new ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
 
-        private static (Regex netRegex, Utf8Regex? utf8Regex) GetOrAddRegex(string pattern) =>
+        private static Regex GetOrAddRegex(string pattern) =>
             _regexCache.GetOrAdd(pattern, static p =>
-            {
-                var netRegex = new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant);
-                Utf8Regex? utf8Regex = null;
-                try
-                {
-                    utf8Regex = new Utf8Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant);
-                }
-                catch
-                {
-                    // Fall back to netRegex if Utf8Regex fails to compile this pattern
-                }
-                return (netRegex, utf8Regex);
-            });
+                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant));
 
         /// <summary>
         /// Filters a Utf8StringSeries using a Regex pattern.
         /// Returns a bitmask of matching indices.
-        /// Uses Lokad.Utf8Regex to match directly on the UTF-8 bytes to avoid transcoding and allocation,
-        /// and falls back to SIMD-accelerated string/anchor matches where applicable.
+        /// Uses SIMD-accelerated UTF-8 byte scans for literal/anchor patterns and compiled span-based Regex fallback.
         /// </summary>
         public static unsafe void RegexMatch(ReadOnlySpan<byte> dataBytes, ReadOnlySpan<int> offsets, string pattern, Span<int> results)
         {
@@ -357,7 +343,7 @@ namespace Glacier.Polaris.Compute
             }
             else
             {
-                var (netRegex, _) = GetOrAddRegex(pattern);
+                var netRegex = GetOrAddRegex(pattern);
 
                 fixed (byte* pDataBytes = dataBytes)
                 fixed (int* pOffsets = offsets)

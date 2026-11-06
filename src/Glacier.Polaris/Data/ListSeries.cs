@@ -11,7 +11,7 @@ namespace Glacier.Polaris.Data
         public int Length { get; }
 
         public Int32Series Offsets { get; }
-        public ISeries Values { get; }
+        public ISeries Values { get; private set; }
         public Memory.ValidityMask ValidityMask { get; }
 
         public ListSeries(string name, Int32Series offsets, ISeries values)
@@ -39,40 +39,75 @@ namespace Glacier.Polaris.Data
                 var srcOffsets = Offsets.Memory.Span;
                 var targetOffsets = t.Offsets.Memory.Span;
 
-                // We need to count total values to take
                 int totalValues = 0;
                 for (int i = 0; i < indices.Length; i++)
                 {
                     int row = indices[i];
-                    totalValues += srcOffsets[row + 1] - srcOffsets[row];
+                    if (row >= 0 && !ValidityMask.IsNull(row))
+                    {
+                        totalValues += srcOffsets[row + 1] - srcOffsets[row];
+                    }
                 }
 
-                // Create a new values series of the correct size
-                var newValues = (ISeries)Activator.CreateInstance(Values.GetType(), Values.Name, totalValues)!;
-
+                int[] allValueIndices = new int[totalValues];
                 int currentTargetOffset = 0;
                 targetOffsets[0] = 0;
 
                 for (int i = 0; i < indices.Length; i++)
                 {
                     int row = indices[i];
+                    if (row < 0 || ValidityMask.IsNull(row))
+                    {
+                        t.ValidityMask.SetNull(i);
+                        targetOffsets[i + 1] = currentTargetOffset;
+                        continue;
+                    }
+
                     int start = srcOffsets[row];
                     int len = srcOffsets[row + 1] - start;
-
-                    if (len > 0)
+                    for (int j = 0; j < len; j++)
                     {
-                        // Use a temporary indices buffer to take from values
-                        int[] valueIndices = new int[len];
-                        for (int j = 0; j < len; j++) valueIndices[j] = start + j;
-                        Values.Take(newValues, valueIndices); // This is slow, ideally we'd have a slice-copy
+                        allValueIndices[currentTargetOffset + j] = start + j;
                     }
 
                     currentTargetOffset += len;
                     targetOffsets[i + 1] = currentTargetOffset;
+                    t.ValidityMask.SetValid(i);
                 }
 
-                // Copy validity mask
-                ValidityMask.Take(t.ValidityMask, indices);
+                ISeries newValues;
+                if (Values is Utf8StringSeries u8)
+                {
+                    int totalBytes = 0;
+                    for (int i = 0; i < allValueIndices.Length; i++)
+                    {
+                        if (!u8.ValidityMask.IsNull(allValueIndices[i]))
+                            totalBytes += u8.GetStringSpan(allValueIndices[i]).Length;
+                    }
+                    newValues = new Utf8StringSeries(Values.Name, totalValues, totalBytes);
+                }
+                else if (Values is BinarySeries bin)
+                {
+                    int totalBytes = 0;
+                    for (int i = 0; i < allValueIndices.Length; i++)
+                    {
+                        if (!bin.ValidityMask.IsNull(allValueIndices[i]))
+                            totalBytes += bin.GetSpan(allValueIndices[i]).Length;
+                    }
+                    newValues = new BinarySeries(Values.Name, totalValues, totalBytes);
+                }
+                else
+                {
+                    newValues = Values.CloneEmpty(totalValues);
+                }
+
+                if (totalValues > 0)
+                {
+                    Values.Take(newValues, allValueIndices);
+                }
+
+                t.Values.Dispose();
+                t.Values = newValues;
             }
             else throw new ArgumentException("Target series type mismatch.");
         }

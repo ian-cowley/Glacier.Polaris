@@ -110,7 +110,7 @@ namespace Glacier.Polaris.Compute
         /// <summary>Extract the first match of a regex pattern from each string.</summary>
         public static Utf8StringSeries Extract(Utf8StringSeries source, string pattern)
         {
-            var regex = GetOrAddRegex(pattern).netRegex;
+            var regex = GetOrAddRegex(pattern);
             int rowCount = source.Length;
             var strings = new string[rowCount];
 
@@ -147,7 +147,7 @@ namespace Glacier.Polaris.Compute
         /// <summary>Extract all matches of a regex pattern from each string, returning a ListSeries.</summary>
         public static ListSeries ExtractAll(Utf8StringSeries source, string pattern)
         {
-            var regex = GetOrAddRegex(pattern).netRegex;
+            var regex = GetOrAddRegex(pattern);
             int rowCount = source.Length;
             int numThreads = Math.Max(1, Environment.ProcessorCount);
 
@@ -382,20 +382,27 @@ namespace Glacier.Polaris.Compute
         public static Utf8StringSeries JsonEncode(Utf8StringSeries source)
         {
             int rowCount = source.Length;
-            var strings = new string[rowCount];
+            var encodedBytes = new byte[rowCount][];
             int totalBytes = 0;
+            var bufferWriter = new System.Buffers.ArrayBufferWriter<byte>(64);
+            using var jsonWriter = new Utf8JsonWriter(bufferWriter);
+
             for (int i = 0; i < rowCount; i++)
             {
                 if (source.ValidityMask.IsNull(i))
                 {
-                    strings[i] = "null";
+                    encodedBytes[i] = "null"u8.ToArray();
                     totalBytes += 4;
                 }
                 else
                 {
-                    var s = Encoding.UTF8.GetString(source.GetStringSpan(i));
-                    strings[i] = JsonSerializer.Serialize(s);
-                    totalBytes += Encoding.UTF8.GetByteCount(strings[i]);
+                    bufferWriter.Clear();
+                    jsonWriter.Reset(bufferWriter);
+                    jsonWriter.WriteStringValue(source.GetStringSpan(i));
+                    jsonWriter.Flush();
+                    var bytes = bufferWriter.WrittenSpan.ToArray();
+                    encodedBytes[i] = bytes;
+                    totalBytes += bytes.Length;
                 }
             }
 
@@ -404,7 +411,7 @@ namespace Glacier.Polaris.Compute
             for (int i = 0; i < rowCount; i++)
             {
                 result.Offsets.Span[i] = offset;
-                var bytes = Encoding.UTF8.GetBytes(strings[i]);
+                var bytes = encodedBytes[i];
                 bytes.CopyTo(result.DataBytes.Span.Slice(offset));
                 offset += bytes.Length;
                 if (source.ValidityMask.IsNull(i))

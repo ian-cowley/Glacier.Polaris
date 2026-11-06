@@ -98,7 +98,14 @@ namespace Glacier.Polaris.Data
                 strings[i] = ValidityMask.IsNull(i) ? null : (_data[i]?.ToString() ?? string.Empty);
             }
             using var utf8 = Utf8StringSeries.FromStrings(Name, strings);
-            return utf8.ToArrowColumn();
+            var col = utf8.ToArrowColumn();
+            return new ArrowColumn(
+                col.Field,
+                col.Length,
+                col.NullCount,
+                col.NullBitmap.IsEmpty ? ReadOnlyMemory<byte>.Empty : col.NullBitmap.ToArray(),
+                col.OffsetsBuffer.IsEmpty ? ReadOnlyMemory<byte>.Empty : col.OffsetsBuffer.ToArray(),
+                col.DataBuffer.IsEmpty ? ReadOnlyMemory<byte>.Empty : col.DataBuffer.ToArray());
         }
 
         public void Dispose() { /* managed array */ }

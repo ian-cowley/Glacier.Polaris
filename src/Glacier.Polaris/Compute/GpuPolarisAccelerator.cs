@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -11,9 +10,9 @@ using Glacier.Gpu.Drivers;
 namespace Glacier.Polaris.Compute;
 
 /// <summary>
-/// Bare-metal GPU hardware accelerator for Glacier.Polaris columnar operations.
-/// Dispatches elementwise arithmetic, math transforms, and reductions directly
-/// to NVIDIA RTX 4060 dGPU, AMD Radeon 890M APU, or multi-threaded AVX-512 CPU.
+/// Hardware accelerator for Glacier.Polaris single-precision columnar operations.
+/// Dispatches elementwise arithmetic, math transforms, and reductions to NVIDIA CUDA GPUs
+/// (when available) or multi-threaded AVX-512 / AVX2 SIMD CPU kernels.
 /// </summary>
 public static unsafe class GpuPolarisAccelerator
 {
@@ -33,7 +32,6 @@ public static unsafe class GpuPolarisAccelerator
     private static IntPtr s_fnSqrt;
     private static IntPtr s_fnSigmoid;
     private static IntPtr s_fnSum;
-    private static IntPtr s_fnFilterGt;
 
     private sealed class PolarisGpuStreamContext : IDisposable
     {
@@ -106,12 +104,23 @@ public static unsafe class GpuPolarisAccelerator
         s_streamPool.Enqueue(ctx);
     }
 
-    private static bool s_amdInitialized;
-    private static bool s_amdAvailable;
-
     public static bool IsNvidiaAvailable => EnsureNvidiaInitialized();
-    public static bool IsAmdAvailable => EnsureAmdInitialized();
-    public static bool IsGpuAvailable => IsNvidiaAvailable || IsAmdAvailable;
+
+    /// <summary>
+    /// AMD ROCm/HIP device kernels are not implemented in Glacier.Polaris; always returns <see langword="false"/>.
+    /// </summary>
+    public static bool IsAmdAvailable => false;
+
+    public static bool IsGpuAvailable => IsNvidiaAvailable;
+
+    private static void ValidateTarget(GpuTarget target)
+    {
+        if (target == GpuTarget.Amd)
+        {
+            throw new PlatformNotSupportedException(
+                "AMD ROCm/HIP backend is not supported in Glacier.Polaris; use GpuTarget.Auto, GpuTarget.Nvidia, or GpuTarget.Cpu.");
+        }
+    }
 
     #region Driver Initialization
 
@@ -172,7 +181,7 @@ public static unsafe class GpuPolarisAccelerator
                 CuDriver.ModuleGetFunction(out s_fnSqrt, s_cuModule, "polaris_col_sqrt_fp32");
                 CuDriver.ModuleGetFunction(out s_fnSigmoid, s_cuModule, "polaris_col_sigmoid_fp32");
                 CuDriver.ModuleGetFunction(out s_fnSum, s_cuModule, "polaris_col_sum_fp32");
-                CuDriver.ModuleGetFunction(out s_fnFilterGt, s_cuModule, "polaris_col_filter_gt_fp32");
+                CuDriver.ModuleGetFunction(out _, s_cuModule, "polaris_col_filter_gt_fp32");
 
                 s_nvidiaAvailable = s_fnAdd != IntPtr.Zero;
             }
@@ -186,37 +195,6 @@ public static unsafe class GpuPolarisAccelerator
             }
 
             return s_nvidiaAvailable;
-        }
-    }
-
-    private static bool EnsureAmdInitialized()
-    {
-        if (s_amdInitialized) return s_amdAvailable;
-        lock (s_initLock)
-        {
-            if (s_amdInitialized) return s_amdAvailable;
-            try
-            {
-                if (!HipDriver.IsAvailable() || HipDriver.Init(0) != 0 || HipDriver.GetDeviceCount(out int count) != 0 || count == 0)
-                {
-                    s_amdAvailable = false;
-                    s_amdInitialized = true;
-                    return false;
-                }
-
-                HipDriver.SetDevice(0);
-                s_amdAvailable = true;
-            }
-            catch
-            {
-                s_amdAvailable = false;
-            }
-            finally
-            {
-                s_amdInitialized = true;
-            }
-
-            return s_amdAvailable;
         }
     }
 
@@ -240,6 +218,7 @@ public static unsafe class GpuPolarisAccelerator
 
     public static void VectorFma(ReadOnlySpan<float> a, ReadOnlySpan<float> b, ReadOnlySpan<float> c, Span<float> destination, GpuTarget target = GpuTarget.Auto)
     {
+        ValidateTarget(target);
         int n = a.Length;
         if (b.Length < n || c.Length < n || destination.Length < n)
             throw new ArgumentException("Buffer lengths mismatch");
@@ -248,8 +227,7 @@ public static unsafe class GpuPolarisAccelerator
         {
             GpuTarget.Cpu => false,
             GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && n >= 65536
+            _ => IsNvidiaAvailable && n >= 65536
         };
 
         if (useGpu && IsNvidiaAvailable && s_fnFma != IntPtr.Zero)
@@ -313,6 +291,7 @@ public static unsafe class GpuPolarisAccelerator
         BinaryOpType op,
         GpuTarget target)
     {
+        ValidateTarget(target);
         int n = a.Length;
         if (b.Length < n || destination.Length < n)
             throw new ArgumentException("Buffer lengths mismatch");
@@ -321,8 +300,7 @@ public static unsafe class GpuPolarisAccelerator
         {
             GpuTarget.Cpu => false,
             GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && n >= 65536
+            _ => IsNvidiaAvailable && n >= 65536
         };
 
         if (useGpu && IsNvidiaAvailable && kernelFn != IntPtr.Zero)
@@ -456,6 +434,7 @@ public static unsafe class GpuPolarisAccelerator
         Func<float, float> cpuOp,
         GpuTarget target)
     {
+        ValidateTarget(target);
         int n = input.Length;
         if (destination.Length < n)
             throw new ArgumentException("Destination buffer too short");
@@ -464,8 +443,7 @@ public static unsafe class GpuPolarisAccelerator
         {
             GpuTarget.Cpu => false,
             GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && n >= 65536
+            _ => IsNvidiaAvailable && n >= 65536
         };
 
         if (useGpu && IsNvidiaAvailable && kernelFn != IntPtr.Zero)
@@ -495,6 +473,7 @@ public static unsafe class GpuPolarisAccelerator
 
     public static float VectorSum(ReadOnlySpan<float> input, GpuTarget target = GpuTarget.Auto)
     {
+        ValidateTarget(target);
         int n = input.Length;
         if (n == 0) return 0f;
 
@@ -502,8 +481,7 @@ public static unsafe class GpuPolarisAccelerator
         {
             GpuTarget.Cpu => false,
             GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && n >= 131072
+            _ => IsNvidiaAvailable && n >= 131072
         };
 
         if (useGpu && IsNvidiaAvailable && s_fnSum != IntPtr.Zero)
@@ -512,7 +490,7 @@ public static unsafe class GpuPolarisAccelerator
                 return gpuSum;
         }
 
-        // SIMD AVX-512 CPU Sum
+        // SIMD AVX-512 / AVX2 CPU Sum
         fixed (float* pIn = input)
         {
             float* pi = pIn;
@@ -749,7 +727,7 @@ public static unsafe class GpuPolarisAccelerator
         {
             uint blockSize = 256;
             uint gridSize = (uint)((n + (blockSize * 2) - 1) / (blockSize * 2));
-            float[] blockSums = GC.AllocateArray<float>((int)gridSize, pinned: true);
+            float[] blockSums = new float[(int)gridSize];
 
             nuint bytesIn = (nuint)(n * sizeof(float));
             nuint bytesOut = (nuint)(gridSize * sizeof(float));

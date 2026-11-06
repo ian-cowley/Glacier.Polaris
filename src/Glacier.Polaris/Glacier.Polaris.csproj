@@ -4,32 +4,32 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- NuGet Packaging Properties -->
-    <Version>1.0.20</Version>
+    <Version>1.1.0</Version>
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
-    <Description>High-performance, memory-efficient, strongly-typed C# .NET 10 DataFrame library built for speed, with zero-copy semantics, SIMD vectorization, bare-metal GPU acceleration, Glacier.Storage persistence, and Kleene logic.</Description>
-    <PackageTags>polars dataframe series dotnet csharp analytics fast high-performance columnar arrow</PackageTags>
+    <Description>High-performance, memory-efficient, strongly-typed pure C# .NET 10 DataFrame library built for speed, with Native AOT compatibility, SIMD vectorization, CUDA GPU acceleration, Glacier.Storage persistence, and Kleene logic.</Description>
+    <PackageTags>polars dataframe series dotnet csharp analytics fast high-performance columnar arrow aot</PackageTags>
     <RepositoryUrl>https://github.com/ian-cowley/Glacier.Polaris</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <!-- High Performance Optimizations -->
+    <!-- Build & AOT Hygiene -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <TieredPGO>true</TieredPGO>
-    <ServerGarbageCollection>true</ServerGarbageCollection>
-    <!-- LangVersion must be preview for inline arrays if not enabled by default in net10 -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Glacier.Storage" Version="1.0.1" />
-    <PackageReference Include="Lokad.Utf8Regex" Version="0.2.0" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
+    <PackageReference Include="Glacier.Storage" Version="1.0.2" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
-    <PackageReference Include="Parquet.Net" Version="5.6.0" />
-    <PackageReference Include="Snappier" Version="1.3.1" />
-    <PackageReference Include="Glacier.Gpu" Version="1.0.8" />
+    <PackageReference Include="Parquet.Net" Version="5.6.1" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <PackageReference Include="Glacier.Gpu" Version="1.0.9" />
   </ItemGroup>
 </Project>

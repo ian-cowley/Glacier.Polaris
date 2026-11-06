@@ -132,7 +132,11 @@ namespace Glacier.Polaris.Compute
                 {
                     ulong* pk = pPacked;
                     for (int i = 0; i < n; i++)
-                        pk[i] = ((ulong)((uint)pData[pIdx[i]] ^ 0x80000000) << 32) | (uint)i;
+                    {
+                        uint key = (uint)pData[pIdx[i]] ^ 0x80000000u;
+                        if (descending) key = ~key;
+                        pk[i] = ((ulong)key << 32) | (uint)pIdx[i];
+                    }
 
                     ulong* src = pPacked;
                     ulong* dst = pBuffer;
@@ -153,9 +157,6 @@ namespace Glacier.Polaris.Compute
                     for (int i = 0; i < n; i++)
                         pIdx[i] = (int)(pPacked[i] & 0xFFFFFFFF);
                 }
-
-                if (descending)
-                    for (int i = 0; i < n / 2; i++) { int t = indices[i]; indices[i] = indices[n - 1 - i]; indices[n - 1 - i] = t; }
             }
             finally
             {
@@ -166,7 +167,7 @@ namespace Glacier.Polaris.Compute
 
         /// <summary>
         /// ArgSort using the system's built-in Array.Sort (introsort, potentially SIMD-accelerated).
-        /// Creates (key, index) pairs and sorts. For data where n log n < n * radix_passes * constant,
+        /// Creates (key, index) pairs and sorts. For data where n log n &lt; n * radix_passes * constant,
         /// this can be faster than the custom radix sort.
         /// </summary>
         public static int[] ArgSortSystem(ReadOnlySpan<int> data, bool descending = false)

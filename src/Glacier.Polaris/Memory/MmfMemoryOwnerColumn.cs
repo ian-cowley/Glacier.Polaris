@@ -8,7 +8,7 @@ namespace Glacier.Polaris.Memory
 {
     /// <summary>
     /// An IMemoryOwner implementation that maps a file on disk directly into unmanaged memory.
-    /// Exposes the file contents as a standard Memory<T> for zero-copy column operations.
+    /// Exposes the file contents as a standard Memory&lt;T&gt; for zero-copy column operations.
     /// </summary>
     public sealed unsafe class MmfMemoryOwnerColumn<T> : IMemoryOwner<T> where T : unmanaged
     {

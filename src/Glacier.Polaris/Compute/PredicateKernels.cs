@@ -103,7 +103,8 @@ namespace Glacier.Polaris.Compute
                     }
                     else
                     {
-                        resSpan[i] = set.Contains(u8.GetString(i));
+                        var str = u8.GetString(i);
+                        resSpan[i] = str != null && set.Contains(str);
                     }
                 }
                 return result;

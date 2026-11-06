@@ -5,7 +5,7 @@ using System.Threading;
 namespace Glacier.Polaris.Memory
 {
     /// <summary>
-    /// A custom MemoryManager that wraps a raw unmanaged pointer and exposes it as standard Memory<T>.
+    /// A custom MemoryManager that wraps a raw unmanaged pointer and exposes it as standard Memory&lt;T&gt;.
     /// Used for zero-copy memory mapping.
     /// </summary>
     public sealed unsafe class UnmanagedMemoryManager<T> : MemoryManager<T> where T : unmanaged

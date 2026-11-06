@@ -51,7 +51,8 @@ namespace Glacier.Polaris.Compute
                             {
                                 pIdx[i] = i;
                                 long bits = BitConverter.DoubleToInt64Bits(pData[i]);
-                                pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                long key = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                pKeys[i] = descending ? ~key : key;
                             }
                         }
                         else
@@ -59,20 +60,13 @@ namespace Glacier.Polaris.Compute
                             for (int i = 0; i < n; i++)
                             {
                                 long bits = BitConverter.DoubleToInt64Bits(pData[pIdx[i]]);
-                                pKeys[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                long key = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                pKeys[i] = descending ? ~key : key;
                             }
                         }
                     }
 
                     LocalRadixSort8Bit(sKeys.AsSpan(0, n), indices);
-
-                    if (descending)
-                    {
-                        for (int i = 0, j = n - 1; i < j; i++, j--)
-                        {
-                            int t = indices[i]; indices[i] = indices[j]; indices[j] = t;
-                        }
-                    }
                     return;
                 }
                 finally
@@ -131,7 +125,9 @@ namespace Glacier.Polaris.Compute
                                     var vBits = vDouble.As<double, long>();
                                     var vNegMask = Vector256.LessThan(vBits, vZero);
                                     var vXorMask = Vector256.ConditionalSelect(vNegMask, vAllOnes, vSignBit);
-                                    Vector256.Store(vBits ^ vXorMask, k + i);
+                                    var vKey = vBits ^ vXorMask;
+                                    if (descending) vKey = ~vKey;
+                                    Vector256.Store(vKey, k + i);
 
                                     idx[i] = i;
                                     idx[i + 1] = i + 1;
@@ -142,7 +138,8 @@ namespace Glacier.Polaris.Compute
                             for (; i < end; i++)
                             {
                                 long bits = BitConverter.DoubleToInt64Bits(d[i]);
-                                k[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                long key = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                k[i] = descending ? ~key : key;
                                 idx[i] = i;
                             }
                         }
@@ -151,7 +148,8 @@ namespace Glacier.Polaris.Compute
                             for (int i = start; i < end; i++)
                             {
                                 long bits = BitConverter.DoubleToInt64Bits(d[idx[i]]);
-                                k[i] = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                long key = bits < 0 ? ~bits : bits ^ long.MinValue;
+                                k[i] = descending ? ~key : key;
                             }
                         }
                     });
@@ -264,14 +262,6 @@ namespace Glacier.Polaris.Compute
                     if (pSrcIdx != (IntPtr)pIdx)
                     {
                         System.Runtime.CompilerServices.Unsafe.CopyBlock(pIdx, (void*)pSrcIdx, (uint)(n * sizeof(int)));
-                    }
-
-                    if (descending)
-                    {
-                        for (int i = 0, j = n - 1; i < j; i++, j--)
-                        {
-                            int t = pIdx[i]; pIdx[i] = pIdx[j]; pIdx[j] = t;
-                        }
                     }
                 }
             }

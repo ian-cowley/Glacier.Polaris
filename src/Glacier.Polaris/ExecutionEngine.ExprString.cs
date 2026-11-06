@@ -298,12 +298,11 @@ namespace Glacier.Polaris
                 }
                 else if (mce.Method.Name == "CoalesceOp")
                 {
-                    var newArray = (NewArrayExpression)mce.Arguments[0];
-                    var evaluatedSeries = new List<ISeries>(newArray.Expressions.Count);
-                    foreach (var expr in newArray.Expressions)
+                    if (!OptimizerAnalysis.TryExtractExprArray(mce.Arguments[0], out var coalesceExprs))
+                        throw new NotSupportedException("Cannot extract Expr[] for CoalesceOp.");
+                    var evaluatedSeries = new List<ISeries>(coalesceExprs.Length);
+                    foreach (var polarisExpr in coalesceExprs)
                     {
-                        var cExpr = (ConstantExpression)expr;
-                        var polarisExpr = (Expr)cExpr.Value!;
                         var s = EvaluateExpression(polarisExpr.Expression, df, disposables);
                         evaluatedSeries.Add(s);
                     }

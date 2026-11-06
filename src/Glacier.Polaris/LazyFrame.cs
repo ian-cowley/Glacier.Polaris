@@ -32,21 +32,21 @@ namespace Glacier.Polaris
         public LazyFrame Select(params Expr[] selections)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(SelectOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.NewArrayInit(typeof(Expr), selections.Select(s => Expression.Constant(s, typeof(Expr))));
+            var arrayExpr = Expression.Constant(selections, typeof(Expr[]));
             var methodCall = Expression.Call(null, method, Plan, arrayExpr);
             return new LazyFrame(methodCall);
         }
 
         public LazyFrame Select(params Expression<Func<Expr, Expr>>[] selections)
         {
-            var exprs = selections.Select(s => s.Compile().Invoke(null!)).ToArray();
+            var exprs = selections.Select(s => ExprLambdaEvaluator.Evaluate(s)).ToArray();
             return Select(exprs);
         }
 
         public LazyFrame GroupBy(params string[] columns)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(GroupByOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.NewArrayInit(typeof(string), Array.ConvertAll(columns, Expression.Constant));
+            var arrayExpr = Expression.Constant(columns, typeof(string[]));
             var methodCall = Expression.Call(null, method, Plan, arrayExpr);
             return new LazyFrame(methodCall);
         }
@@ -54,7 +54,7 @@ namespace Glacier.Polaris
         public LazyFrame Agg(params Expr[] aggregations)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(AggOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.NewArrayInit(typeof(Expr), aggregations.Select(s => Expression.Constant(s, typeof(Expr))));
+            var arrayExpr = Expression.Constant(aggregations, typeof(Expr[]));
             var methodCall = Expression.Call(null, method, Plan, arrayExpr);
             return new LazyFrame(methodCall);
         }
@@ -73,10 +73,10 @@ namespace Glacier.Polaris
             return new LazyFrame(methodCall);
         }
 
-        public static LazyFrame ScanJson(string filePath)
+        public static LazyFrame ScanJson(string filePath, string[]? columns = null)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(ScanJsonOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(filePath));
+            var methodCall = Expression.Call(null, method, Expression.Constant(filePath), Expression.Constant(columns, typeof(string[])));
             return new LazyFrame(methodCall);
         }
 
@@ -160,7 +160,7 @@ namespace Glacier.Polaris
         public LazyFrame WithColumns(params Expr[] columns)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(WithColumnsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.NewArrayInit(typeof(Expr), columns.Select(s => Expression.Constant(s, typeof(Expr))));
+            var arrayExpr = Expression.Constant(columns, typeof(Expr[]));
             var methodCall = Expression.Call(null, method, Plan, arrayExpr);
             return new LazyFrame(methodCall);
         }
@@ -168,7 +168,7 @@ namespace Glacier.Polaris
         // Dummy static methods to form the AST
         internal static LazyFrame ScanCsvOp(string filePath, string[]? columns = null, int? nRows = null) => null!;
         internal static LazyFrame ScanParquetOp(string filePath, string[]? columns = null) => null!;
-        internal static LazyFrame ScanJsonOp(string filePath) => null!;
+        internal static LazyFrame ScanJsonOp(string filePath, string[]? columns = null) => null!;
         internal static LazyFrame ScanSqlOp(System.Data.IDbConnection connection, string sql) => null!;
         internal static LazyFrame FilterOp(LazyFrame source, Expression<Func<Expr, Expr>> predicate) => null!;
         internal static LazyFrame SelectOp(LazyFrame source, Expr[] selections) => null!;
@@ -183,7 +183,6 @@ namespace Glacier.Polaris
             var results = new List<DataFrame>();
             await foreach (var df in CollectAsync())
             {
-                // Always include DataFrames with columns even if 0 rows (e.g. Limit(0) should preserve schema)
                 if (df.RowCount > 0 || df.Columns.Count > 0)
                 {
                     results.Add(df);
@@ -192,63 +191,9 @@ namespace Glacier.Polaris
 
             if (results.Count == 0) return new DataFrame();
             if (results.Count == 1) return results[0];
+            if (results.All(df => df.RowCount == 0)) return results[0];
 
-            // Merge logic (simplified for now)
-            int totalRows = results.Sum(df => df.RowCount);
-            var firstDf = results[0];
-            var newCols = new List<ISeries>();
-
-            foreach (var col in firstDf.Columns)
-            {
-                if (col is Data.Utf8StringSeries)
-                {
-                    int totalBytes = results.Sum(df => ((Data.Utf8StringSeries)df.GetColumn(col.Name)).DataBytes.Length);
-                    var newCol = new Data.Utf8StringSeries(col.Name, totalRows, totalBytes);
-                    int rowOffset = 0;
-                    int byteOffset = 0;
-
-                    var newOffsets = newCol.Offsets.Span;
-                    var newData = newCol.DataBytes.Span;
-
-                    foreach (var df in results)
-                    {
-                        var c = (Data.Utf8StringSeries)df.GetColumn(col.Name);
-                        var cOffsets = c.Offsets.Span;
-                        var cData = c.DataBytes.Span;
-
-                        // Copy data
-                        cData.CopyTo(newData.Slice(byteOffset));
-
-                        // Copy and adjust offsets
-                        for (int i = 0; i < c.Length; i++)
-                        {
-                            newOffsets[rowOffset + i] = byteOffset + cOffsets[i];
-                        }
-
-                        rowOffset += c.Length;
-                        byteOffset += cData.Length;
-                    }
-                    newOffsets[totalRows] = byteOffset;
-                    newCols.Add(newCol);
-                }
-                else
-                {
-                    // Generic unmanaged series merging
-                    var seriesType = col.GetType();
-                    var newCol = (ISeries)Activator.CreateInstance(seriesType, col.Name, totalRows)!;
-
-                    int offset = 0;
-                    foreach (var df in results)
-                    {
-                        var chunkCol = df.GetColumn(col.Name);
-                        chunkCol.CopyTo(newCol, offset);
-                        offset += chunkCol.Length;
-                    }
-                    newCols.Add(newCol);
-                }
-            }
-
-            return new DataFrame(newCols);
+            return DataFrame.Concat(results);
         }
 
         public IAsyncEnumerable<DataFrame> CollectAsync()
@@ -352,20 +297,19 @@ namespace Glacier.Polaris
             var methodCall = Expression.Call(null, method, Expression.Constant(df));
             return new LazyFrame(methodCall);
         }    /// <summary>Remove duplicate rows (distinct). Polars API: distinct()</summary>
-        public LazyFrame Distinct()
+        public LazyFrame Distinct(string[]? subset = null, bool maintainOrder = true)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(UniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
-            return new LazyFrame(methodCall);
+            return Unique(subset, maintainOrder);
         }
+
         /// <summary>Remove duplicate rows (distinct).</summary>
-        public LazyFrame Unique()
+        public LazyFrame Unique(string[]? subset = null, bool maintainOrder = true)
         {
             var method = typeof(LazyFrame).GetMethod(nameof(UniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
+            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(subset, typeof(string[])), Expression.Constant(maintainOrder));
             return new LazyFrame(methodCall);
         }
-        internal static LazyFrame UniqueOp(LazyFrame source) => null!;
+        internal static LazyFrame UniqueOp(LazyFrame source, string[]? subset = null, bool maintainOrder = true) => null!;
         /// <summary>Return a slice of rows (offset, length). Supports negative offset.</summary>
         public LazyFrame Slice(int offset, int length)
         {

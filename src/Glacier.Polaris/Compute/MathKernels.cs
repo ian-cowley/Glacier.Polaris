@@ -901,8 +901,27 @@ namespace Glacier.Polaris.Compute
                 throw new ArgumentException("Coalesce requires at least one series.");
 
             int length = seriesList[0].Length;
-            var firstNonNullType = seriesList[0].GetType();
-            var result = (ISeries)Activator.CreateInstance(firstNonNullType, "coalesce", length)!;
+            ISeries result;
+            if (seriesList[0] is Utf8StringSeries)
+            {
+                int totalBytes = 0;
+                for (int i = 0; i < length; i++)
+                {
+                    foreach (var s in seriesList)
+                    {
+                        if (s is Utf8StringSeries su8 && su8.ValidityMask.IsValid(i))
+                        {
+                            totalBytes += su8.GetStringSpan(i).Length;
+                            break;
+                        }
+                    }
+                }
+                result = new Utf8StringSeries("coalesce", length, totalBytes);
+            }
+            else
+            {
+                result = UniqueKernels.CloneWithName(seriesList[0], "coalesce", length);
+            }
             var resMask = result.ValidityMask;
 
             for (int i = 0; i < length; i++)

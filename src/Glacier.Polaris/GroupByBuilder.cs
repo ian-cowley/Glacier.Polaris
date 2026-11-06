@@ -59,8 +59,9 @@ namespace Glacier.Polaris
                     }
                     else
                     {
-                        subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
-                        for (int i = 0; i < n; i++) col.Take(subCol, group[i], i);
+                        var groupSpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(group);
+                        subCol = UniqueKernels.CreateSeriesForTake(col, groupSpan);
+                        col.Take(subCol, groupSpan);
                     }
 
                     // Copy validity masks
@@ -153,9 +154,10 @@ namespace Glacier.Polaris
                 }
                 else
                 {
-                    keyCol = (ISeries)Activator.CreateInstance(src.GetType(), colName, _groups.Count)!;
-                    for (int gi = 0; gi < _groups.Count; gi++)
-                        src.Take(keyCol, _groups[gi][0], gi);
+                    var firstIndices = new int[_groups.Count];
+                    for (int gi = 0; gi < _groups.Count; gi++) firstIndices[gi] = _groups[gi][0];
+                    keyCol = UniqueKernels.CreateSeriesForTake(src, firstIndices, colName);
+                    src.Take(keyCol, firstIndices);
                 }
                 groupKeyCols.Add(keyCol);
             }

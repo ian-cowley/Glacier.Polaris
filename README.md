@@ -14,17 +14,14 @@
 
 > 📖 **Read the Deep-Dive**: **[I built a native C# DataFrame engine to rival Python Polars. It’s actually faster on some things.](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)**
 
-
-Glacier.Polaris is a high-performance, strongly-typed DataFrame library for C# .NET 10, heavily inspired by the Rust-based [Polars](https://github.com/pola-rs/polars) library. It provides a robust, zero-copy, memory-efficient data processing engine using modern C# features such as `Memory<T>`, `Span<T>`, hardware intrinsics (SIMD), and a lazy execution engine.
+**Glacier.Polaris** (`v1.1.0`) is a 100% pure C#, Native AOT-compatible, high-performance columnar DataFrame and lazy query engine for .NET 10, inspired by [Polars](https://github.com/pola-rs/polars) and built natively on the Apache Arrow memory layout via `Glacier.Storage`.
 
 > [!TIP]
-> For detailed performance benchmarks, architectural details, and comparison results against Python Polars, see the **[Glacier.Polaris Performance & Parity Report](docs/REPORT.md)**.
+> For detailed architecture, memory ownership invariants, optimizer soundness rules, and execution design, see **[ARCHITECTURE.md](ARCHITECTURE.md)** and **[docs/REPORT.md](docs/REPORT.md)**.
 
-
+---
 
 ## Installation
-
-Glacier.Polaris is available as a [NuGet package](https://www.nuget.org/packages/Glacier.Polaris). You can install it using the .NET CLI:
 
 ```bash
 dotnet add package Glacier.Polaris
@@ -38,290 +35,119 @@ Install-Package Glacier.Polaris
 
 ---
 
-## What is it?
+## Key Features
 
-Glacier.Polaris provides an expressive API for data manipulation, cleaning, and analysis in .NET. It's built to handle large datasets efficiently.
-
-### Key Features
-
-*   **Strongly Typed DataFrames & Series**: Uses generics to avoid boxing/unboxing overhead, mapping directly to C# primitive types (e.g., `Int32Series`, `Float32Series`, `Float64Series`).
-*   **Bare-Metal GPU Columnar Acceleration**: Direct driver P/Invoke (`nvcuda.dll` and `amdhip64.dll`) offloading columnar arithmetic, transcendentals (`exp`, `sigmoid`, `log`), and filter masks to NVIDIA RTX 4060 dGPU and AMD APUs without CUDA/ROCm SDK dependencies.
-*   **493 GB/s Sustained Throughput**: Pinned device buffer pools deliver memory-saturating bandwidth on multi-million row datasets.
-*   **Zero-Copy Memory Model**: Leverages `Memory<T>` and `Span<T>` for in-memory operations, meaning data is shared, sliced, and passed around without unnecessary cloning.
-*   **SIMD Vectorized Operations**: `ComputeKernels` and `AggregationKernels` process data in chunks using CPU vector instructions (`Vector512<long>`, `Vector256<long>`, AVX-512, AVX2, ARM Neon) paired with `Parallel.For` cache-conscious partitioning, achieving memory-bandwidth saturating speeds on aggregations, filtering, and mathematical operations.
-*   **Lazy Execution Engine**: Computations are built into an Abstract Syntax Tree (AST) using `LazyFrame`. They are only executed when needed (e.g., via `CollectAsync()`), allowing for comprehensive query optimization.
-*   **Query Optimization**: Features like Predicate Pushdown push filters closer to the data source (like reading a CSV), minimizing memory usage and processing time.
-*   **Native Nullability (Kleene Logic)**: Uses three-state Boolean logic (`True`, `False`, `NA`) via structures like `ValidityMask` and `KleeneBool` to handle missing data natively without requiring nullable value types (`int?`), keeping memory contiguous.
+* **100% Pure C# & Native AOT Compatible (`IsAotCompatible=true`)**: Zero runtime IL emission, zero `LambdaExpression.Compile()`, zero dynamic type construction (`Activator.CreateInstance` / `Type.GetType`). Ready for Native AOT single-file deployment.
+* **Strongly Typed Columnar Memory**: 64-byte cache-line-aligned unmanaged buffers (`NativeMemoryOwner<T>`) and `Memory<T>` / `Span<T>` zero-boxing series (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Decimal`, `Boolean`, `Utf8String`, `Binary`, `Date`, `Datetime`, `Duration`, `Time`, `Categorical`, `Enum`, `List`, `Struct`, `Array`).
+* **Arrow-Compatible Nullability & Kleene Logic**: Bit-packed 64-bit `ValidityMask` with strict tail-bit masking invariants (`0 <= NullCount <= Length`) and three-valued `KleeneBool` (`True`, `False`, `NA`) algebra across arithmetic, sorting, joins, grouping, and deduplication.
+* **SIMD CPU Kernels + Optional NVIDIA CUDA Offload**: Multi-threaded `Vector512<T>` (AVX-512) and `Vector256<T>` (AVX2) CPU kernels across filters, aggregations, math, strings, and 8-bit LSD radix sorts, plus optional bare-metal NVIDIA CUDA PTX offload (`nvcuda` driver API via `Glacier.Gpu`) with automatic SIMD CPU fallback when no NVIDIA GPU is present. *(Note: AMD ROCm/HIP is not supported; `GpuTarget.Amd` throws `PlatformNotSupportedException`.)*
+* **Sound Relational Query Optimizer**: Predicate pushdown (with alias rewriting and window/aggregation barriers), projection pushdown across `ScanCsv` / `ScanParquet` / `ScanJson` / `Join`, slice (`Limit`) pushdown, and cardinality-aware inner-join reordering that preserves output schema order.
+* **Streaming & Out-of-Core I/O**: Pipelined CSV, Parquet, Arrow IPC (`Glacier.Storage`), and multi-column NDJSON / JSON-array (`Utf8JsonReader`) readers and writers, plus spillable K-way external merge sort.
 
 ---
 
-## 📊 Performance Benchmarks
+## Quick Examples
 
-*Benchmarked on .NET 10.0: AMD Ryzen AI 9 HX 370 (Zen 5 AVX-512) vs. NVIDIA GeForce RTX 4060 Laptop GPU (Ada Lovelace sm_89)*
-
-| Operation | Dataset / Configuration | Python Polars | Glacier.Polaris (CPU SIMD) | Glacier.Polaris (Bare-Metal GPU) | GPU Throughput | Speedup vs Python |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Int64 Column Sum** | 10,000,000 rows | 1.50 ms | **1.19 ms** | — | **67.2 GB/s** | **1.26x faster** |
-| **Predicate Filter ($v > 5M$)** | 10,000,000 rows | 2.99 ms | **2.02 ms** | — | — | **1.48x faster** |
-| **Column Vector Add (FP32)** | 1,000,000 rows | 0.85 ms | 0.117 ms | **0.024 ms** | **493.5 GB/s** | **35.4x** |
-| **Column Sigmoid Activation** | 1,000,000 rows | 2.40 ms | 0.420 ms | **0.048 ms** | **250.0 GB/s** | **50.0x** |
-| **Predicate Filter ($x > c$)** | 1,000,000 rows | 1.10 ms | 0.180 ms | **0.035 ms** | **342.8 GB/s** | **31.4x** |
-
-## How it works
-
-The core of the library is divided into a few key areas:
-
-1.  **Memory Management**: Custom allocators and structures like `MemoryOwnerColumn` and `ValidityMask` manage dense arrays of data. This allows for C-like memory control while remaining safe within the .NET ecosystem.
-2.  **Compute Kernels**: Highly optimized static methods (e.g., `ComputeKernels.Sum`, `ComputeKernels.BranchlessMask`) perform vectorized operations on `Span<T>`.
-3.  **Lazy Evaluation**: Using the `Expr` class, users build up an expression tree. The `LazyFrame` holds this execution plan. When data is requested, the `QueryOptimizer` rewrites the AST (e.g., pushing filters down), and the `ExecutionEngine` runs the optimized plan, often returning results in asynchronous batches.
-
-## Use Cases
-
-1.  **High-Performance Data Ingestion and Transformation (ETL)**: Quickly loading large CSVs or Parquet files, applying complex filters, aggregating, and writing them back out.
-2.  **Financial Time Series Analysis**: Utilizing the `WindowKernels` and temporal functions for rolling averages and statistical calculations over time-based data.
-3.  **Data Science & Machine Learning Preprocessing**: Cleaning missing data using Kleene logic, normalizing features using SIMD vectorized math, and shaping data before feeding it into ML models like ML.NET securely and quickly.
-
-## Examples
-
-### 1. Basic Compute Kernel (Vectorized Math)
-
-```csharp
-using Glacier.Polaris.Compute;
-using System;
-
-// Create a large span of integers
-int[] data = new int[1000];
-Array.Fill(data, 5);
-
-// Highly optimized sum using SIMD (if available on the target architecture)
-long sum = ComputeKernels.Sum(data); // = 5000
-```
-
-### 2. Bare-Metal GPU Column Vector Math (493 GB/s Throughput)
-
-```csharp
-using Glacier.Polaris.Compute;
-
-float[] colA = LoadColumnA(1_000_000);
-float[] colB = LoadColumnB(1_000_000);
-float[] result = new float[1_000_000];
-
-// Offload directly to NVIDIA RTX 4060 dGPU or AMD APU via bare-metal driver P/Invoke
-GpuPolarisAccelerator.VectorAdd(colA, colB, result, GpuTarget.Auto);
-```
-
-### 2. Handling Missing Data (Kleene Logic)
-
-```csharp
-using Glacier.Polaris.Compute;
-
-// Three-state logic prevents exceptions and allows null-aware boolean algebra
-KleeneBool condition1 = KleeneBool.True;
-KleeneBool condition2 = KleeneBool.NA;
-
-// True OR NA = True
-KleeneBool result = condition1 | condition2; 
-bool isTrue = result.IsTrue; // true
-```
-
-### 3. Lazy Evaluation and Predicate Pushdown
-
-This example demonstrates how filters are pushed down before the select operation, minimizing the data processed.
-
-```csharp
-using Glacier.Polaris;
-using Glacier.Polaris.Compute;
-
-// 1. Point to a file (data isn't loaded yet)
-var df = LazyFrame.ScanCsv("large_dataset.csv");
-
-// 2. Build the query plan
-var query = df
-    .Select(e => Expr.Col("Age") * 2) 
-    .Filter(e => Expr.Col("Age") > 18);
-
-// Behind the scenes, the QueryOptimizer rewrites this to:
-// Select(Filter(ScanCsv("large_dataset.csv"), Age > 18), Age * 2)
-
-// 3. Execute the optimized plan
-// (assuming an ExecuteAsync method to materialize the dataframe)
-var engine = new ExecutionEngine();
-await foreach (var batch in engine.ExecuteAsync(query.Plan))
-{
-     // Process batches of data efficiently
-}
-```
-
-### 4. Working with Strongly Typed Series and Memory
-
-```csharp
-using Glacier.Polaris.Data;
-using System;
-
-// Create a series explicitly typing it. Avoids boxing overhead.
-using var series = new Int32Series("UserIds", 100);
-
-// Access raw memory via Span for C-like performance
-Span<int> rawMemory = series.Memory.Span;
-rawMemory[0] = 1001;
-
-// Efficient validty mask setting (marking index 1 as null)
-series.ValidityMask.SetNull(1);
-bool isFirstNull = series.ValidityMask.IsValid(0); // true
-bool isSecondNull = series.ValidityMask.IsValid(1); // false
-
-// Because instances implement IDisposable, using statements ensure memory is returned
-```
-
-### 5. Advanced Feature: Joining and Grouping
-
-`Glacier.Polaris` provides rich features for common relational operations, such as multi-column joining and grouping, providing comprehensive aggregation similar to SQL or Pandas.
-
-```csharp
-using Glacier.Polaris;
-using Glacier.Polaris.Data;
-
-// Let's create two dataframes simulating a relational operation
-var df1 = new DataFrame(new ISeries[] {
-    new Int32Series("Id", new[] { 1, 2, 3 }),
-    new Int32Series("Value", new[] { 10, 20, 30 })
-});
-
-var df2 = new DataFrame(new ISeries[] {
-    new Int32Series("Id", new[] { 1, 2, 4 }),
-    new Int32Series("Multiplier", new[] { 2, 3, 4 })
-});
-
-// Perform an inner join on the "Id" column
-var joined = df1.Join(df2, "Id", JoinType.Inner);
-// Resulting rows for (Id, Value, Multiplier): (1, 10, 2), (2, 20, 3)
-
-// Multi-column groupby and aggregation
-var salesDf = new DataFrame(new ISeries[] {
-    new Int32Series("StoreId", new[] { 1, 1, 2, 2 }),
-    new Int32Series("Quarter", new[] { 1, 1, 1, 2 }),
-    new Int32Series("Sales", new[] { 100, 200, 300, 400 })
-});
-
-// Group by StoreId and Quarter, calculate sum and count of Sales
-var grouped = salesDf.GroupBy("StoreId", "Quarter").Agg(
-    ("Sales", "sum"),
-    ("Sales", "count")
-);
-```
-
-### 6. Expressions and Conditional Functions
-
-Construct complex new columns natively using lazy evaluation via expressive `.WithColumns()` manipulations and conditionals like `Expr.When().Then().Otherwise()`.
+### 1. Lazy Evaluation, Pushdown & Expressions
 
 ```csharp
 using Glacier.Polaris;
 
-var df = LazyFrame.ScanCsv("employees.csv");
-
-// Add computed columns, incorporating conditional logic
-var transformed = await df
+var query = LazyFrame.ScanCsv("employees.csv")
+    .Filter(e => Expr.Col("Salary") > 50_000)
     .WithColumns(
         (Expr.Col("Salary") * 1.1).Alias("SalaryWithBonus"),
-        Expr.When(Expr.Col("Salary") > 80000)
+        Expr.When(Expr.Col("Salary") > 80_000)
             .Then("Senior")
             .Otherwise("Junior")
             .Alias("Level")
     )
-    .Collect();
+    .Select(Expr.Col("Name"), Expr.Col("SalaryWithBonus"), Expr.Col("Level"));
+
+DataFrame result = await query.Collect();
 ```
 
-### 7. Time-Series and Temporal Operations
-
-[Polars](https://github.com/pola-rs/polars) excels at time-series analysis. The library provides specialized structures like `DateSeries`, `DatetimeSeries`, and `DurationSeries`, backed by advanced join capabilities such as `JoinAsof` (As-of Joins).
-
-```csharp
-using Glacier.Polaris;
-using Glacier.Polaris.Data;
-using System;
-
-var dates = new DateTime[] {
-    new DateTime(2021, 1, 1, 12, 30, 45, DateTimeKind.Utc),
-    new DateTime(2022, 5, 15, 8, 15, 0, DateTimeKind.Utc)
-};
-
-var df = new DataFrame(new ISeries[] {
-    new DateSeries("TradeDate", dates)
-});
-
-// Extract temporal features using the .Dt() namespace
-var temporalFeatures = await df.Lazy()
-    .Select(
-        Expr.Col("TradeDate").Dt().Year().Alias("Year"),
-        Expr.Col("TradeDate").Dt().Month().Alias("Month"),
-        Expr.Col("TradeDate").Dt().Day().Alias("Day")
-    )
-    .Collect();
-
-// 'As-Of' Joins are essential for merging financial tick data where timestamps don't perfectly align.
-// It joins the closest timestamp backward (or forward/nearest).
-// var result = trades.JoinAsof(quotes, on: "time", strategy: AsofStrategy.Backward);
-```
-
-### 8. Reshaping Data: Pivot and Melt
-
-Transform data layouts seamlessly using `Pivot` (wide format) and `Melt` (long format).
+### 2. Multi-Column Sorting, Null-Aware Deduplication & GroupBy
 
 ```csharp
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
 
-var salesDf = new DataFrame(new ISeries[] {
-    new Utf8StringSeries("Region", new[] { "North", "South", "North", "South" }),
-    new Utf8StringSeries("Product", new[] { "A", "A", "B", "B" }),
-    new Int32Series("Sales", new[] { 100, 200, 150, 250 })
+var df = new DataFrame(new ISeries[]
+{
+    Int32Series.FromValues("StoreId", new int?[] { 2, 1, 2, 1, 1 }),
+    Utf8StringSeries.FromStrings("Category", new string?[] { "A", "B", "A", "B", null }),
+    new Int32Series("Sales", new[] { 100, 250, 100, 400, 50 })
 });
 
-// Pivot: Create columns for each 'Product' and aggregate 'Sales'
-var pivoted = salesDf.Pivot(index: "Region", pivot: "Product", values: "Sales", agg: "sum");
+// Multi-column null-aware deduplication on a column subset
+DataFrame unique = df.Unique(subset: new[] { "StoreId", "Category" }, maintainOrder: true);
 
-// Melt: Convert wide pivoted data back to long format
-var melted = pivoted.Melt(idVars: new[] { "Region" }, valueVars: new[] { "A", "B" }, variableName: "Product", valueName: "Sales");
+// Stable multi-column radix sort (StoreId ascending, Sales descending)
+DataFrame sorted = df.SortByEager(new[] { "StoreId", "Sales" }, new[] { false, true });
+
+// Multi-key hash GroupBy
+DataFrame grouped = df.GroupBy("StoreId").Agg(("Sales", "sum"), ("Sales", "count"));
 ```
 
-## 🆕 What's New in v1.0.19
+### 3. Streaming Multi-Column NDJSON & JSON Arrays
 
-- **Monolithic Kernel Modularization (<800 lines)** — Partitioned 6 monolithic kernel and optimization files (`QueryOptimizer.cs`, `GroupByKernels.cs`, `StringKernels.cs`, `SortKernels.cs`, `AggregationKernels.cs`, `WindowKernels.cs`) into 29 cohesive partial classes organized by data type/operator family with zero public API breakage. All files are strictly under 800 lines (max 676 lines).
-- **Unmanaged Columnar Memory Fortification** — Hardened native columnar buffers across 10 touchpoints (`NativeMemoryOwner<T>`, `UnmanagedMemoryManager<T>`, `MemoryOwnerColumn<T>`, `ValidityMask`, etc.) with strict bounds checking and `ObjectDisposedException.ThrowIf` disposal guards.
-- **499 unit and parity tests** passing (100% green).
+```csharp
+using Glacier.Polaris;
+using Glacier.Polaris.IO;
+
+// Eagerly read NDJSON or top-level JSON array [...] with automatic type inference & column projection
+DataFrame jsonDf = DataFrame.ReadJson("events.ndjson", columns: new[] { "id", "timestamp", "score" });
+
+// Or stream fixed-size record batches asynchronously via LazyFrame.ScanJson
+DataFrame topScores = await LazyFrame.ScanJson("events.ndjson")
+    .Filter(e => Expr.Col("score") >= 0.9)
+    .Select(Expr.Col("id"), Expr.Col("score"))
+    .Collect();
+```
+
+### 4. Hardware-Accelerated FP32 Math (NVIDIA CUDA or AVX-512 / AVX2 SIMD)
+
+```csharp
+using Glacier.Polaris.Compute;
+
+float[] colA = new float[1_000_000];
+float[] colB = new float[1_000_000];
+float[] dst = new float[1_000_000];
+
+// Automatically dispatches to NVIDIA CUDA when available, or multi-threaded AVX-512 / AVX2 SIMD on CPU
+GpuPolarisAccelerator.VectorAdd(colA, colB, dst, GpuTarget.Auto);
+```
 
 ---
 
-## 🆕 What's New in v1.0.18
+## 🆕 What's New in v1.1.0
 
-- **Parallel 8-bit LSD Radix Engine & Flat Open-Addressing Hash GroupBy** — drops ArgSort Float64 N=1M to 7.96 ms, GroupBy Int32 Sum N=10M to 2.05 ms (19.0× faster than Python Polars).
-- **Direct-Addressed Joins & SIMD Lock-Free Windows** — Inner Join N=10M dropped to 5.67 ms (5.8× faster), RollingStd N=1M dropped to 1.28 ms (10.1× faster).
-- **Full Polars Core API Closure (99.8%+ Coverage)** — Native Predicates (IsIn, IsBetween, IsNan, IsNotNan, IsFinite, IsInfinite), Boolean Reductions (All, Any), Extended Math (Sign, Pow, Log1p, Cbrt, Dot, Coalesce), Cumulative Reductions (CumSum, CumMean, CumMin, CumMax, CumProd, CumCount), and DataFrame/Series ergonomics (Drop, eager WithColumns, VStack, HStack, PartitionBy, Head, Tail, ColumnNames).
-- **Comprehensive Parity & Unit Tests** — 469 / 469 passing (333 unit + 136 parity vs Python Polars v1.40.1 across Tiers 1–14).
+- **Full Native AOT Compatibility (`<IsAotCompatible>true</IsAotCompatible>`) & `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`**: Replaced all runtime lambda compilation (`LambdaExpression.Compile()`), `Expression.NewArrayInit`, `Activator.CreateInstance`, `Type.GetType`, and reflection-based JSON serialization with static AST evaluation (`ExprLambdaEvaluator`), typed series factories, and `Utf8JsonWriter`.
+- **Sound `QueryOptimizer` Rules**: Guarded `Filter -> Select` pushdown against aggregations/windows/computed expressions (with alias rewriting on pass-through columns), guarded `Limit -> Select` against row-collapsing projections, resolved `DataFrameOp` / `ScanJsonOp` / `SelectOp` / `RenameOp` schemas in `Filter -> Join`, preserved `SortOp` / `GroupByOp` / `DropNullsOp` / `UniqueOp` columns during projection pushdown, and restricted join reordering to `JoinType.Inner` while preserving exact output column order.
+- **Multi-Column Null-Aware `Unique()` & Stable Multi-Column Radix `Sort`**: Rebuilt single- and multi-column deduplication (`DataFrame.Unique`, `LazyFrame.Unique`, `UniqueKernels`) to distinguish `null` from `0`/`0.0`/`""` across all series types, fixed `DataFrame.SortBy` / `SortByEager`, and fixed tie-stability and row-index preservation in multi-column `Int32`/`Float64` LSD radix `ArgSort`.
+- **Memory & `ValidityMask` Hardening**: Enforced tail-bit masking across all `ValidityMask` paths (`0 <= NullCount <= Length`), eliminated permanent `MemoryHandle` / `GCHandle` / `NativeMemoryOwner` leaks across Arrow/byte exports and `SchemaRegistry`, and added `ValidityMask` propagation to `Float32Series` hardware-accelerated operations.
+- **Real Multi-Column `JsonReader`**: Streaming and eager NDJSON (with or without trailing newline) and JSON-array (`[...]`) reader over `Utf8JsonReader` with schema inference, numeric/string promotion, null masks, exact batch slicing, and column projection.
+- **Supply-Chain & Backend Hygiene**: Upgraded to `Glacier.Storage` `1.0.2` and `Parquet.Net` `5.6.1` with zero vulnerable direct or transitive NuGet dependencies, removed unused packages (`Lokad.Utf8Regex`, direct `Snappier`) and all Python scripts, and quarantined unimplemented `GpuTarget.Amd` cleanly (`IsAmdAvailable == false`).
 
-## Publishing (Maintainers)
+---
 
-To release a new version to NuGet and GitHub:
+## Building & Testing
 
-1. Open PowerShell in the repository root.
-2. Run: `./release.ps1`
-3. Follow the prompts for the commit message.
+```bash
+dotnet build Glacier.Polaris.slnx -c Release
+dotnet test Glacier.Polaris.slnx -c Release --no-build
+```
 
-The script will automatically increment the patch version in `Glacier.Polaris.csproj`, stage all changes, commit, push, and create a GitHub tag `vX.Y.Z`, which triggers the CI/CD pipeline to publish.
-
-## Credits
-
-Developed by Ian Cowley and Antigravity (Google DeepMind) and Cline/DeepSeek.
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
+Licensed under the [MIT License](LICENSE).
 
 ## ❄️ Glacier Ecosystem & Support
 
-Part of the **[Glacier Ecosystem](https://glaciersoftware.dev/)** — high-performance, zero-allocation developer tooling and data engines natively built for modern C# and .NET 10.
+Part of the **[Glacier Ecosystem](https://glaciersoftware.dev/)** — high-performance developer tooling and data engines built for modern C# and .NET 10.
 
 * 🌐 **Website & Documentation**: [glaciersoftware.dev](https://glaciersoftware.dev/)
 * ☕ **Buy Me a Coffee**: [buymeacoffee.com/glaciersoftware](https://buymeacoffee.com/glaciersoftware)

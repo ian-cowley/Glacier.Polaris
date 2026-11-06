@@ -658,12 +658,12 @@ namespace Glacier.Polaris.Compute
             {
                 var resSpan = result.Memory.Span;
                 var srcStrings = new string[sourceLen];
-                for (int s = 0; s < sourceLen; s++) srcStrings[s] = u8.GetString(s);
+                for (int s = 0; s < sourceLen; s++) srcStrings[s] = u8.GetString(s) ?? "";
                 Array.Sort(srcStrings);
 
                 for (int i = 0; i < searchLen; i++)
                 {
-                    string val = searchValues is Utf8StringSeries svU8 ? svU8.GetString(i) : "";
+                    string val = searchValues is Utf8StringSeries svU8 ? (svU8.GetString(i) ?? "") : "";
                     resSpan[i] = Array.BinarySearch(srcStrings, val);
                     if (resSpan[i] < 0) resSpan[i] = ~resSpan[i];
                 }
@@ -673,12 +673,12 @@ namespace Glacier.Polaris.Compute
                 // Generic approach via Get() — slower but works for any type
                 var resSpan = result.Memory.Span;
                 var srcValues = new IComparable?[sourceLen];
-                for (int s = 0; s < sourceLen; s++) srcValues[s] = (IComparable)source.Get(s);
+                for (int s = 0; s < sourceLen; s++) srcValues[s] = (IComparable?)source.Get(s);
                 Array.Sort(srcValues);
 
                 for (int i = 0; i < searchLen; i++)
                 {
-                    var val = (IComparable)searchValues.Get(i);
+                    var val = (IComparable?)searchValues.Get(i);
                     resSpan[i] = Array.BinarySearch(srcValues, val);
                     if (resSpan[i] < 0) resSpan[i] = ~resSpan[i];
                 }

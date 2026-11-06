@@ -68,9 +68,22 @@ namespace Glacier.Polaris
                 u8.Offsets.Span.CopyTo(((Utf8StringSeries)newCol).Offsets.Span);
                 u8.DataBytes.Span.CopyTo(((Utf8StringSeries)newCol).DataBytes.Span);
             }
+            else if (col is BinarySeries bin)
+            {
+                newCol = new BinarySeries(col.Name, col.Length, bin.DataBytes.Length);
+                bin.Offsets.Span.CopyTo(((BinarySeries)newCol).Offsets.Span);
+                bin.DataBytes.Span.CopyTo(((BinarySeries)newCol).DataBytes.Span);
+            }
+            else if (col is ListSeries)
+            {
+                newCol = col.CloneEmpty(col.Length);
+                var idx = Enumerable.Range(0, col.Length).ToArray();
+                col.Take(newCol, idx);
+                return newCol;
+            }
             else
             {
-                newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, col.Length)!;
+                newCol = col.CloneEmpty(col.Length);
                 for (int i = 0; i < col.Length; i++) col.Take(newCol, i, i);
             }
             newCol.ValidityMask.CopyFrom(col.ValidityMask);

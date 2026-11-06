@@ -47,7 +47,11 @@ namespace Glacier.Polaris
 
             // Parse aggregations expression to get Expr[]
             List<Expr> aggExprs = new();
-            if (aggregations is NewArrayExpression arrExpr)
+            if (OptimizerAnalysis.TryExtractExprArray(aggregations, out var extractedAggs))
+            {
+                aggExprs.AddRange(extractedAggs);
+            }
+            else if (aggregations is NewArrayExpression arrExpr)
             {
                 foreach (var exprNode in arrExpr.Expressions)
                 {
@@ -67,27 +71,13 @@ namespace Glacier.Polaris
 
             // Build group key columns (first element of each group)
             var groupKeyCols = new List<ISeries>();
+            int[] firstIndices = new int[groups.Count];
+            for (int gi = 0; gi < groups.Count; gi++) firstIndices[gi] = groups[gi][0];
             foreach (var gc in groupColumns)
             {
                 var grpSeries = fullDf.GetColumn(gc);
-                ISeries keyCol;
-                if (grpSeries is Data.Int32Series i32)
-                    keyCol = new Data.Int32Series(gc, groups.Count);
-                else if (grpSeries is Data.Float64Series f64)
-                    keyCol = new Data.Float64Series(gc, groups.Count);
-                else if (grpSeries is Data.Utf8StringSeries u8)
-                    keyCol = new Data.Utf8StringSeries(gc, groups.Count);
-                else if (grpSeries is Data.Int64Series i64)
-                    keyCol = new Data.Int64Series(gc, groups.Count);
-                else if (grpSeries is Data.BooleanSeries bs)
-                    keyCol = new Data.BooleanSeries(gc, groups.Count);
-                else
-                    keyCol = (ISeries)Activator.CreateInstance(grpSeries.GetType(), gc, groups.Count)!;
-                for (int gi = 0; gi < groups.Count; gi++)
-                {
-                    int firstRow = groups[gi][0];
-                    grpSeries.Take(keyCol, firstRow, gi);
-                }
+                var keyCol = Compute.UniqueKernels.CreateSeriesForTake(grpSeries, firstIndices, gc);
+                grpSeries.Take(keyCol, firstIndices);
                 groupKeyCols.Add(keyCol);
             }
 
@@ -99,7 +89,7 @@ namespace Glacier.Polaris
                 foreach (var aggExpr in aggExprs)
                 {
                     var body = aggExpr.Expression;
-                    string alias = null;
+                    string? alias = null;
                     // Unwrap AliasOp
                     Expression innerBody = body;
                     if (body is MethodCallExpression mce && mce.Method.Name == "AliasOp")
@@ -191,8 +181,9 @@ namespace Glacier.Polaris
                                 }
                                 else
                                 {
-                                    subCol = (ISeries)Activator.CreateInstance(sourceCol.GetType(), colName, n)!;
-                                    for (int i = 0; i < n; i++) sourceCol.Take(subCol, group[i], i);
+                                    var groupSpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(group);
+                                    subCol = Compute.UniqueKernels.CreateSeriesForTake(sourceCol, groupSpan, colName);
+                                    sourceCol.Take(subCol, groupSpan);
                                 }
                                 for (int i = 0; i < n; i++)
 
@@ -286,17 +277,7 @@ namespace Glacier.Polaris
             var sortedCols = new List<ISeries>();
             foreach (var col in fullDf.Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indices.Length; i++) totalBytes += u8.GetStringSpan(indices[i]).Length;
-                    newCol = new Data.Utf8StringSeries(u8.Name, indices.Length, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, indices.Length)!;
-                }
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 sortedCols.Add(newCol);
             }
@@ -377,12 +358,22 @@ namespace Glacier.Polaris
                         {
                             var newCol = new Data.Int32Series(col.Name, take);
                             i32.Memory.Span.Slice(0, take).CopyTo(newCol.Memory.Span);
+                            if (i32.ValidityMask.HasNulls)
+                            {
+                                for (int idx = 0; idx < take; idx++)
+                                    if (i32.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                            }
                             slicedColumns.Add(newCol);
                         }
                         else if (col is Data.Float64Series f64)
                         {
                             var newCol = new Data.Float64Series(col.Name, take);
                             f64.Memory.Span.Slice(0, take).CopyTo(newCol.Memory.Span);
+                            if (f64.ValidityMask.HasNulls)
+                            {
+                                for (int idx = 0; idx < take; idx++)
+                                    if (f64.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                            }
                             slicedColumns.Add(newCol);
                         }
                         else if (col is Data.Utf8StringSeries utf8)
@@ -391,6 +382,11 @@ namespace Glacier.Polaris
                             var newCol = new Data.Utf8StringSeries(col.Name, take, byteLen);
                             utf8.DataBytes.Span.Slice(0, byteLen).CopyTo(newCol.DataBytes.Span);
                             utf8.Offsets.Span.Slice(0, take + 1).CopyTo(newCol.Offsets.Span);
+                            if (utf8.ValidityMask.HasNulls)
+                            {
+                                for (int idx = 0; idx < take; idx++)
+                                    if (utf8.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                            }
                             slicedColumns.Add(newCol);
                         }
                         else
@@ -507,10 +503,10 @@ namespace Glacier.Polaris
             yield return df.Transpose(include_header, header_name, column_names);
         }
 
-        private async IAsyncEnumerable<DataFrame> ApplyUnique(IAsyncEnumerable<DataFrame> source)
+        private async IAsyncEnumerable<DataFrame> ApplyUnique(IAsyncEnumerable<DataFrame> source, string[]? subset = null, bool maintainOrder = true)
         {
             var df = await CollectAll(source);
-            yield return df.Unique();
+            yield return df.Unique(subset, maintainOrder);
         }
 
         private async IAsyncEnumerable<DataFrame> ApplySlice(IAsyncEnumerable<DataFrame> source, int offset, int length)

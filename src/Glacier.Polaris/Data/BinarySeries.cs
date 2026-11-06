@@ -119,7 +119,7 @@ namespace Glacier.Polaris.Data
                 for (int i = 0; i < indices.Length; i++)
                 {
                     targetOffsets[i] = currentOffset;
-                    if (ValidityMask.IsNull(indices[i]))
+                    if (indices[i] == -1 || ValidityMask.IsNull(indices[i]))
                     {
                         other.ValidityMask.SetNull(i);
                     }

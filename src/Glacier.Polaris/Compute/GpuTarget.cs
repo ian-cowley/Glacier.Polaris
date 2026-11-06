@@ -6,23 +6,23 @@ namespace Glacier.Polaris.Compute;
 public enum GpuTarget
 {
     /// <summary>
-    /// Automatically selects optimal execution between multi-threaded AVX-512 CPU, NVIDIA dGPU, and AMD APU
+    /// Automatically selects optimal execution between multi-threaded AVX-512 / AVX2 CPU and NVIDIA CUDA GPU
     /// based on series length, memory footprint, and hardware availability.
     /// </summary>
     Auto = 0,
 
     /// <summary>
-    /// Bare-metal NVIDIA CUDA acceleration (RTX 4060 / Ada Lovelace).
+    /// Bare-metal NVIDIA CUDA acceleration.
     /// </summary>
     Nvidia = 1,
 
     /// <summary>
-    /// Bare-metal AMD ROCm/HIP acceleration (Radeon 890M / RDNA 3.5).
+    /// Unsupported AMD ROCm/HIP target. Explicitly selecting <see cref="Amd"/> throws <see cref="System.PlatformNotSupportedException"/>.
     /// </summary>
     Amd = 2,
 
     /// <summary>
-    /// Distributes workload across both GPUs when available.
+    /// Distributes workload across available supported GPU accelerators (falls back to NVIDIA CUDA or CPU).
     /// </summary>
     DualGpu = 3,
 

@@ -120,14 +120,11 @@ namespace Glacier.Polaris
             foreach (var group in groups)
             {
                 var subCols = new System.Collections.Generic.List<ISeries>(Columns.Count);
-                int n = group.Count;
+                var groupSpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(group);
                 foreach (var col in Columns)
                 {
-                    var subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
-                    for (int i = 0; i < n; i++)
-                    {
-                        col.Take(subCol, group[i], i);
-                    }
+                    var subCol = Compute.UniqueKernels.CreateSeriesForTake(col, groupSpan);
+                    col.Take(subCol, groupSpan);
                     subCols.Add(subCol);
                 }
                 result.Add(new DataFrame(subCols));
@@ -149,14 +146,11 @@ namespace Glacier.Polaris
                 if (group.Count == 0) continue;
                 string key = string.Join("_", cols.Select(c => c.Get(group[0])?.ToString() ?? "null"));
                 var subCols = new System.Collections.Generic.List<ISeries>(Columns.Count);
-                int n = group.Count;
+                var groupSpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(group);
                 foreach (var col in Columns)
                 {
-                    var subCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
-                    for (int i = 0; i < n; i++)
-                    {
-                        col.Take(subCol, group[i], i);
-                    }
+                    var subCol = Compute.UniqueKernels.CreateSeriesForTake(col, groupSpan);
+                    col.Take(subCol, groupSpan);
                     subCols.Add(subCol);
                 }
                 result[key] = new DataFrame(subCols);
@@ -190,7 +184,8 @@ namespace Glacier.Polaris
         public ISeries GetColumn(string name) => Columns.First(c => c.Name == name);
 
         public static LazyFrame ScanCsv(string filePath) => LazyFrame.ScanCsv(filePath);
-        public static LazyFrame ScanJson(string filePath) => LazyFrame.ScanJson(filePath);
+        public static LazyFrame ScanJson(string filePath, string[]? columns = null) => LazyFrame.ScanJson(filePath, columns);
+        public static DataFrame ReadJson(string filePath, string[]? columns = null) => IO.JsonReader.Read(filePath, columns);
 
         public void WriteCsv(string filePath, char separator = ',', bool includeHeader = true, bool includeBom = false)
         {
@@ -221,19 +216,34 @@ namespace Glacier.Polaris
             IO.IpcWriter.WriteStream(this, filePath);
         }
 
-        public async Task<DataFrame> SortBy(params string[] columnNames)
+        public Task<DataFrame> SortBy(params string[] columnNames)
         {
-            await foreach (var df in this.Lazy().CollectAsync())
-            {
-                return df; // Return the first (and likely only) batch
-            }
-            return this;
+            return Task.FromResult(Sort(columnNames));
+        }
+
+        public Task<DataFrame> SortBy(string columnName, bool descending)
+        {
+            return Task.FromResult(Sort(columnName, descending));
+        }
+
+        public Task<DataFrame> SortBy(string[] columnNames, bool[] descending)
+        {
+            return Task.FromResult(Sort(columnNames, descending));
         }
 
         public DataFrame SortByEager(params string[] columnNames)
         {
-            // Implementation logic...
-            return this;
+            return Sort(columnNames);
+        }
+
+        public DataFrame SortByEager(string columnName, bool descending)
+        {
+            return Sort(columnName, descending);
+        }
+
+        public DataFrame SortByEager(string[] columnNames, bool[] descending)
+        {
+            return Sort(columnNames, descending);
         }
 
         public DataFrame Join(DataFrame other, string on, JoinType type = JoinType.Inner)
@@ -352,30 +362,22 @@ namespace Glacier.Polaris
         }
 
         /// <summary>
-        /// Returns a new DataFrame with duplicate rows removed.
-        /// Uses first column's unique values and filters all columns to match.
+        /// Returns a new DataFrame with duplicate rows removed across all columns or the specified subset of columns.
         /// </summary>
-        public DataFrame Unique()
+        public DataFrame Unique(string[]? subset = null, bool maintainOrder = true)
         {
-            if (RowCount <= 1) return this;
-            var firstCol = Columns[0];
-            var indices = Compute.UniqueKernels.UniqueIndices(firstCol);
-            var indicesArr = indices.ToArray();
+            if (Columns.Count == 0 || RowCount <= 1) return this;
+            IReadOnlyList<ISeries> keyCols = (subset != null && subset.Length > 0)
+                ? subset.Select(GetColumn).ToArray()
+                : Columns;
+            var indices = Compute.UniqueKernels.UniqueRowIndices(keyCols, maintainOrder);
+            if (indices.Count == RowCount) return this;
+            var indicesSpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(indices);
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indicesArr.Length; i++) totalBytes += u8.GetStringSpan(indicesArr[i]).Length;
-                    newCol = new Data.Utf8StringSeries(col.Name, indicesArr.Length, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)System.Activator.CreateInstance(col.GetType(), col.Name, indicesArr.Length)!;
-                }
-                col.Take(newCol, new ReadOnlySpan<int>(indicesArr));
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indicesSpan);
+                col.Take(newCol, indicesSpan);
                 newCols.Add(newCol);
             }
             return new DataFrame(newCols);
@@ -450,10 +452,38 @@ namespace Glacier.Polaris
                     newOffsets[totalRows] = byteOffset;
                     newCols.Add(newCol);
                 }
+                else if (col is Data.BinarySeries)
+                {
+                    int totalBytes = results.Sum(df => ((Data.BinarySeries)df.GetColumn(col.Name)).DataBytes.Length);
+                    var newCol = new Data.BinarySeries(col.Name, totalRows, totalBytes);
+                    int rowOffset = 0;
+                    int byteOffset = 0;
+                    var newOffsets = newCol.Offsets.Span;
+                    var newData = newCol.DataBytes.Span;
+
+                    foreach (var df in results)
+                    {
+                        var c = (Data.BinarySeries)df.GetColumn(col.Name);
+                        var cOffsets = c.Offsets.Span;
+                        var cData = c.DataBytes.Span;
+                        int usedBytes = c.Length > 0 ? cOffsets[c.Length] : 0;
+
+                        cData.Slice(0, usedBytes).CopyTo(newData.Slice(byteOffset));
+                        for (int i = 0; i < c.Length; i++)
+                        {
+                            newOffsets[rowOffset + i] = byteOffset + cOffsets[i];
+                        }
+                        c.ValidityMask.CopyTo(newCol.ValidityMask, rowOffset);
+
+                        rowOffset += c.Length;
+                        byteOffset += usedBytes;
+                    }
+                    newOffsets[totalRows] = byteOffset;
+                    newCols.Add(newCol);
+                }
                 else
                 {
-                    var seriesType = col.GetType();
-                    var newCol = (ISeries)Activator.CreateInstance(seriesType, col.Name, totalRows)!;
+                    var newCol = col.CloneEmpty(totalRows);
                     int offset = 0;
                     foreach (var df in results)
                     {
@@ -513,7 +543,7 @@ namespace Glacier.Polaris
                 if (indices[i] >= source.Length)
                     throw new ArgumentOutOfRangeException(nameof(indices), $"Index {indices[i]} is out of range for series {source.Name} of length {source.Length}");
             }
-            var target = (ISeries)Activator.CreateInstance(source.GetType(), source.Name, indices.Length)!;
+            var target = Compute.UniqueKernels.CreateSeriesForTake(source, indices);
             source.Take(target, indices);
 
             // For joins with null entries (outer, left, asof), mark -1 indices as null
@@ -564,17 +594,7 @@ namespace Glacier.Polaris
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indices.Length; i++) totalBytes += u8.GetStringSpan(indices[i]).Length;
-                    newCol = new Data.Utf8StringSeries(col.Name, actualLength, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, actualLength)!;
-                }
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 newCols.Add(newCol);
             }
@@ -598,16 +618,7 @@ namespace Glacier.Polaris
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = u8.Offsets.Span[n + start] - u8.Offsets.Span[start];
-                    newCol = new Data.Utf8StringSeries(col.Name, n, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
-                }
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 newCols.Add(newCol);
             }
@@ -645,17 +656,7 @@ namespace Glacier.Polaris
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = u8.Offsets.Span[indices[^1] + 1] - u8.Offsets.Span[0]; // rough estimate
-                    totalBytes = Math.Max(8, totalBytes);
-                    newCol = new Data.Utf8StringSeries(col.Name, n, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, n)!;
-                }
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 newCols.Add(newCol);
             }
@@ -791,18 +792,7 @@ namespace Glacier.Polaris
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    int totalBytes = 0;
-                    for (int i = 0; i < indices.Length; i++)
-                        totalBytes += u8.GetStringSpan(indices[i]).Length;
-                    newCol = new Data.Utf8StringSeries(col.Name, indices.Length, totalBytes);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, indices.Length)!;
-                }
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
                 col.Take(newCol, indices);
                 newCols.Add(newCol);
             }
@@ -865,14 +855,25 @@ namespace Glacier.Polaris
             {
                 if (mapping.TryGetValue(col.Name, out var newName))
                 {
-                    var renamed = (ISeries)Activator.CreateInstance(col.GetType(), newName, col.Length)!;
-                    col.CopyTo(renamed, 0);
+                    ISeries renamed;
                     if (col is Data.Utf8StringSeries u8)
                     {
-                        // Copy string data
-                        var target = (Data.Utf8StringSeries)renamed;
+                        var target = new Data.Utf8StringSeries(newName, col.Length, u8.DataBytes.Length);
                         u8.Offsets.Span.CopyTo(target.Offsets.Span);
                         u8.DataBytes.Span.CopyTo(target.DataBytes.Span);
+                        renamed = target;
+                    }
+                    else if (col is Data.BinarySeries bin)
+                    {
+                        var target = new Data.BinarySeries(newName, col.Length, bin.DataBytes.Length);
+                        bin.Offsets.Span.CopyTo(target.Offsets.Span);
+                        bin.DataBytes.Span.CopyTo(target.DataBytes.Span);
+                        renamed = target;
+                    }
+                    else
+                    {
+                        renamed = Compute.UniqueKernels.CloneWithName(col, newName, col.Length);
+                        col.CopyTo(renamed, 0);
                     }
                     renamed.ValidityMask.CopyFrom(col.ValidityMask);
                     newCols.Add(renamed);
@@ -992,23 +993,13 @@ namespace Glacier.Polaris
             }
             else
             {
-                // Series<T> for numeric types - determine element size from generic type
-                var type = series.GetType();
-                if (type.BaseType != null && type.BaseType.IsGenericType &&
-                    type.BaseType.GetGenericTypeDefinition() == typeof(Data.Series<>))
-                {
-                    var elemType = type.BaseType.GetGenericArguments()[0];
-                    if (elemType == typeof(int) || elemType == typeof(float) || elemType == typeof(uint)) size += series.Length * 4;
-                    else if (elemType == typeof(long) || elemType == typeof(double) || elemType == typeof(ulong)) size += series.Length * 8;
-                    else if (elemType == typeof(short) || elemType == typeof(ushort)) size += series.Length * 2;
-                    else if (elemType == typeof(sbyte) || elemType == typeof(byte)) size += series.Length * 1;
-                    else if (elemType == typeof(bool)) size += series.Length / 8 + 1;
-                    else size += series.Length * 4;
-                }
-                else
-                {
-                    size += series.Length * 8L;
-                }
+                var elemType = series.DataType;
+                if (elemType == typeof(int) || elemType == typeof(float) || elemType == typeof(uint)) size += series.Length * 4L;
+                else if (elemType == typeof(long) || elemType == typeof(double) || elemType == typeof(ulong)) size += series.Length * 8L;
+                else if (elemType == typeof(short) || elemType == typeof(ushort)) size += series.Length * 2L;
+                else if (elemType == typeof(sbyte) || elemType == typeof(byte)) size += series.Length * 1L;
+                else if (elemType == typeof(bool)) size += series.Length / 8L + 1L;
+                else size += series.Length * 8L;
             }
 
             return size;
@@ -1035,7 +1026,7 @@ namespace Glacier.Polaris
 
         /// <summary>
         /// Converts the DataFrame to a <see cref="System.Data.DataTable"/>.
-        /// Each column becomes a typed <see cref="DataColumn"/> with values copied.
+        /// Each column becomes a typed <see cref="System.Data.DataColumn"/> with values copied.
         /// Nulls are represented as <see cref="DBNull.Value"/>.
         /// This is the .NET ecosystem equivalent of Python Polars' DataFrame.to_pandas().
         /// </summary>
@@ -1044,7 +1035,29 @@ namespace Glacier.Polaris
             var table = new System.Data.DataTable();
             foreach (var col in Columns)
             {
-                var dtCol = new System.Data.DataColumn(col.Name, col.DataType);
+                Type dtType = col switch
+                {
+                    Data.Int32Series => typeof(int),
+                    Data.Int64Series => typeof(long),
+                    Data.Float64Series => typeof(double),
+                    Data.Float32Series => typeof(float),
+                    Data.BooleanSeries => typeof(bool),
+                    Data.Utf8StringSeries => typeof(string),
+                    Data.DecimalSeries => typeof(decimal),
+                    Data.Int8Series => typeof(sbyte),
+                    Data.Int16Series => typeof(short),
+                    Data.UInt8Series => typeof(byte),
+                    Data.UInt16Series => typeof(ushort),
+                    Data.UInt32Series => typeof(uint),
+                    Data.UInt64Series => typeof(ulong),
+                    Data.DateSeries => typeof(int),
+                    Data.DatetimeSeries => typeof(long),
+                    Data.DurationSeries => typeof(long),
+                    Data.TimeSeries => typeof(long),
+                    Data.BinarySeries => typeof(byte[]),
+                    _ => typeof(object)
+                };
+                var dtCol = new System.Data.DataColumn(col.Name, dtType);
                 table.Columns.Add(dtCol);
             }
 
@@ -1083,20 +1096,7 @@ public DataFrame Kde(string column, double bandwidth, int gridPoints = 100)
             var newCols = new List<ISeries>(Columns.Count);
             foreach (var col in Columns)
             {
-                ISeries newCol;
-                if (col is Data.Utf8StringSeries u8)
-                {
-                    newCol = new Data.Utf8StringSeries(col.Name, col.Length, u8.DataBytes.Length);
-                    u8.Offsets.Span.CopyTo(((Data.Utf8StringSeries)newCol).Offsets.Span);
-                    u8.DataBytes.Span.CopyTo(((Data.Utf8StringSeries)newCol).DataBytes.Span);
-                }
-                else
-                {
-                    newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, col.Length)!;
-                    col.CopyTo(newCol, 0);
-                }
-                newCol.ValidityMask.CopyFrom(col.ValidityMask);
-                newCols.Add(newCol);
+                newCols.Add(col.Clone());
             }
             return new DataFrame(newCols);
         }

@@ -287,7 +287,7 @@ namespace Glacier.Polaris
                         foreach (var fe in fieldExprArr)
                         {
                             var fieldBody = fe.Expression;
-                            string alias = null;
+                            string? alias = null;
                             if (fieldBody is MethodCallExpression fmce && fmce.Method.Name == "AliasOp")
                             {
                                 alias = (string)((ConstantExpression)fmce.Arguments[1]).Value!;

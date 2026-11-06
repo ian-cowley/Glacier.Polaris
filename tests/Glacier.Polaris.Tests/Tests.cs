@@ -97,33 +97,38 @@ namespace Glacier.Polaris.Tests
         [Fact]
         public async System.Threading.Tasks.Task Test_ExecutionEngine_Evaluate()
         {
-            // We need a dummy csv file for the reader
-            System.IO.File.WriteAllText("dummy.csv", "Column1,B,C\n1,2.5,\"apple\"\n10,5.1,\"banana\"\n");
+            string dummyPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"polaris_dummy_{Guid.NewGuid():N}.csv");
+            System.IO.File.WriteAllText(dummyPath, "Column1,B,C\n1,2.5,\"apple\"\n10,5.1,\"banana\"\n");
 
-            var df = LazyFrame.ScanCsv("dummy.csv");
-            // AST: (Column1 * 2) + Column1
-            var plan = df.Select(e => (Expr.Col("Column1") * 2) + Expr.Col("Column1")).Filter(e => Expr.Col("Column1") > 5).Plan;
-            
-            var optimizer = new QueryOptimizer();
-            var optimizedPlan = optimizer.Optimize(plan);
-
-            var engine = new ExecutionEngine();
-            int count = 0;
-
-            await foreach (var batch in engine.ExecuteAsync(optimizedPlan))
+            try
             {
-                Assert.NotNull(batch);
-                count++;
+                var df = LazyFrame.ScanCsv(dummyPath);
+                var plan = df.Filter(e => Expr.Col("Column1") > 5).Select(e => (Expr.Col("Column1") * 2) + Expr.Col("Column1")).Plan;
 
-                // The filter Expr.Col("Column1") > 5 should only keep the row with value 10
-                // The select (Expr.Col("Column1") * 2) + Expr.Col("Column1") produces (10 * 2) + 10 = 30
-                var sumSeries = (Glacier.Polaris.Data.Int32Series)batch.Columns[0];
-                Assert.Equal(1, sumSeries.Length);
-                Assert.Equal(30, sumSeries.Memory.Span[0]);
+                var optimizer = new QueryOptimizer();
+                var optimizedPlan = optimizer.Optimize(plan);
+
+                var engine = new ExecutionEngine();
+                int count = 0;
+
+                await foreach (var batch in engine.ExecuteAsync(optimizedPlan))
+                {
+                    Assert.NotNull(batch);
+                    count++;
+
+                    // The filter Expr.Col("Column1") > 5 should only keep the row with value 10
+                    // The select (Expr.Col("Column1") * 2) + Expr.Col("Column1") produces (10 * 2) + 10 = 30
+                    var sumSeries = (Glacier.Polaris.Data.Int32Series)batch.Columns[0];
+                    Assert.Equal(1, sumSeries.Length);
+                    Assert.Equal(30, sumSeries.Memory.Span[0]);
+                }
+
+                Assert.True(count > 0);
             }
-
-            Assert.True(count > 0);
-            System.IO.File.Delete("dummy.csv");
+            finally
+            {
+                if (System.IO.File.Exists(dummyPath)) System.IO.File.Delete(dummyPath);
+            }
         }
 
         [Fact]
@@ -203,26 +208,30 @@ namespace Glacier.Polaris.Tests
         [Fact]
         public async System.Threading.Tasks.Task Test_JsonReader_ReadNdJson()
         {
-            string path = "test.ndjson";
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"polaris_test_{Guid.NewGuid():N}.ndjson");
             await System.IO.File.WriteAllTextAsync(path, "{\"val\": 10}\n{\"val\": 20}\n{\"val\": 30}\n");
 
-            var reader = new Glacier.Polaris.IO.JsonReader(path);
-            int total = 0;
-            int count = 0;
-
-            await foreach (var df in reader.ReadNdJsonAsync())
+            try
             {
-                var series = (Glacier.Polaris.Data.Int32Series)df.Columns[0];
-                var span = series.Memory.Span;
-                // We know rowCount isn't exposed yet, but for the test we'll check first few
-                total += span[0] + span[1] + span[2];
-                count++;
+                var reader = new Glacier.Polaris.IO.JsonReader(path);
+                int total = 0;
+                int count = 0;
+
+                await foreach (var df in reader.ReadNdJsonAsync())
+                {
+                    var series = (Glacier.Polaris.Data.Int32Series)df.Columns[0];
+                    var span = series.Memory.Span;
+                    for (int i = 0; i < series.Length; i++) total += span[i];
+                    count++;
+                }
+
+                Assert.Equal(60, total);
+                Assert.True(count > 0);
             }
-
-            Assert.Equal(60, total);
-            Assert.True(count > 0);
-
-            System.IO.File.Delete(path);
+            finally
+            {
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
         }
 
         [Fact]

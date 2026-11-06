@@ -63,18 +63,17 @@ namespace Glacier.Polaris.Data
         }
 
         /// <summary>
-        /// Returns a zero-copy ReadOnlyMemory view of the underlying unmanaged/managed column bytes.
+        /// Returns a ReadOnlyMemory view of the underlying column bytes (zero-copy when backed by NativeMemoryOwner, safe managed copy otherwise).
         /// </summary>
         public unsafe ReadOnlyMemory<byte> AsBytesMemory()
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (Length == 0) return ReadOnlyMemory<byte>.Empty;
             if (_data is NativeMemoryOwner<T> nativeOwner)
             {
-                return nativeOwner.AsBytesMemory();
+                return nativeOwner.AsBytesMemory().Slice(0, Length * sizeof(T));
             }
-            if (Length == 0) return ReadOnlyMemory<byte>.Empty;
-            var handle = _data.Memory.Pin();
-            return new UnmanagedMemoryManager<byte>((byte*)handle.Pointer, Length * sizeof(T)).Memory;
+            return MemoryMarshal.AsBytes(Memory.Span.Slice(0, Length)).ToArray();
         }
 
         public T this[int i]
@@ -181,10 +180,7 @@ namespace Glacier.Polaris.Data
                 _data.Dispose();
             }
         }
-        public virtual ISeries CloneEmpty(int length)
-        {
-            return (ISeries)Activator.CreateInstance(this.GetType(), Name, length)!;
-        }
+        public abstract ISeries CloneEmpty(int length);
         public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
         public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);
         public double Entropy() => Compute.AggregationKernels.Entropy(this);
@@ -221,7 +217,7 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
-        
+        public override ISeries CloneEmpty(int length) => new Int32Series(Name, length);
     }
 
     public sealed class Int8Series : Series<sbyte>
@@ -242,6 +238,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new Int8Series(Name, length);
     }
 
     public sealed class Int16Series : Series<short>
@@ -262,6 +260,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new Int16Series(Name, length);
     }
 
     public sealed class Int64Series : Series<long>
@@ -291,6 +291,8 @@ namespace Glacier.Polaris.Data
         {
             data.CopyTo(Memory);
         }
+
+        public override ISeries CloneEmpty(int length) => new Int64Series(Name, length);
     }
 
     public sealed class UInt8Series : Series<byte>
@@ -311,6 +313,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new UInt8Series(Name, length);
     }
 
     public sealed class UInt16Series : Series<ushort>
@@ -331,6 +335,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new UInt16Series(Name, length);
     }
 
     public sealed class UInt32Series : Series<uint>
@@ -351,6 +357,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new UInt32Series(Name, length);
     }
 
     public sealed class UInt64Series : Series<ulong>
@@ -371,6 +379,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new UInt64Series(Name, length);
     }
 
     public sealed class Float32Series : Series<float>
@@ -399,11 +409,15 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
+        public override ISeries CloneEmpty(int length) => new Float32Series(Name, length);
+
         public Float32Series Add(Float32Series other, Compute.GpuTarget target = Compute.GpuTarget.Auto)
         {
             if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorAdd(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
+            res.ValidityMask.And(other.ValidityMask);
             return res;
         }
 
@@ -412,6 +426,8 @@ namespace Glacier.Polaris.Data
             if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorSub(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
+            res.ValidityMask.And(other.ValidityMask);
             return res;
         }
 
@@ -420,6 +436,8 @@ namespace Glacier.Polaris.Data
             if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorMul(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
+            res.ValidityMask.And(other.ValidityMask);
             return res;
         }
 
@@ -428,6 +446,8 @@ namespace Glacier.Polaris.Data
             if (Length != other.Length) throw new ArgumentException("Series lengths must match.");
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorDiv(Memory.Span, other.Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
+            res.ValidityMask.And(other.ValidityMask);
             return res;
         }
 
@@ -436,6 +456,9 @@ namespace Glacier.Polaris.Data
             if (Length != mul.Length || Length != add.Length) throw new ArgumentException("Series lengths must match.");
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorFma(Memory.Span, mul.Memory.Span, add.Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
+            res.ValidityMask.And(mul.ValidityMask);
+            res.ValidityMask.And(add.ValidityMask);
             return res;
         }
 
@@ -443,6 +466,7 @@ namespace Glacier.Polaris.Data
         {
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorExp(Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
             return res;
         }
 
@@ -450,6 +474,7 @@ namespace Glacier.Polaris.Data
         {
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorLog(Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
             return res;
         }
 
@@ -457,6 +482,7 @@ namespace Glacier.Polaris.Data
         {
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorSqrt(Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
             return res;
         }
 
@@ -464,15 +490,24 @@ namespace Glacier.Polaris.Data
         {
             var res = new Float32Series(Name, Length);
             Compute.GpuPolarisAccelerator.VectorSigmoid(Memory.Span, res.Memory.Span, target);
+            res.ValidityMask.CopyFrom(ValidityMask);
             return res;
         }
 
         public float Sum(Compute.GpuTarget target = Compute.GpuTarget.Auto)
         {
-            return Compute.GpuPolarisAccelerator.VectorSum(Memory.Span, target);
+            if (!ValidityMask.HasNulls)
+            {
+                return Compute.GpuPolarisAccelerator.VectorSum(Memory.Span, target);
+            }
+            var sanitized = new float[Length];
+            var src = Memory.Span;
+            for (int i = 0; i < Length; i++)
+            {
+                if (ValidityMask.IsValid(i)) sanitized[i] = src[i];
+            }
+            return Compute.GpuPolarisAccelerator.VectorSum(sanitized, target);
         }
-
-        
     }
 
     public sealed class Float64Series : Series<double>
@@ -504,7 +539,7 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
-        
+        public override ISeries CloneEmpty(int length) => new Float64Series(Name, length);
     }
 
     public sealed class BooleanSeries : Series<bool>
@@ -529,18 +564,18 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
+        public override ISeries CloneEmpty(int length) => new BooleanSeries(Name, length);
+
         public override ArrowColumn ToArrowColumn()
         {
             int byteCount = (Length + 7) / 8;
-            var packed = new NativeMemoryOwner<byte>(byteCount);
-            var packedSpan = packed.Span;
-            packedSpan.Clear();
+            var packed = new byte[byteCount];
             var boolSpan = Memory.Span;
             for (int i = 0; i < Length; i++)
             {
                 if (boolSpan[i])
                 {
-                    packedSpan[i >> 3] |= (byte)(1 << (i & 7));
+                    packed[i >> 3] |= (byte)(1 << (i & 7));
                 }
             }
             var field = new ArrowField(Name, ArrowType.Boolean, isNullable: _validityMask.HasNulls);
@@ -550,7 +585,7 @@ namespace Glacier.Polaris.Data
                 _validityMask.NullCount,
                 _validityMask.GetNullBitmapMemory(),
                 ReadOnlyMemory<byte>.Empty,
-                packed.AsBytesMemory());
+                packed);
         }
     }
 
@@ -580,6 +615,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new DateSeries(Name, length);
 
         public override ArrowColumn ToArrowColumn()
         {
@@ -612,6 +649,8 @@ namespace Glacier.Polaris.Data
             return series;
         }
 
+        public override ISeries CloneEmpty(int length) => new DatetimeSeries(Name, length);
+
         public override ArrowColumn ToArrowColumn()
         {
             var field = new ArrowField(Name, ArrowType.Timestamp, isNullable: _validityMask.HasNulls);
@@ -642,6 +681,8 @@ namespace Glacier.Polaris.Data
             }
             return series;
         }
+
+        public override ISeries CloneEmpty(int length) => new DurationSeries(Name, length);
 
         public override ArrowColumn ToArrowColumn()
         {

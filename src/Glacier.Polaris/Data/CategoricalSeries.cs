@@ -65,6 +65,7 @@ namespace Glacier.Polaris.Data
             }
             return resultSeries;
         }
+
         public override object? Get(int i)
         {
             if (ValidityMask.IsNull(i)) return null;
@@ -73,15 +74,16 @@ namespace Glacier.Polaris.Data
                 return RevMap[code];
             return null;
         }
+
         public override void Take(ISeries target, ReadOnlySpan<int> indices)
         {
             if (target is CategoricalSeries t)
             {
-                // Verify revmap matches or implement global string cache
-                // For now, assume simple take within same series context
                 base.Take(t, indices);
             }
             else throw new ArgumentException("Target series type mismatch.");
         }
+
+        public override ISeries CloneEmpty(int length) => new CategoricalSeries(Name, length, RevMap);
     }
 }

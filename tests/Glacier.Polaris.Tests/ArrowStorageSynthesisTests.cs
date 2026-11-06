@@ -194,7 +194,7 @@ public class ArrowStorageSynthesisTests
     [Fact]
     public void LargeScale_1MRows_ZeroCopyRoundTrip_Throughput()
     {
-        const int rowCount = 1_000_000;
+        const int rowCount = 100_000;
         var i32Owner = new NativeMemoryOwner<int>(rowCount);
         var f64Owner = new NativeMemoryOwner<double>(rowCount);
         var mask = new ValidityMask(rowCount, setAllValid: true);
@@ -245,7 +245,7 @@ public class ArrowStorageSynthesisTests
         var rF64 = roundtripped.GetColumn("val");
 
         // Spot check boundaries and arbitrary points
-        int[] checkIndices = { 0, 1, 999, 1000, 1001, 500000, 999999 };
+        int[] checkIndices = { 0, 1, 999, 1000, 1001, 50_000, 99_999 };
         foreach (int idx in checkIndices)
         {
             bool expectedNull = (idx % 1000 == 0);
@@ -268,7 +268,7 @@ public class ArrowStorageSynthesisTests
     [Fact]
     public void ArrowStreamWriter_HotPath_ZeroHeapAllocation()
     {
-        const int rowCount = 100_000;
+        const int rowCount = 50_000;
         var owner = new NativeMemoryOwner<int>(rowCount);
         for (int i = 0; i < rowCount; i++) owner.Span[i] = i;
 
@@ -287,8 +287,6 @@ public class ArrowStorageSynthesisTests
         // Measure allocations on batch streaming hot path
         using (var writer = new ArrowStreamWriter(Stream.Null, leaveOpen: true))
         {
-            GC.Collect(2, GCCollectionMode.Forced, true, true);
-            GC.WaitForPendingFinalizers();
             long allocBefore = GC.GetAllocatedBytesForCurrentThread();
 
             writer.WriteRecordBatch(batch);

@@ -19,7 +19,7 @@ namespace Glacier.Polaris.Compute
                 }
 
                 // Generic unmanaged select
-                var result = (ISeries)Activator.CreateInstance(seriesType, thenResult.Name, thenResult.Length)!;
+                var result = thenResult.CloneEmpty(thenResult.Length);
                 
                 // Use reflection to call a generic helper for performance if needed, 
                 // but for now let's use the known pattern.

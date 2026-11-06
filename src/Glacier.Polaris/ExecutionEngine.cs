@@ -46,7 +46,8 @@ namespace Glacier.Polaris
                 else if (methodCall.Method.Name == nameof(LazyFrame.ScanJsonOp))
                 {
                     var filePath = (string)((ConstantExpression)methodCall.Arguments[0]).Value!;
-                    var reader = new IO.JsonReader(filePath, 10000);
+                    var columns = methodCall.Arguments.Count > 1 ? (string[]?)((ConstantExpression)methodCall.Arguments[1]).Value : null;
+                    var reader = new IO.JsonReader(filePath, 10000, columns);
                     return reader.ReadNdJsonAsync();
                 }
                 else if (methodCall.Method.Name == "DataFrameOp")
@@ -154,7 +155,9 @@ namespace Glacier.Polaris
                 else if (methodCall.Method.Name == nameof(LazyFrame.UniqueOp))
                 {
                     var source2 = Evaluate(methodCall.Arguments[0]);
-                    return ApplyUnique(source2);
+                    var subset = methodCall.Arguments.Count > 1 ? (string[]?)((ConstantExpression)methodCall.Arguments[1]).Value : null;
+                    var maintainOrder = methodCall.Arguments.Count > 2 ? (bool)((ConstantExpression)methodCall.Arguments[2]).Value! : true;
+                    return ApplyUnique(source2, subset, maintainOrder);
                 }
                 else if (methodCall.Method.Name == nameof(LazyFrame.SliceOp))
                 {
@@ -295,54 +298,52 @@ namespace Glacier.Polaris
 
         private async IAsyncEnumerable<DataFrame> ApplyFilter(IAsyncEnumerable<DataFrame> source, Expression predicateExpr)
         {
-            // The predicate is a lambda: (c) => Expr
-            var quoteUnary = (UnaryExpression)predicateExpr;
-            var lambda = (LambdaExpression)quoteUnary.Operand;
-            var compiledLambda = (Func<Expr, Expr>)lambda.Compile(); // Compile: _ => predicateExpr
+            var actualExpr = ExprLambdaEvaluator.Evaluate(predicateExpr);
+            bool yieldedAny = false;
+            List<ISeries>? emptySchema = null;
 
             await foreach (var df in source)
             {
                 var disposables = new List<IDisposable>();
                 try
                 {
-                    // Invoke the lambda to get the Expr object, then evaluate its expression
-                    var actualExpr = compiledLambda(null!);
                     var result = EvaluateExpression(actualExpr.Expression, df, disposables);
-
 
                     if (result is Data.BooleanSeries mask)
                     {
                         var maskSpan = mask.Memory.Span;
+                        var maskValidity = mask.ValidityMask;
                         int matchCount = 0;
-                        for (int i = 0; i < maskSpan.Length; i++) if (maskSpan[i]) matchCount++;
+                        for (int i = 0; i < mask.Length; i++)
+                        {
+                            if (maskValidity.IsValid(i) && maskSpan[i]) matchCount++;
+                        }
 
-                        if (matchCount == 0) continue; // Skip empty chunk
+                        if (matchCount == 0)
+                        {
+                            emptySchema ??= df.Columns.Select(c => c.CloneEmpty(0)).ToList();
+                            continue;
+                        }
 
                         int[] indices = System.Buffers.ArrayPool<int>.Shared.Rent(matchCount);
                         int idx = 0;
-                        for (int i = 0; i < maskSpan.Length; i++) if (maskSpan[i]) indices[idx++] = i;
+                        for (int i = 0; i < mask.Length; i++)
+                        {
+                            if (maskValidity.IsValid(i) && maskSpan[i]) indices[idx++] = i;
+                        }
 
                         var spanIndices = new ReadOnlySpan<int>(indices, 0, matchCount);
                         var newSeries = new List<ISeries>(df.Columns.Count);
 
                         foreach (var col in df.Columns)
                         {
-                            ISeries newCol;
-                            if (col is Data.Utf8StringSeries u8)
-                            {
-                                int totalBytes = 0;
-                                for (int i = 0; i < spanIndices.Length; i++) totalBytes += u8.GetStringSpan(spanIndices[i]).Length;
-                                newCol = new Data.Utf8StringSeries(u8.Name, matchCount, totalBytes);
-                            }
-                            else
-                            {
-                                newCol = (ISeries)Activator.CreateInstance(col.GetType(), col.Name, matchCount)!;
-                            }
+                            var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, spanIndices);
                             col.Take(newCol, spanIndices);
                             newSeries.Add(newCol);
                         }
 
                         System.Buffers.ArrayPool<int>.Shared.Return(indices);
+                        yieldedAny = true;
                         yield return new DataFrame(newSeries);
                     }
                     else
@@ -355,23 +356,27 @@ namespace Glacier.Polaris
                     foreach (var d in disposables) d.Dispose();
                 }
             }
+
+            if (!yieldedAny && emptySchema != null)
+            {
+                yield return new DataFrame(emptySchema);
+            }
         }
         private async IAsyncEnumerable<DataFrame> ApplySelect(IAsyncEnumerable<DataFrame> source, Expression selections)
         {
             await foreach (var df in source)
             {
-                if (selections is NewArrayExpression arrayExpr)
+                if (OptimizerAnalysis.TryExtractExprArray(selections, out var selExprs))
                 {
                     var newColumns = new List<ISeries>();
                     var disposables = new List<IDisposable>(); // Track intermediate allocations
 
                     try
                     {
-                        foreach (var exprNode in arrayExpr.Expressions)
+                        foreach (var selection in selExprs)
                         {
-                            var selection = (Expr)((ConstantExpression)exprNode).Value!;
                             var body = selection.Expression;
-                            string alias = null;
+                            string? alias = null;
                             if (body is MethodCallExpression mce && mce.Method.Name == "AliasOp")
                             {
                                 alias = (string)((ConstantExpression)mce.Arguments[1]).Value!;
@@ -413,18 +418,17 @@ namespace Glacier.Polaris
         {
             await foreach (var df in source)
             {
-                if (selections is NewArrayExpression arrayExpr)
+                if (OptimizerAnalysis.TryExtractExprArray(selections, out var withExprs))
                 {
                     var newColumns = df.Columns.ToList();
                     var disposables = new List<IDisposable>();
 
                     try
                     {
-                        foreach (var exprNode in arrayExpr.Expressions)
+                        foreach (var selection in withExprs)
                         {
-                            var selection = (Expr)((ConstantExpression)exprNode).Value!;
                             var body = selection.Expression;
-                            string alias = null;
+                            string? alias = null;
                             if (body is MethodCallExpression mce && mce.Method.Name == "AliasOp")
                             {
                                 alias = (string)((ConstantExpression)mce.Arguments[1]).Value!;
