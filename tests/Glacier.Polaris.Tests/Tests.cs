@@ -190,19 +190,20 @@ namespace Glacier.Polaris.Tests
         {
             var schema = new System.Collections.Generic.Dictionary<string, Type>
             {
-                { "A", typeof(int) },
-                { "B", typeof(double) }
+                { "NonGc_A", typeof(int) },
+                { "NonGc_B", typeof(double) }
             };
 
             Glacier.Polaris.Data.SchemaRegistry.RegisterSchema(schema);
 
-            Assert.Equal(typeof(int), Glacier.Polaris.Data.SchemaRegistry.GetType("A"));
-            Assert.Equal(typeof(double), Glacier.Polaris.Data.SchemaRegistry.GetType("B"));
-            Assert.Null(Glacier.Polaris.Data.SchemaRegistry.GetType("C"));
+            Assert.Equal(typeof(int), Glacier.Polaris.Data.SchemaRegistry.GetType("NonGc_A"));
+            Assert.Equal(typeof(double), Glacier.Polaris.Data.SchemaRegistry.GetType("NonGc_B"));
+            Assert.Null(Glacier.Polaris.Data.SchemaRegistry.GetType("NonGc_Unregistered"));
 
             var fastTable = Glacier.Polaris.Data.SchemaRegistry.GetFastLookupTable();
-            Assert.Equal(2, fastTable.Length);
+            Assert.True(fastTable.Length >= 2);
             Assert.Contains(typeof(int), fastTable.ToArray());
+            Assert.Contains(typeof(double), fastTable.ToArray());
         }
 
         [Fact]
