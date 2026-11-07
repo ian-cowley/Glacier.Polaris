@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
 using Glacier.Polaris.Memory;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 
 /// <summary>
 /// Direct zero-copy, zero-heap-allocation bridge between Glacier.Polaris DataFrames and the

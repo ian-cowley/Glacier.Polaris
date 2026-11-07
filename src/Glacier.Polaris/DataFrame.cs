@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 
 namespace Glacier.Polaris
 {
@@ -1141,7 +1141,7 @@ public DataFrame Kde(string column, double bandwidth, int gridPoints = 100)
         Glacier.Polaris.Memory.ValidityMask ValidityMask { get; }
         object? Get(int i);
         ISeries CloneEmpty(int length);
-        Glacier.Storage.Arrow.ArrowColumn ToArrowColumn();
+        Glacier.Formats.Arrow.ArrowColumn ToArrowColumn();
         void CopyTo(ISeries target, int offset);
         void Take(ISeries target, ReadOnlySpan<int> indices);
         void Take(ISeries target, int srcIdx, int targetIdx);

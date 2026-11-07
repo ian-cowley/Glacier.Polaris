@@ -76,3 +76,8 @@ python_results.json
 # Old stale project artifacts
 Polars.slnx
 PolarsSln/
+
+bin/
+obj/
+*.tmp
+!.env.example

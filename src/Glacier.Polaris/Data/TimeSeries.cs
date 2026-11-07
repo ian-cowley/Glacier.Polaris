@@ -1,6 +1,6 @@
 using System;
 using Glacier.Polaris.Memory;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 
 namespace Glacier.Polaris.Data
 {

@@ -3,7 +3,7 @@ using System.Buffers;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Glacier.Polaris.Memory;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 
 namespace Glacier.Polaris.Data
 {

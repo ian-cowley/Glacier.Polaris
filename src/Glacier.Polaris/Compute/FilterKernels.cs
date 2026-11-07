@@ -22,7 +22,7 @@ namespace Glacier.Polaris.Compute
     /// Implements high-performance SIMD vectorized and multi-threaded filter operations.
     /// Supports sbyte, byte, short, ushort, int, uint, long, ulong, float, and double.
     /// </summary>
-    public static class FilterKernels
+    public static partial class FilterKernels
     {
         public static (int[] rentedIndices, int count) Filter<T>(ReadOnlySpan<T> data, T threshold, FilterOperation op) where T : unmanaged, IComparable<T>
         {

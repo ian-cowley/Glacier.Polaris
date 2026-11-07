@@ -26,7 +26,7 @@ namespace Glacier.Polaris.Tests
 
                 // Read it back
                 using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-                using var reader = new Glacier.Storage.Arrow.ArrowStreamReader(fs);
+                using var reader = new Glacier.Formats.Arrow.ArrowStreamReader(fs);
                 var batch = reader.ReadNextRecordBatch();
                 Assert.NotNull(batch);
 
@@ -113,7 +113,7 @@ namespace Glacier.Polaris.Tests
             Assert.True(ms.Length > 0);
 
             ms.Position = 0;
-            using var reader = new Glacier.Storage.Arrow.ArrowStreamReader(ms);
+            using var reader = new Glacier.Formats.Arrow.ArrowStreamReader(ms);
             var batch = reader.ReadNextRecordBatch();
             Assert.NotNull(batch);
             Assert.Equal(4, batch.RowCount);

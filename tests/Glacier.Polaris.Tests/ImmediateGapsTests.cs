@@ -3,7 +3,7 @@ using System.Linq;
 using Xunit;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 
 namespace Glacier.Polaris.Tests
 {

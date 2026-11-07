@@ -8,7 +8,7 @@ using Glacier.Polaris;
 using Glacier.Polaris.Data;
 using Glacier.Polaris.IO;
 using Glacier.Polaris.Memory;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 using Xunit;
 
 public class ArrowStorageSynthesisTests

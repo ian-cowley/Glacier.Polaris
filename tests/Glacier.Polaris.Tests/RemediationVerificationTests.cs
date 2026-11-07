@@ -165,7 +165,7 @@ namespace Glacier.Polaris.Tests
             Assert.Equal(12, intBytes.Length);
             Assert.Single(nullBitmap.ToArray());
 
-            Glacier.Storage.Arrow.ArrowColumn boolArrow;
+            Glacier.Formats.Arrow.ArrowColumn boolArrow;
             using (var bs = BooleanSeries.FromValues("flag", new bool?[] { true, null, false, true }))
             {
                 boolArrow = bs.ToArrowColumn();

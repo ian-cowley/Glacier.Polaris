@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- NuGet Packaging Properties -->
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
@@ -24,8 +24,15 @@
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
+  <ItemGroup Condition="Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') and '$(UseLocalProjectReferences)' != 'false'">
+    <ProjectReference Include="../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj" />
+    <ProjectReference Include="../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="!Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') or '$(UseLocalProjectReferences)' == 'false'">
+    <PackageReference Include="Glacier.Formats" Version="1.0.0" />
+    <PackageReference Include="Glacier.Storage" Version="1.1.0" />
+  </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Glacier.Storage" Version="1.0.2" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="Parquet.Net" Version="5.6.1" />

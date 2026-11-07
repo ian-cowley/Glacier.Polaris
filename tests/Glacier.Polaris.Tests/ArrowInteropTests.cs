@@ -1,6 +1,6 @@
 using Glacier.Polaris;
 using Xunit;
-using Glacier.Storage.Arrow;
+using Glacier.Formats.Arrow;
 using System.Linq;
 
 namespace Glacier.Polaris.Tests

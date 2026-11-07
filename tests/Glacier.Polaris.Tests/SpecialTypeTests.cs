@@ -162,7 +162,7 @@ namespace Glacier.Polaris.Tests
 
             Assert.NotNull(arr);
             Assert.Equal(3, arr.Length);
-            Assert.Equal(Glacier.Storage.Arrow.ArrowTypeId.Utf8, arr.Field.DataType.Id);
+            Assert.Equal(Glacier.Formats.Arrow.ArrowTypeId.Utf8, arr.Field.DataType.Id);
             Assert.Equal("42", arr.GetString(0));
             Assert.Equal("hi", arr.GetString(1));
             Assert.True(arr.IsNull(2));
@@ -201,7 +201,7 @@ namespace Glacier.Polaris.Tests
             var arr = s.ToArrowColumn();
 
             Assert.NotNull(arr);
-            Assert.Equal(Glacier.Storage.Arrow.ArrowTypeId.Null, arr.Field.DataType.Id);
+            Assert.Equal(Glacier.Formats.Arrow.ArrowTypeId.Null, arr.Field.DataType.Id);
             Assert.Equal(4, arr.Length);
         }
 

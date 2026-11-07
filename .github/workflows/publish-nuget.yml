@@ -38,8 +38,18 @@ jobs:
             --password "${{ secrets.GITHUB_TOKEN }}" \
             --store-password-in-clear-text
 
-      - name: Restore dependencies
-        run: dotnet restore Glacier.Polaris.slnx
+      - name: Restore dependencies (wait for upstream NuGet indexing)
+        run: |
+          elapsed=0
+          until dotnet restore Glacier.Polaris.slnx --no-cache > /dev/null 2>&1; do
+            if [ $elapsed -ge 1200 ]; then
+              dotnet restore Glacier.Polaris.slnx --no-cache
+              exit 1
+            fi
+            echo "Waiting for upstream NuGet packages to index (${elapsed}s elapsed)..."
+            sleep 30
+            elapsed=$((elapsed+30))
+          done
 
       - name: Build
         run: dotnet build Glacier.Polaris.slnx --configuration Release --no-restore
