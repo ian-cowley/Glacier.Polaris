@@ -1359,6 +1359,36 @@ public class ParityTests
     }
 
     [Fact]
+    public void ListSeries_CopyTo_MergesOffsetsValuesAndNulls()
+    {
+        var off1 = new Int32Series("off1", 3);
+        off1.Memory.Span[0] = 0; off1.Memory.Span[1] = 2; off1.Memory.Span[2] = 3;
+        using var list1 = new ListSeries("l1", off1, Int32Series.FromValues("v1", [10, 20, 30]));
+        list1.ValidityMask.SetValid(0);
+        list1.ValidityMask.SetValid(1);
+
+        var off2 = new Int32Series("off2", 3);
+        off2.Memory.Span[0] = 0; off2.Memory.Span[1] = 0; off2.Memory.Span[2] = 2;
+        using var list2 = new ListSeries("l2", off2, Int32Series.FromValues("v2", [40, 50]));
+        list2.ValidityMask.SetNull(0);
+        list2.ValidityMask.SetValid(1);
+
+        var targetOff = new Int32Series("toff", 5);
+        using var target = new ListSeries("target", targetOff, new Int32Series("tv", 0));
+
+        list1.CopyTo(target, 0);
+        list2.CopyTo(target, 2);
+
+        Assert.Equal([0, 2, 3, 3, 5], target.Offsets.Memory.Span.ToArray());
+        Assert.False(target.ValidityMask.IsNull(0));
+        Assert.False(target.ValidityMask.IsNull(1));
+        Assert.True(target.ValidityMask.IsNull(2));
+        Assert.False(target.ValidityMask.IsNull(3));
+        var merged = Assert.IsType<Int32Series>(target.Values);
+        Assert.Equal([10, 20, 30, 40, 50], merged.Memory.Span.Slice(0, 5).ToArray());
+    }
+
+    [Fact]
     public void Tier9_StructField()
     {
         var s = new StructSeries("s", new ISeries[]

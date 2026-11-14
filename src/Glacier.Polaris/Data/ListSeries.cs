@@ -25,11 +25,108 @@ namespace Glacier.Polaris.Data
 
         public void CopyTo(ISeries target, int offset)
         {
-            if (target is ListSeries t)
+            if (target is not ListSeries t)
+                throw new ArgumentException("Target series type mismatch.", nameof(target));
+
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            if (offset + Length > t.Length)
+                throw new ArgumentOutOfRangeException(nameof(offset), "Target ListSeries is smaller than source offset + length.");
+
+            var srcOffsets = Offsets.Memory.Span;
+            var targetOffsets = t.Offsets.Memory.Span;
+            if (offset == 0)
+                targetOffsets[0] = 0;
+
+            int baseValueOffset = targetOffsets[offset];
+            int currentTargetOffset = baseValueOffset;
+            int srcValueStart = srcOffsets[0];
+            int totalSrcValues = srcOffsets[Length] - srcValueStart;
+
+            for (int i = 0; i < Length; i++)
             {
-                // This is complex because we need to append values and adjust offsets
-                throw new NotImplementedException("CopyTo for ListSeries requires complex values merging.");
+                if (ValidityMask.IsNull(i))
+                {
+                    t.ValidityMask.SetNull(offset + i);
+                    targetOffsets[offset + i + 1] = currentTargetOffset;
+                }
+                else
+                {
+                    t.ValidityMask.SetValid(offset + i);
+                    currentTargetOffset += srcOffsets[i + 1] - srcOffsets[i];
+                    targetOffsets[offset + i + 1] = currentTargetOffset;
+                }
             }
+
+            if (totalSrcValues == 0)
+                return;
+
+            int requiredValuesLen = baseValueOffset + totalSrcValues;
+            if (t.Values.Length >= requiredValuesLen && srcValueStart == 0 && Values.Length == totalSrcValues)
+            {
+                Values.CopyTo(t.Values, baseValueOffset);
+                return;
+            }
+
+            // Grow target values series and merge existing prefix [0..baseValueOffset) + source slice
+            int[] srcIndices = new int[totalSrcValues];
+            for (int i = 0; i < totalSrcValues; i++)
+                srcIndices[i] = srcValueStart + i;
+
+            ISeries newValues = CreateTargetValuesSeries(Values, requiredValuesLen, t.Values, baseValueOffset, srcIndices);
+            if (baseValueOffset == 0)
+            {
+                Values.Take(newValues, srcIndices);
+            }
+            else
+            {
+                int[] prefixIndices = new int[baseValueOffset];
+                for (int i = 0; i < baseValueOffset; i++) prefixIndices[i] = i;
+                using ISeries prefixCopy = CreateTargetValuesSeries(t.Values, baseValueOffset, t.Values, 0, prefixIndices);
+                t.Values.Take(prefixCopy, prefixIndices);
+                prefixCopy.CopyTo(newValues, 0);
+
+                using ISeries srcCopy = CreateTargetValuesSeries(Values, totalSrcValues, t.Values, 0, srcIndices);
+                Values.Take(srcCopy, srcIndices);
+                srcCopy.CopyTo(newValues, baseValueOffset);
+            }
+
+            t.Values.Dispose();
+            t.Values = newValues;
+        }
+
+        private static ISeries CreateTargetValuesSeries(ISeries srcValues, int totalLength, ISeries existingTargetValues, int existingPrefixLen, int[] srcIndices)
+        {
+            if (srcValues is Utf8StringSeries u8)
+            {
+                int totalBytes = 0;
+                if (existingTargetValues is Utf8StringSeries tu8)
+                {
+                    for (int i = 0; i < existingPrefixLen; i++)
+                        if (!tu8.ValidityMask.IsNull(i)) totalBytes += tu8.GetStringSpan(i).Length;
+                }
+                for (int i = 0; i < srcIndices.Length; i++)
+                {
+                    if (!u8.ValidityMask.IsNull(srcIndices[i])) totalBytes += u8.GetStringSpan(srcIndices[i]).Length;
+                }
+                return new Utf8StringSeries(srcValues.Name, totalLength, totalBytes);
+            }
+
+            if (srcValues is BinarySeries bin)
+            {
+                int totalBytes = 0;
+                if (existingTargetValues is BinarySeries tbin)
+                {
+                    for (int i = 0; i < existingPrefixLen; i++)
+                        if (!tbin.ValidityMask.IsNull(i)) totalBytes += tbin.GetSpan(i).Length;
+                }
+                for (int i = 0; i < srcIndices.Length; i++)
+                {
+                    if (!bin.ValidityMask.IsNull(srcIndices[i])) totalBytes += bin.GetSpan(srcIndices[i]).Length;
+                }
+                return new BinarySeries(srcValues.Name, totalLength, totalBytes);
+            }
+
+            return srcValues.CloneEmpty(totalLength);
         }
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
