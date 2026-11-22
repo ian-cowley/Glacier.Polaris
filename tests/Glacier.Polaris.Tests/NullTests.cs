@@ -7,6 +7,7 @@ using Glacier.Polaris.Data;
 
 namespace Glacier.Polaris.Tests
 {
+    [Collection("StringCache")]
     public class NullTests
     {
         [Fact]

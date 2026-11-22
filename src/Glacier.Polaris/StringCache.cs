@@ -6,16 +6,19 @@ namespace Glacier.Polaris
 {
     public static class StringCache
     {
-        private static bool _isEnabled = false;
+        private static volatile bool _isEnabled = false;
         private static readonly ConcurrentDictionary<string, uint> _stringToCode = new();
         private static readonly ConcurrentList<string> _codeToString = new();
 
         public static void Enable() => _isEnabled = true;
         public static void Disable()
         {
-            _isEnabled = false;
-            _stringToCode.Clear();
-            _codeToString.Clear();
+            lock (_codeToString)
+            {
+                _isEnabled = false;
+                _stringToCode.Clear();
+                _codeToString.Clear();
+            }
         }
 
         public static bool IsEnabled => _isEnabled;
@@ -29,8 +32,8 @@ namespace Glacier.Polaris
             {
                 if (_stringToCode.TryGetValue(s, out code)) return code;
                 code = (uint)_codeToString.Count;
-                _stringToCode[s] = code;
                 _codeToString.Add(s);
+                _stringToCode[s] = code;
                 return code;
             }
         }
@@ -38,7 +41,10 @@ namespace Glacier.Polaris
         public static string? GetString(uint code)
         {
             if (code == uint.MaxValue) return null;
-            return _codeToString[(int)code];
+            lock (_codeToString)
+            {
+                return code < (uint)_codeToString.Count ? _codeToString[(int)code] : null;
+            }
         }
 
         public static string[] GetRevMap()

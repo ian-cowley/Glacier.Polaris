@@ -6,6 +6,7 @@ using Glacier.Polaris.Compute;
 using Glacier.Storage.Encoding;
 using Xunit;
 
+[Collection("ZeroAllocTests")]
 public class PredicatePushdownEmpiricalStressTests
 {
     private static readonly FilterOperation[] s_allOps =
@@ -287,7 +288,10 @@ public class PredicatePushdownEmpiricalStressTests
         foreach (var op in s_allOps)
         {
             // Warmup JIT
-            for (int i = 0; i < 100; i++)
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            for (int i = 0; i < 200; i++)
             {
                 FilterKernels.EvaluateCompressedBlockToBitmap(
                     compressed.AsSpan(0, written),
@@ -297,6 +301,9 @@ public class PredicatePushdownEmpiricalStressTests
                     bitmask);
             }
 
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < 50; i++)
             {

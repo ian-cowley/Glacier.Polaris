@@ -11,6 +11,7 @@ using Glacier.Polaris.Memory;
 using Glacier.Formats.Arrow;
 using Xunit;
 
+[Collection("ZeroAllocTests")]
 public class ArrowStorageSynthesisTests
 {
     [Fact]
@@ -278,15 +279,24 @@ public class ArrowStorageSynthesisTests
         var batch = df.ToGlacierRecordBatch();
 
         // Warm up JIT
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
         using (var warmupWriter = new ArrowStreamWriter(Stream.Null, leaveOpen: true))
         {
             warmupWriter.WriteSchema(batch.Schema);
-            warmupWriter.WriteRecordBatch(batch);
+            for (int w = 0; w < 200; w++)
+            {
+                warmupWriter.WriteRecordBatch(batch);
+            }
         }
 
         // Measure allocations on batch streaming hot path
         using (var writer = new ArrowStreamWriter(Stream.Null, leaveOpen: true))
         {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
             long allocBefore = GC.GetAllocatedBytesForCurrentThread();
 
             writer.WriteRecordBatch(batch);

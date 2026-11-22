@@ -11,6 +11,7 @@ using Xunit;
 /// Stress-tests predicate pushdown on compressed blocks across edge-case IEEE 754 boundaries,
 /// non-finite exceptions, and validates zero steady-state heap allocations.
 /// </summary>
+[Collection("ZeroAllocTests")]
 public class Tier5PolarisPredicatePushdownAdversarialTests
 {
     private static readonly FilterOperation[] s_allOps =
@@ -217,7 +218,10 @@ public class Tier5PolarisPredicatePushdownAdversarialTests
         foreach (var op in s_allOps)
         {
             // 1. Warmup JIT and internal caches
-            for (int w = 0; w < 100; w++)
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            for (int w = 0; w < 200; w++)
             {
                 FilterKernels.EvaluateCompressedBlockToBitmap(
                     compressed.AsSpan(0, written),
@@ -235,6 +239,9 @@ public class Tier5PolarisPredicatePushdownAdversarialTests
             }
 
             // 2. Measure steady-state allocations across 50 iterations
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
             long allocBeforeBitmap = GC.GetAllocatedBytesForCurrentThread();
             for (int iter = 0; iter < 50; iter++)
             {

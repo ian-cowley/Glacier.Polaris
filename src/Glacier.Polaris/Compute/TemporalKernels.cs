@@ -6,18 +6,35 @@ namespace Glacier.Polaris.Compute
     public static class TemporalKernels
     {
         private static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private static readonly int MinDaysFromEpoch = (DateTime.MinValue - Epoch).Days;
+        private static readonly int MaxDaysFromEpoch = (DateTime.MaxValue - Epoch).Days;
+        private static readonly long MinTicksFromEpoch = DateTime.MinValue.Ticks - Epoch.Ticks;
+        private static readonly long MaxTicksFromEpoch = DateTime.MaxValue.Ticks - Epoch.Ticks;
+
+        private static DateTime DaysToDateTime(int days)
+        {
+            if (days < MinDaysFromEpoch) return DateTime.MinValue;
+            if (days > MaxDaysFromEpoch) return DateTime.MaxValue;
+            return Epoch.AddDays(days);
+        }
 
         /// <summary>Convert a DatetimeSeries value (stored as nanoseconds since epoch) to DateTime.</summary>
         private static DateTime NanosToDateTime(long nanos)
         {
-            long ticks = nanos / 100; // 100ns per tick
-            if (ticks < 0 || ticks > (DateTime.MaxValue.Ticks - Epoch.Ticks))
-            {
-                // Clamp or fallback for extreme values
-                if (nanos < 0) return DateTime.MinValue;
-                return DateTime.MaxValue;
-            }
+            long ticks = nanos >= 0
+                ? nanos / 100
+                : (long)(((Int128)nanos - 99) / 100); // floor division to 100ns ticks for pre-1970 sub-tick values
+            if (ticks < MinTicksFromEpoch) return DateTime.MinValue;
+            if (ticks > MaxTicksFromEpoch) return DateTime.MaxValue;
             return Epoch.AddTicks(ticks);
+        }
+
+        private static long DateTimeToNanosClamped(DateTime dt)
+        {
+            Int128 nanos = (Int128)(dt - Epoch).Ticks * 100;
+            if (nanos < long.MinValue) return long.MinValue;
+            if (nanos > long.MaxValue) return long.MaxValue;
+            return (long)nanos;
         }
 
         public static Int32Series ExtractYear(ISeries series)
@@ -27,8 +44,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_year", ds.Length);
                 var src = ds.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < ds.Length; i++) dst[i] = Epoch.AddDays(src[i]).Year;
-                result.ValidityMask.CopyFrom(ds.ValidityMask);
+                for (int i = 0; i < ds.Length; i++)
+                {
+                    if (ds.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = DaysToDateTime(src[i]).Year;
+                }
                 return result;
             }
             if (series is DatetimeSeries dts)
@@ -36,8 +56,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_year", dts.Length);
                 var src = dts.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < dts.Length; i++) dst[i] = NanosToDateTime(src[i]).Year;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = NanosToDateTime(src[i]).Year;
+                }
                 return result;
             }
             throw new NotSupportedException("ExtractYear only supported for Date/Datetime.");
@@ -50,8 +73,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_month", ds.Length);
                 var src = ds.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < ds.Length; i++) dst[i] = Epoch.AddDays(src[i]).Month;
-                result.ValidityMask.CopyFrom(ds.ValidityMask);
+                for (int i = 0; i < ds.Length; i++)
+                {
+                    if (ds.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = DaysToDateTime(src[i]).Month;
+                }
                 return result;
             }
             if (series is DatetimeSeries dts)
@@ -59,8 +85,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_month", dts.Length);
                 var src = dts.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < dts.Length; i++) dst[i] = NanosToDateTime(src[i]).Month;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = NanosToDateTime(src[i]).Month;
+                }
                 return result;
             }
             throw new NotSupportedException("ExtractMonth only supported for Date/Datetime.");
@@ -73,8 +102,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_day", ds.Length);
                 var src = ds.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < ds.Length; i++) dst[i] = Epoch.AddDays(src[i]).Day;
-                result.ValidityMask.CopyFrom(ds.ValidityMask);
+                for (int i = 0; i < ds.Length; i++)
+                {
+                    if (ds.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = DaysToDateTime(src[i]).Day;
+                }
                 return result;
             }
             if (series is DatetimeSeries dts)
@@ -82,8 +114,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_day", dts.Length);
                 var src = dts.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < dts.Length; i++) dst[i] = NanosToDateTime(src[i]).Day;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = NanosToDateTime(src[i]).Day;
+                }
                 return result;
             }
             throw new NotSupportedException("ExtractDay only supported for Date/Datetime.");
@@ -96,8 +131,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_hour", dts.Length);
                 var src = dts.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < dts.Length; i++) dst[i] = NanosToDateTime(src[i]).Hour;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = NanosToDateTime(src[i]).Hour;
+                }
                 return result;
             }
             if (series is TimeSeries ts)
@@ -105,8 +143,11 @@ namespace Glacier.Polaris.Compute
                 var result = new Int32Series(series.Name + "_hour", ts.Length);
                 var src = ts.Memory.Span;
                 var dst = result.Memory.Span;
-                for (int i = 0; i < ts.Length; i++) dst[i] = (int)(src[i] / 3_600_000_000_000L);
-                result.ValidityMask.CopyFrom(ts.ValidityMask);
+                for (int i = 0; i < ts.Length; i++)
+                {
+                    if (ts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    dst[i] = (int)(src[i] / 3_600_000_000_000L);
+                }
                 return result;
             }
             throw new NotSupportedException();
@@ -117,15 +158,21 @@ namespace Glacier.Polaris.Compute
             if (series is DatetimeSeries dts)
             {
                 var result = new Int32Series(series.Name + "_minute", dts.Length);
-                for (int i = 0; i < dts.Length; i++) result.Memory.Span[i] = NanosToDateTime(dts.Memory.Span[i]).Minute;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    result.Memory.Span[i] = NanosToDateTime(dts.Memory.Span[i]).Minute;
+                }
                 return result;
             }
             if (series is TimeSeries ts)
             {
                 var result = new Int32Series(series.Name + "_minute", ts.Length);
-                for (int i = 0; i < ts.Length; i++) result.Memory.Span[i] = (int)((ts.Memory.Span[i] / 60_000_000_000L) % 60);
-                result.ValidityMask.CopyFrom(ts.ValidityMask);
+                for (int i = 0; i < ts.Length; i++)
+                {
+                    if (ts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    result.Memory.Span[i] = (int)((ts.Memory.Span[i] / 60_000_000_000L) % 60);
+                }
                 return result;
             }
             throw new NotSupportedException();
@@ -136,15 +183,21 @@ namespace Glacier.Polaris.Compute
             if (series is DatetimeSeries dts)
             {
                 var result = new Int32Series(series.Name + "_second", dts.Length);
-                for (int i = 0; i < dts.Length; i++) result.Memory.Span[i] = NanosToDateTime(dts.Memory.Span[i]).Second;
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    result.Memory.Span[i] = NanosToDateTime(dts.Memory.Span[i]).Second;
+                }
                 return result;
             }
             if (series is TimeSeries ts)
             {
                 var result = new Int32Series(series.Name + "_second", ts.Length);
-                for (int i = 0; i < ts.Length; i++) result.Memory.Span[i] = (int)((ts.Memory.Span[i] / 1_000_000_000L) % 60);
-                result.ValidityMask.CopyFrom(ts.ValidityMask);
+                for (int i = 0; i < ts.Length; i++)
+                {
+                    if (ts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
+                    result.Memory.Span[i] = (int)((ts.Memory.Span[i] / 1_000_000_000L) % 60);
+                }
                 return result;
             }
             throw new NotSupportedException();
@@ -155,15 +208,33 @@ namespace Glacier.Polaris.Compute
             if (series is DatetimeSeries dts)
             {
                 var result = new Int32Series(series.Name + "_nanosecond", dts.Length);
-                for (int i = 0; i < dts.Length; i++) result.Memory.Span[i] = (int)(dts.Memory.Span[i] % 1_000_000_000L);
-                result.ValidityMask.CopyFrom(dts.ValidityMask);
+                for (int i = 0; i < dts.Length; i++)
+                {
+                    if (dts.ValidityMask.IsNull(i))
+                    {
+                        result.ValidityMask.SetNull(i);
+                        continue;
+                    }
+                    long rem = dts.Memory.Span[i] % 1_000_000_000L;
+                    if (rem < 0) rem += 1_000_000_000L;
+                    result.Memory.Span[i] = (int)rem;
+                }
                 return result;
             }
             if (series is TimeSeries ts)
             {
                 var result = new Int32Series(series.Name + "_nanosecond", ts.Length);
-                for (int i = 0; i < ts.Length; i++) result.Memory.Span[i] = (int)(ts.Memory.Span[i] % 1_000_000_000L);
-                result.ValidityMask.CopyFrom(ts.ValidityMask);
+                for (int i = 0; i < ts.Length; i++)
+                {
+                    if (ts.ValidityMask.IsNull(i))
+                    {
+                        result.ValidityMask.SetNull(i);
+                        continue;
+                    }
+                    long rem = ts.Memory.Span[i] % 1_000_000_000L;
+                    if (rem < 0) rem += 1_000_000_000L;
+                    result.Memory.Span[i] = (int)rem;
+                }
                 return result;
             }
             throw new NotSupportedException();
@@ -266,7 +337,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < len; i++)
                 {
                     if (dateSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = new DateTime(1970, 1, 1).AddDays(src[i]);
+                    var dt = DaysToDateTime(src[i]);
                     res[i] = ((int)dt.DayOfWeek == 0) ? 7 : (int)dt.DayOfWeek;
                 }
             }
@@ -277,7 +348,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < len; i++)
                 {
                     if (datetimeSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = new DateTime(1970, 1, 1).AddTicks(src[i] / 100);
+                    var dt = NanosToDateTime(src[i]);
                     res[i] = ((int)dt.DayOfWeek == 0) ? 7 : (int)dt.DayOfWeek;
                 }
             }
@@ -301,7 +372,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < len; i++)
                 {
                     if (dateSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = new DateTime(1970, 1, 1).AddDays(src[i]);
+                    var dt = DaysToDateTime(src[i]);
                     res[i] = (dt.Month - 1) / 3 + 1;
                 }
             }
@@ -312,7 +383,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < len; i++)
                 {
                     if (datetimeSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = new DateTime(1970, 1, 1).AddTicks(src[i] / 100);
+                    var dt = NanosToDateTime(src[i]);
                     res[i] = (dt.Month - 1) / 3 + 1;
                 }
             }
@@ -405,9 +476,12 @@ namespace Glacier.Polaris.Compute
             for (int i = 0; i < series.Length; i++)
             {
                 if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                // Round to nearest interval
-                long halfInterval = intervalNs / 2;
-                res[i] = ((src[i] + halfInterval) / intervalNs) * intervalNs;
+                // Round to nearest interval (overflow-safe via Int128)
+                Int128 halfInterval = intervalNs / 2;
+                Int128 shifted = (Int128)src[i] + halfInterval;
+                Int128 q = shifted / intervalNs;
+                if (shifted % intervalNs < 0) q--;
+                res[i] = (long)Int128.Clamp(q * intervalNs, long.MinValue, long.MaxValue);
             }
             return result;
         }
@@ -424,8 +498,10 @@ namespace Glacier.Polaris.Compute
             for (int i = 0; i < series.Length; i++)
             {
                 if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                // Truncate (floor) to interval: always round down
-                res[i] = (src[i] / intervalNs) * intervalNs;
+                // Truncate (floor) to interval: always round down (overflow-safe via Int128)
+                long q = src[i] / intervalNs;
+                if (src[i] % intervalNs < 0) q--;
+                res[i] = (long)Int128.Clamp((Int128)q * intervalNs, long.MinValue, long.MaxValue);
             }
             return result;
         }
@@ -441,7 +517,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < len; i++)
                 {
                     if (dateSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    res[i] = Epoch.AddDays(src[i]).DayOfYear;
+                    res[i] = DaysToDateTime(src[i]).DayOfYear;
                 }
             }
             else if (series is Data.DatetimeSeries datetimeSeries)
@@ -493,8 +569,8 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < series.Length; i++)
                 {
                     if (dateSeries.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    long nanos = src[i] * 86_400_000_000_000L;
-                    res[i] = nanos / divisor;
+                    Int128 nanos = (Int128)src[i] * 86_400_000_000_000L;
+                    res[i] = (long)Int128.Clamp(nanos / divisor, long.MinValue, long.MaxValue);
                 }
                 return result;
             }
@@ -550,7 +626,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < series.Length; i++)
                 {
                     if (ds.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = Epoch.AddDays(src[i]);
+                    var dt = DaysToDateTime(src[i]);
                     var monthStart = new DateTime(dt.Year, dt.Month, 1, 0, 0, 0, DateTimeKind.Utc);
                     res[i] = (int)((monthStart - Epoch).TotalDays);
                 }
@@ -566,7 +642,7 @@ namespace Glacier.Polaris.Compute
                     if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
                     var dt = NanosToDateTime(src[i]);
                     var monthStart = new DateTime(dt.Year, dt.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-                    res[i] = (monthStart - Epoch).Ticks * 100;
+                    res[i] = DateTimeToNanosClamped(monthStart);
                 }
                 return result;
             }
@@ -584,8 +660,9 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < series.Length; i++)
                 {
                     if (ds.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
-                    var dt = Epoch.AddDays(src[i]);
-                    var monthEnd = new DateTime(dt.Year, dt.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1).AddDays(-1);
+                    var dt = DaysToDateTime(src[i]);
+                    int lastDay = DateTime.DaysInMonth(dt.Year, dt.Month);
+                    var monthEnd = new DateTime(dt.Year, dt.Month, lastDay, 0, 0, 0, DateTimeKind.Utc);
                     res[i] = (int)((monthEnd - Epoch).TotalDays);
                 }
                 return result;
@@ -599,10 +676,9 @@ namespace Glacier.Polaris.Compute
                 {
                     if (dts.ValidityMask.IsNull(i)) { result.ValidityMask.SetNull(i); continue; }
                     var dt = NanosToDateTime(src[i]);
-                    var monthEnd = new DateTime(dt.Year, dt.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1).AddDays(-1);
-                    // Set to end of day (23:59:59.9999999)
-                    monthEnd = monthEnd.AddHours(23).AddMinutes(59).AddSeconds(59).AddTicks(9999999);
-                    res[i] = (monthEnd - Epoch).Ticks * 100;
+                    int lastDay = DateTime.DaysInMonth(dt.Year, dt.Month);
+                    var monthEnd = new DateTime(dt.Year, dt.Month, lastDay, 23, 59, 59, DateTimeKind.Utc).AddTicks(9_999_999);
+                    res[i] = DateTimeToNanosClamped(monthEnd);
                 }
                 return result;
             }
@@ -631,13 +707,24 @@ namespace Glacier.Polaris.Compute
                 }
 
                 DateTime dt = NanosToDateTime(src[i]);
-                DateTime unspecifiedDt = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
-                DateTime targetDt = TimeZoneInfo.ConvertTime(unspecifiedDt, sourceTz, targetTz);
-                DateTime targetDtUtc = DateTime.SpecifyKind(targetDt, DateTimeKind.Utc);
-                long ticks = (targetDtUtc - Epoch).Ticks;
-                res[i] = ticks * 100;
+                DateTime targetDtUtc;
+                if (dt.Year <= 1 || dt.Year >= 9999)
+                {
+                    TimeSpan sourceOffset = sourceTz.GetUtcOffset(dt);
+                    long utcTicks = Math.Clamp(dt.Ticks - sourceOffset.Ticks, DateTime.MinValue.Ticks, DateTime.MaxValue.Ticks);
+                    DateTime utcDt = new DateTime(utcTicks, DateTimeKind.Utc);
+                    TimeSpan targetOffset = targetTz.GetUtcOffset(utcDt);
+                    long targetTicks = Math.Clamp(utcTicks + targetOffset.Ticks, DateTime.MinValue.Ticks, DateTime.MaxValue.Ticks);
+                    targetDtUtc = new DateTime(targetTicks, DateTimeKind.Utc);
+                }
+                else
+                {
+                    DateTime unspecifiedDt = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
+                    DateTime targetDt = TimeZoneInfo.ConvertTime(unspecifiedDt, sourceTz, targetTz);
+                    targetDtUtc = DateTime.SpecifyKind(targetDt, DateTimeKind.Utc);
+                }
+                res[i] = DateTimeToNanosClamped(targetDtUtc);
             }
-            result.ValidityMask.CopyFrom(dts.ValidityMask);
             return result;
         }
     }

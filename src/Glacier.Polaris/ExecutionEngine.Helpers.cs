@@ -453,49 +453,328 @@ namespace Glacier.Polaris
         private static Data.Float64Series PromoteToFloat64(ISeries source)
         {
             var f64 = new Data.Float64Series(source.Name, source.Length);
-            for (int i = 0; i < source.Length; i++)
-            {
-                if (source.ValidityMask.IsNull(i)) { f64.ValidityMask.SetNull(i); continue; }
-                f64.Memory.Span[i] = source.Get(i) switch
-                {
-                    sbyte v => v,
-                    byte v => v,
-                    short v => v,
-                    ushort v => v,
-                    int v => v,
-                    uint v => v,
-                    long v => v,
-                    ulong v => v,
-                    float v => v,
-                    double v => v,
-                    _ => 0
-                };
-            }
             f64.ValidityMask.CopyFrom(source.ValidityMask);
+            var dst = f64.Memory.Span;
+
+            switch (source)
+            {
+                case Data.Float64Series s:
+                    s.Memory.Span.CopyTo(dst);
+                    break;
+                case Data.Float32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.DecimalSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = (double)src[i];
+                        break;
+                    }
+                case Data.BooleanSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i] ? 1.0 : 0.0;
+                        break;
+                    }
+                default:
+                    f64.Dispose();
+                    throw new NotSupportedException($"Cast from {source.GetType().Name} to Float64 is not supported.");
+            }
+
             return f64;
         }
 
         private static Data.Float32Series PromoteToFloat32(ISeries source)
         {
             var f32 = new Data.Float32Series(source.Name, source.Length);
-            for (int i = 0; i < source.Length; i++)
-            {
-                if (source.ValidityMask.IsNull(i)) { f32.ValidityMask.SetNull(i); continue; }
-                f32.Memory.Span[i] = Convert.ToSingle(source.Get(i));
-            }
             f32.ValidityMask.CopyFrom(source.ValidityMask);
+            var dst = f32.Memory.Span;
+
+            switch (source)
+            {
+                case Data.Float32Series s:
+                    s.Memory.Span.CopyTo(dst);
+                    break;
+                case Data.Float64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = (float)src[i];
+                        break;
+                    }
+                case Data.Int64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.DecimalSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = (float)src[i];
+                        break;
+                    }
+                case Data.BooleanSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i] ? 1.0f : 0.0f;
+                        break;
+                    }
+                case Data.DateSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.DatetimeSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                default:
+                    f32.Dispose();
+                    throw new NotSupportedException($"Cast from {source.GetType().Name} to Float32 is not supported.");
+            }
+
             return f32;
         }
 
         private static Data.Int64Series PromoteToInt64(ISeries source)
         {
             var i64 = new Data.Int64Series(source.Name, source.Length);
-            for (int i = 0; i < source.Length; i++)
-            {
-                if (source.ValidityMask.IsNull(i)) { i64.ValidityMask.SetNull(i); continue; }
-                i64.Memory.Span[i] = Convert.ToInt64(source.Get(i));
-            }
             i64.ValidityMask.CopyFrom(source.ValidityMask);
+            var dst = i64.Memory.Span;
+
+            switch (source)
+            {
+                case Data.Int64Series s:
+                    s.Memory.Span.CopyTo(dst);
+                    break;
+                case Data.Int32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Int8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsNull(i)) continue;
+                            ulong v = src[i];
+                            if (v > (ulong)long.MaxValue) i64.ValidityMask.SetNull(i);
+                            else dst[i] = (long)v;
+                        }
+                        break;
+                    }
+                case Data.UInt32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt16Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.UInt8Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i];
+                        break;
+                    }
+                case Data.Float64Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsNull(i)) continue;
+                            double v = src[i];
+                            if (!double.IsFinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0)
+                                i64.ValidityMask.SetNull(i);
+                            else
+                                dst[i] = Convert.ToInt64(v);
+                        }
+                        break;
+                    }
+                case Data.Float32Series s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsNull(i)) continue;
+                            float v = src[i];
+                            if (!float.IsFinite(v) || v < -9223372036854775808.0f || v >= 9223372036854775808.0f)
+                                i64.ValidityMask.SetNull(i);
+                            else
+                                dst[i] = Convert.ToInt64(v);
+                        }
+                        break;
+                    }
+                case Data.DecimalSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsNull(i)) continue;
+                            decimal v = Math.Round(src[i]);
+                            if (v < long.MinValue || v > long.MaxValue)
+                                i64.ValidityMask.SetNull(i);
+                            else
+                                dst[i] = (long)v;
+                        }
+                        break;
+                    }
+                case Data.BooleanSeries s:
+                    {
+                        var src = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (!s.ValidityMask.IsNull(i)) dst[i] = src[i] ? 1L : 0L;
+                        break;
+                    }
+                default:
+                    i64.Dispose();
+                    throw new NotSupportedException($"Cast from {source.GetType().Name} to Int64 is not supported.");
+            }
+
             return i64;
         }
 

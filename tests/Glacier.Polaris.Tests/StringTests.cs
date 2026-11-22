@@ -317,5 +317,213 @@ namespace Glacier.Polaris.Tests
             Assert.True(toLong.ValidityMask.IsNull(4));
             Assert.True(toLong.ValidityMask.IsNull(5));
         }
+
+        [Fact]
+        public async Task TestNumericAndBooleanToStringCastWithNulls()
+        {
+            var nums = Int64Series.FromValues("nums", new long?[] { 10L, null, -42L, 0L });
+            var floats = Float64Series.FromValues("floats", new double?[] { 12.5, null, -3.25, 0.0 });
+            var bools = BooleanSeries.FromValues("flags", new bool?[] { true, null, false, true });
+            var decs = new DecimalSeries("decs", new decimal?[] { 1.25m, null, -99.50m, 0m });
+            using var df = new DataFrame(new ISeries[] { nums, floats, bools, decs });
+
+            using var result = await df.Lazy()
+                .Select(
+                    Expr.Col("nums").Cast(typeof(string)).Alias("nums_str"),
+                    Expr.Col("floats").Cast(typeof(Utf8StringSeries)).Alias("floats_str"),
+                    Expr.Col("flags").Cast(typeof(string)).Alias("flags_str"),
+                    Expr.Col("decs").Cast(typeof(string)).Alias("decs_str")
+                )
+                .CollectAsync()
+                .FirstAsync();
+
+            var numsStr = Assert.IsType<Utf8StringSeries>(result.GetColumn("nums_str"));
+            Assert.Equal("10", numsStr.GetString(0));
+            Assert.True(numsStr.ValidityMask.IsNull(1));
+            Assert.Equal("-42", numsStr.GetString(2));
+            Assert.Equal("0", numsStr.GetString(3));
+
+            var floatsStr = Assert.IsType<Utf8StringSeries>(result.GetColumn("floats_str"));
+            Assert.Equal("12.5", floatsStr.GetString(0));
+            Assert.True(floatsStr.ValidityMask.IsNull(1));
+            Assert.Equal("-3.25", floatsStr.GetString(2));
+            Assert.Equal("0", floatsStr.GetString(3));
+
+            var flagsStr = Assert.IsType<Utf8StringSeries>(result.GetColumn("flags_str"));
+            Assert.Equal("true", flagsStr.GetString(0));
+            Assert.True(flagsStr.ValidityMask.IsNull(1));
+            Assert.Equal("false", flagsStr.GetString(2));
+            Assert.Equal("true", flagsStr.GetString(3));
+
+            var decsStr = Assert.IsType<Utf8StringSeries>(result.GetColumn("decs_str"));
+            Assert.Equal("1.25", decsStr.GetString(0));
+            Assert.True(decsStr.ValidityMask.IsNull(1));
+            Assert.Equal("-99.50", decsStr.GetString(2));
+            Assert.Equal("0", decsStr.GetString(3));
+        }
+
+        [Fact]
+        public async Task TestStringToStringCastProducesOwnedCopy()
+        {
+            var src = Utf8StringSeries.FromStrings("s", new[] { "alpha", null, "gamma" });
+            using var df = new DataFrame(new[] { src });
+
+            using (var result = await df.Lazy()
+                .Select(Expr.Col("s").Cast(typeof(string)).Alias("s_copy"))
+                .CollectAsync()
+                .FirstAsync())
+            {
+                var copy = Assert.IsType<Utf8StringSeries>(result.GetColumn("s_copy"));
+                Assert.NotSame(src, copy);
+                Assert.Equal("alpha", copy.GetString(0));
+                Assert.True(copy.ValidityMask.IsNull(1));
+                Assert.Equal("gamma", copy.GetString(2));
+            }
+
+            // Source series remains valid and undisposed after result disposal
+            Assert.Equal("alpha", src.GetString(0));
+            Assert.True(src.ValidityMask.IsNull(1));
+            Assert.Equal("gamma", src.GetString(2));
+        }
+
+        [Fact]
+        public async Task TestFloatNaNInfinityAndOverflowCastToInt64ProducesNulls()
+        {
+            var f64 = Float64Series.FromValues("f64", new double?[]
+            {
+                12.7,
+                double.NaN,
+                double.PositiveInfinity,
+                double.NegativeInfinity,
+                1e30,
+                -3.5,
+                null
+            });
+            var f32 = Float32Series.FromValues("f32", new float?[]
+            {
+                7.2f,
+                float.NaN,
+                float.PositiveInfinity,
+                1e25f,
+                null,
+                -2.0f,
+                0.0f
+            });
+            using var df = new DataFrame(new ISeries[] { f64, f32 });
+
+            using var result = await df.Lazy()
+                .Select(
+                    Expr.Col("f64").Cast(typeof(long)).Alias("i64_from_f64"),
+                    Expr.Col("f32").Cast(typeof(long)).Alias("i64_from_f32")
+                )
+                .CollectAsync()
+                .FirstAsync();
+
+            var c64 = Assert.IsType<Int64Series>(result.GetColumn("i64_from_f64"));
+            Assert.True(c64.ValidityMask.IsValid(0));
+            Assert.Equal(13L, c64.Memory.Span[0]);
+            Assert.True(c64.ValidityMask.IsNull(1)); // NaN
+            Assert.True(c64.ValidityMask.IsNull(2)); // +Inf
+            Assert.True(c64.ValidityMask.IsNull(3)); // -Inf
+            Assert.True(c64.ValidityMask.IsNull(4)); // out-of-range
+            Assert.True(c64.ValidityMask.IsValid(5));
+            Assert.Equal(-4L, c64.Memory.Span[5]);
+            Assert.True(c64.ValidityMask.IsNull(6));
+
+            var c32 = Assert.IsType<Int64Series>(result.GetColumn("i64_from_f32"));
+            Assert.True(c32.ValidityMask.IsValid(0));
+            Assert.Equal(7L, c32.Memory.Span[0]);
+            Assert.True(c32.ValidityMask.IsNull(1)); // NaN
+            Assert.True(c32.ValidityMask.IsNull(2)); // +Inf
+            Assert.True(c32.ValidityMask.IsNull(3)); // out-of-range
+            Assert.True(c32.ValidityMask.IsNull(4));
+            Assert.True(c32.ValidityMask.IsValid(5));
+            Assert.Equal(-2L, c32.Memory.Span[5]);
+        }
+
+        [Fact]
+        public async Task TestBooleanToDoubleAndUnsupportedCastRejection()
+        {
+            var bools = BooleanSeries.FromValues("b", new bool?[] { true, null, false });
+            var dates = new DateSeries("d", new[] { new DateTime(2024, 1, 15, 0, 0, 0, DateTimeKind.Utc) });
+            var dts = DatetimeSeries.FromValues("dt", new long?[] { 1_700_000_000_000_000_000L });
+
+            using var boolDf = new DataFrame(new ISeries[] { bools });
+            using var boolRes = await boolDf.Lazy()
+                .Select(
+                    Expr.Col("b").Cast(typeof(double)).Alias("b_double"),
+                    Expr.Col("b").Cast(typeof(long)).Alias("b_long")
+                )
+                .CollectAsync()
+                .FirstAsync();
+
+            var bDouble = Assert.IsType<Float64Series>(boolRes.GetColumn("b_double"));
+            Assert.Equal(1.0, bDouble.Memory.Span[0]);
+            Assert.True(bDouble.ValidityMask.IsNull(1));
+            Assert.Equal(0.0, bDouble.Memory.Span[2]);
+
+            var bLong = Assert.IsType<Int64Series>(boolRes.GetColumn("b_long"));
+            Assert.Equal(1L, bLong.Memory.Span[0]);
+            Assert.True(bLong.ValidityMask.IsNull(1));
+            Assert.Equal(0L, bLong.Memory.Span[2]);
+
+            using var dtDf = new DataFrame(new ISeries[] { dates, dts });
+            await Assert.ThrowsAsync<NotSupportedException>(async () =>
+                await dtDf.Lazy().Select(Expr.Col("d").Cast(typeof(double)).Alias("bad")).CollectAsync().FirstAsync());
+            await Assert.ThrowsAsync<NotSupportedException>(async () =>
+                await dtDf.Lazy().Select(Expr.Col("dt").Cast(typeof(double)).Alias("bad")).CollectAsync().FirstAsync());
+            await Assert.ThrowsAsync<NotSupportedException>(async () =>
+                await dtDf.Lazy().Select(Expr.Col("dt").Cast(typeof(long)).Alias("bad")).CollectAsync().FirstAsync());
+        }
+
+        [Fact]
+        public async Task TestPre1970DatetimeAndOutOfRangeDateCastToString()
+        {
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var dts = DatetimeSeries.FromValues("dt", new long?[]
+            {
+                -1_000_000_000L,
+                -86_400_000_000_000L,
+                0L,
+                long.MinValue,
+                long.MaxValue,
+                null
+            });
+            var dates = DateSeries.FromValues("d", new int?[]
+            {
+                -1,
+                0,
+                int.MinValue,
+                int.MaxValue,
+                null
+            });
+
+            using var dtDf = new DataFrame(new ISeries[] { dts });
+            using var dtRes = await dtDf.Lazy()
+                .Select(Expr.Col("dt").Cast(typeof(string)).Alias("dt_str"))
+                .CollectAsync()
+                .FirstAsync();
+
+            var dtStr = Assert.IsType<Utf8StringSeries>(dtRes.GetColumn("dt_str"));
+            Assert.Equal("1969-12-31 23:59:59.0000000", dtStr.GetString(0));
+            Assert.Equal("1969-12-31 00:00:00.0000000", dtStr.GetString(1));
+            Assert.Equal("1970-01-01 00:00:00.0000000", dtStr.GetString(2));
+            Assert.Equal(epoch.AddTicks((long)(((Int128)long.MinValue - 99) / 100)).ToString("yyyy-MM-dd HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture), dtStr.GetString(3));
+            Assert.Equal(epoch.AddTicks(long.MaxValue / 100).ToString("yyyy-MM-dd HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture), dtStr.GetString(4));
+            Assert.True(dtStr.ValidityMask.IsNull(5));
+
+            using var dateDf = new DataFrame(new ISeries[] { dates });
+            using var dateRes = await dateDf.Lazy()
+                .Select(Expr.Col("d").Cast(typeof(string)).Alias("d_str"))
+                .CollectAsync()
+                .FirstAsync();
+
+            var dateStr = Assert.IsType<Utf8StringSeries>(dateRes.GetColumn("d_str"));
+            Assert.Equal("1969-12-31", dateStr.GetString(0));
+            Assert.Equal("1970-01-01", dateStr.GetString(1));
+            Assert.Equal("0001-01-01", dateStr.GetString(2));
+            Assert.Equal("9999-12-31", dateStr.GetString(3));
+            Assert.True(dateStr.ValidityMask.IsNull(4));
+        }
     }
 }

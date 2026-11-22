@@ -340,6 +340,31 @@ namespace Glacier.Polaris
                         disposables.Add(result);
                         return result;
                     }
+                    else if ((targetType == typeof(float) || targetType == typeof(Data.Float32Series)) && series is Data.Utf8StringSeries utf8Float)
+                    {
+                        var result = new Data.Float32Series(utf8Float.Name + "_cast", utf8Float.Length);
+                        for (int i = 0; i < utf8Float.Length; i++)
+                        {
+                            if (utf8Float.ValidityMask.IsValid(i))
+                            {
+                                var str = System.Text.Encoding.UTF8.GetString(utf8Float.GetStringSpan(i));
+                                if (float.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedVal))
+                                {
+                                    result.Memory.Span[i] = parsedVal;
+                                }
+                                else
+                                {
+                                    result.ValidityMask.SetNull(i);
+                                }
+                            }
+                            else
+                            {
+                                result.ValidityMask.SetNull(i);
+                            }
+                        }
+                        disposables.Add(result);
+                        return result;
+                    }
                     else if ((targetType == typeof(long) || targetType == typeof(Data.Int64Series)) && series is Data.Utf8StringSeries utf8Long)
                     {
                         var result = new Data.Int64Series(utf8Long.Name + "_cast", utf8Long.Length);
@@ -365,6 +390,30 @@ namespace Glacier.Polaris
                         disposables.Add(result);
                         return result;
                     }
+                    else if (targetType == typeof(double) || targetType == typeof(Data.Float64Series))
+                    {
+                        var result = PromoteToFloat64(series);
+                        disposables.Add(result);
+                        return result;
+                    }
+                    else if (targetType == typeof(float) || targetType == typeof(Data.Float32Series))
+                    {
+                        var result = PromoteToFloat32(series);
+                        disposables.Add(result);
+                        return result;
+                    }
+                    else if (targetType == typeof(long) || targetType == typeof(Data.Int64Series))
+                    {
+                        var result = PromoteToInt64(series);
+                        disposables.Add(result);
+                        return result;
+                    }
+                    else if (targetType == typeof(string) || targetType == typeof(Data.Utf8StringSeries))
+                    {
+                        var result = CastToUtf8String(series);
+                        disposables.Add(result);
+                        return result;
+                    }
                     else if (targetType == typeof(CategoricalSeries))
                     {
                         if (series is Data.Utf8StringSeries utf8)
@@ -385,6 +434,205 @@ namespace Glacier.Polaris
                     throw new NotSupportedException($"Cast to {targetType.Name} not yet implemented.");
                 }
             return null;
+        }
+
+        private static Data.Utf8StringSeries CastToUtf8String(ISeries series)
+        {
+            if (series is Data.Utf8StringSeries utf8)
+            {
+                int totalBytes = 0;
+                for (int i = 0; i < utf8.Length; i++)
+                {
+                    if (utf8.ValidityMask.IsValid(i))
+                        totalBytes += utf8.GetStringSpan(i).Length;
+                }
+
+                var copy = new Data.Utf8StringSeries(utf8.Name, utf8.Length, totalBytes);
+                copy.ValidityMask.CopyFrom(utf8.ValidityMask);
+                var dstOffsets = copy.Offsets.Span;
+                var dstData = copy.DataBytes.Span;
+                int currentOffset = 0;
+                for (int i = 0; i < utf8.Length; i++)
+                {
+                    dstOffsets[i] = currentOffset;
+                    if (utf8.ValidityMask.IsValid(i))
+                    {
+                        var srcSpan = utf8.GetStringSpan(i);
+                        srcSpan.CopyTo(dstData.Slice(currentOffset));
+                        currentOffset += srcSpan.Length;
+                    }
+                }
+                dstOffsets[utf8.Length] = currentOffset;
+                return copy;
+            }
+
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            var values = new string?[series.Length];
+
+            switch (series)
+            {
+                case Data.Int64Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.Int32Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.Int16Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.Int8Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.UInt64Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.UInt32Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.UInt16Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.UInt8Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.Float64Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.Float32Series s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.DecimalSeries s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i].ToString(culture);
+                        break;
+                    }
+                case Data.BooleanSeries s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = span[i] ? "true" : "false";
+                        break;
+                    }
+                case Data.DateSeries s:
+                    {
+                        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                        int minDaysFromEpoch = (DateTime.MinValue - epoch).Days;
+                        int maxDaysFromEpoch = (DateTime.MaxValue - epoch).Days;
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsValid(i))
+                            {
+                                int days = span[i];
+                                DateTime dt = days < minDaysFromEpoch
+                                    ? DateTime.MinValue
+                                    : days > maxDaysFromEpoch
+                                        ? DateTime.MaxValue
+                                        : epoch.AddDays(days);
+                                values[i] = dt.ToString("yyyy-MM-dd", culture);
+                            }
+                        }
+                        break;
+                    }
+                case Data.DatetimeSeries s:
+                    {
+                        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                        long minTicksFromEpoch = DateTime.MinValue.Ticks - epoch.Ticks;
+                        long maxTicksFromEpoch = DateTime.MaxValue.Ticks - epoch.Ticks;
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                        {
+                            if (s.ValidityMask.IsValid(i))
+                            {
+                                long nanos = span[i];
+                                long ticks = nanos >= 0
+                                    ? nanos / 100
+                                    : (long)(((Int128)nanos - 99) / 100);
+                                DateTime dt = ticks < minTicksFromEpoch
+                                    ? DateTime.MinValue
+                                    : ticks > maxTicksFromEpoch
+                                        ? DateTime.MaxValue
+                                        : epoch.AddTicks(ticks);
+                                values[i] = dt.ToString("yyyy-MM-dd HH:mm:ss.fffffff", culture);
+                            }
+                        }
+                        break;
+                    }
+                case Data.TimeSeries s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = new TimeSpan(span[i] / 100).ToString("c", culture);
+                        break;
+                    }
+                case Data.DurationSeries s:
+                    {
+                        var span = s.Memory.Span;
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = TimeSpan.FromTicks(span[i] / 100).ToString("c", culture);
+                        break;
+                    }
+                case Data.CategoricalSeries s:
+                    {
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = s.Get(i)?.ToString();
+                        break;
+                    }
+                case Data.EnumSeries s:
+                    {
+                        for (int i = 0; i < s.Length; i++)
+                            if (s.ValidityMask.IsValid(i)) values[i] = s.Get(i)?.ToString();
+                        break;
+                    }
+                case Data.NullSeries:
+                    break;
+                default:
+                    throw new NotSupportedException($"Cast from {series.GetType().Name} to String is not supported.");
+            }
+
+            return Data.Utf8StringSeries.FromStrings(series.Name, values);
         }
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.IO;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -265,12 +266,45 @@ public static partial class FilterKernels
         ReadOnlySpan<ulong> optionalValidityMask,
         Span<ulong> destinationBitmask)
     {
-        if (compressedBlock.Length < AlpCompressor.HeaderSize)
+        if (compressedBlock.IsEmpty)
             return 0;
+
+        if (compressedBlock.Length < AlpCompressor.HeaderSize)
+            throw new InvalidDataException("Source buffer is too small for an ALP header.");
 
         AlpCompressor.ReadHeader(compressedBlock, out var mode, out byte exp, out byte bitWidth,
             out _, out _, out ushort count, out ushort exCount, out long minBase, out _,
             out ulong zoneMapMinBits, out ulong zoneMapMaxBits);
+
+        int packedBytes = 0;
+        if (mode == AlpCompressionMode.Constant)
+        {
+            // Constant blocks contain only the 48-byte header.
+        }
+        else if (mode == AlpCompressionMode.AlpFloat)
+        {
+            if (exp >= s_pow10.Length)
+                throw new InvalidDataException($"Invalid ALP exponent: {exp}.");
+            if (bitWidth > 64)
+                throw new InvalidDataException($"Invalid ALP bitWidth: {bitWidth}.");
+
+            packedBytes = (count * bitWidth + 7) >> 3;
+            int expectedTotal = AlpCompressor.HeaderSize + packedBytes + (exCount * 2) + (exCount * 4);
+            if (compressedBlock.Length < expectedTotal)
+                throw new InvalidDataException($"ALP stream truncated. Expected {expectedTotal} bytes, got {compressedBlock.Length}.");
+
+            int exOffCheck = AlpCompressor.HeaderSize + packedBytes;
+            for (int k = 0; k < exCount; k++)
+            {
+                ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffCheck + (k * 2), 2));
+                if (rowIdx >= count)
+                    throw new InvalidDataException($"Invalid ALP exception index {rowIdx} for block count {count}.");
+            }
+        }
+        else
+        {
+            throw new InvalidDataException($"Expected AlpFloat compression mode, but got {mode}.");
+        }
 
         if (count == 0) return 0;
         int wordCount = (count + 63) >> 6;
@@ -290,8 +324,18 @@ public static partial class FilterKernels
             return 0;
         }
 
-        // Level-1 Pruning
         float minF = BitConverter.UInt32BitsToSingle((uint)zoneMapMinBits);
+        if (mode == AlpCompressionMode.Constant)
+        {
+            if (MatchesFloat(minF, threshold, op))
+            {
+                FillAllOnes(destinationBitmask, count, wordCount, optionalValidityMask);
+                return CountBits(destinationBitmask, wordCount);
+            }
+            return 0;
+        }
+
+        // Level-1 Pruning
         float maxF = BitConverter.UInt32BitsToSingle((uint)zoneMapMaxBits);
         var prune = PruneBlock(minF, maxF, count, nullCount: 0, threshold, op);
 
@@ -304,8 +348,7 @@ public static partial class FilterKernels
 
             return EvaluateExceptionsOnly(
                 compressedBlock,
-                count,
-                bitWidth,
+                packedBytes,
                 exCount,
                 threshold,
                 op,
@@ -322,25 +365,8 @@ public static partial class FilterKernels
                 return CountBits(destinationBitmask, wordCount);
             }
 
-            // Regular rows are all 1s. Unmatch any exception rows that fail predicate in IEEE 754.
-            int packedBytesEx = (count * bitWidth + 7) >> 3;
-            int exOffsetAll = AlpCompressor.HeaderSize + packedBytesEx;
-            int exValOffsetAll = exOffsetAll + (exCount * 2);
-
-            for (int k = 0; k < exCount; k++)
-            {
-                ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffsetAll + (k * 2), 2));
-                uint rawBits = BinaryPrimitives.ReadUInt32LittleEndian(compressedBlock.Slice(exValOffsetAll + (k * 4), 4));
-                float rawFloat = BitConverter.UInt32BitsToSingle(rawBits);
-
-                if (!MatchesFloat(rawFloat, threshold, op))
-                {
-                    int w = rowIdx >> 6;
-                    int b = rowIdx & 63;
-                    destinationBitmask[w] &= ~(1UL << b);
-                }
-            }
-
+            // Regular rows are all 1s. Patch all exception rows in stream order (last-write-wins).
+            PatchFloatExceptions(compressedBlock, packedBytes, exCount, threshold, op, optionalValidityMask, destinationBitmask);
             return CountBits(destinationBitmask, wordCount);
         }
 
@@ -348,8 +374,7 @@ public static partial class FilterKernels
         {
             return EvaluateExceptionsOnly(
                 compressedBlock,
-                count,
-                bitWidth,
+                packedBytes,
                 exCount,
                 threshold,
                 op,
@@ -358,31 +383,19 @@ public static partial class FilterKernels
                 wordCount);
         }
 
-        if (mode == AlpCompressionMode.Constant)
-        {
-            bool match = MatchesFloat(minF, threshold, op);
-            if (match)
-            {
-                FillAllOnes(destinationBitmask, count, wordCount, optionalValidityMask);
-                return CountBits(destinationBitmask, wordCount);
-            }
-            return 0;
-        }
-
-        // Decimal integer domain transformation
+        // Decimal integer domain transformation (computed in Int128 to prevent signed long overflow)
         double factor = s_pow10[exp];
         double Y = (double)threshold * factor;
 
         int intMode; // 0=Ge, 1=Le, 2=Eq, 3=Ne, 4=AllZero, 5=AllOne
-        long T;
+        Int128 T = 0;
 
-        const double MaxLongDouble = 9223372036854775807.0; // long.MaxValue
+        const double MaxLongDouble = 9223372036854775807.0; // 2^63 in IEEE 754 double
         const double MinLongDouble = -9223372036854775808.0; // long.MinValue
 
         if (double.IsNaN(Y))
         {
             intMode = (op == FilterOperation.NotEqual) ? 5 : 4;
-            T = 0;
         }
         else if (Y >= MaxLongDouble)
         {
@@ -391,7 +404,6 @@ public static partial class FilterKernels
                 FilterOperation.LessThan or FilterOperation.LessThanOrEqual or FilterOperation.NotEqual => 5, // All 1s
                 _ => 4 // All 0s
             };
-            T = 0;
         }
         else if (Y < MinLongDouble)
         {
@@ -400,7 +412,6 @@ public static partial class FilterKernels
                 FilterOperation.GreaterThan or FilterOperation.GreaterThanOrEqual or FilterOperation.NotEqual => 5, // All 1s
                 _ => 4 // All 0s
             };
-            T = 0;
         }
         else
         {
@@ -413,27 +424,27 @@ public static partial class FilterKernels
                 switch (op)
                 {
                     case FilterOperation.GreaterThan:
-                        T = roundY + 1 - minBase;
+                        T = (Int128)roundY + 1 - minBase;
                         intMode = 0; // Ge
                         break;
                     case FilterOperation.GreaterThanOrEqual:
-                        T = roundY - minBase;
+                        T = (Int128)roundY - minBase;
                         intMode = 0; // Ge
                         break;
                     case FilterOperation.LessThan:
-                        T = roundY - 1 - minBase;
+                        T = (Int128)roundY - 1 - minBase;
                         intMode = 1; // Le
                         break;
                     case FilterOperation.LessThanOrEqual:
-                        T = roundY - minBase;
+                        T = (Int128)roundY - minBase;
                         intMode = 1; // Le
                         break;
                     case FilterOperation.Equal:
-                        T = roundY - minBase;
+                        T = (Int128)roundY - minBase;
                         intMode = 2; // Eq
                         break;
                     case FilterOperation.NotEqual:
-                        T = roundY - minBase;
+                        T = (Int128)roundY - minBase;
                         intMode = 3; // Ne
                         break;
                     default:
@@ -445,74 +456,102 @@ public static partial class FilterKernels
                 switch (op)
                 {
                     case FilterOperation.GreaterThan:
-                        T = (long)Math.Floor(Y) + 1 - minBase;
+                        T = (Int128)(long)Math.Floor(Y) + 1 - minBase;
                         intMode = 0; // Ge
                         break;
                     case FilterOperation.GreaterThanOrEqual:
-                        T = (long)Math.Ceiling(Y) - minBase;
+                        T = (Int128)(long)Math.Ceiling(Y) - minBase;
                         intMode = 0; // Ge
                         break;
                     case FilterOperation.LessThan:
-                        T = (long)Math.Ceiling(Y) - 1 - minBase;
+                        T = (Int128)(long)Math.Ceiling(Y) - 1 - minBase;
                         intMode = 1; // Le
                         break;
                     case FilterOperation.LessThanOrEqual:
-                        T = (long)Math.Floor(Y) - minBase;
+                        T = (Int128)(long)Math.Floor(Y) - minBase;
                         intMode = 1; // Le
                         break;
                     case FilterOperation.Equal:
                         intMode = 4; // All regular zeros
-                        T = 0;
                         break;
                     case FilterOperation.NotEqual:
                         intMode = 5; // All regular ones
-                        T = 0;
                         break;
                     default:
                         throw new NotSupportedException();
                 }
             }
 
-            ulong maxUint = bitWidth == 32 ? uint.MaxValue : ((1UL << bitWidth) - 1UL);
+            ulong maxUint = bitWidth == 64 ? ulong.MaxValue : ((1UL << bitWidth) - 1UL);
 
-            // Adjust boundary conditions
+            // Adjust boundary conditions in Int128
             if (intMode == 0) // Ge
             {
                 if (T <= 0) intMode = 5; // All 1s
-                else if (T > (long)maxUint) intMode = 4; // All 0s
+                else if (T > (Int128)maxUint) intMode = 4; // All 0s
             }
             else if (intMode == 1) // Le
             {
                 if (T < 0) intMode = 4; // All 0s
-                else if (T >= (long)maxUint) intMode = 5; // All 1s
+                else if (T >= (Int128)maxUint) intMode = 5; // All 1s
             }
             else if (intMode == 2) // Eq
             {
-                if (T < 0 || T > (long)maxUint) intMode = 4;
+                if (T < 0 || T > (Int128)maxUint) intMode = 4;
+                else if (bitWidth == 0) intMode = 5; // 0 == 0
             }
             else if (intMode == 3) // Ne
             {
-                if (T < 0 || T > (long)maxUint) intMode = 5;
+                if (T < 0 || T > (Int128)maxUint) intMode = 5;
+                else if (bitWidth == 0) intMode = 4; // 0 != 0 is false
             }
         }
 
-        int packedBytes = (count * bitWidth + 7) >> 3;
-        ReadOnlySpan<byte> packedPayload = compressedBlock.Slice(AlpCompressor.HeaderSize, packedBytes);
-
-        // In-register SIMD integer evaluation in batches of 16
-        Span<uint> lanes = stackalloc uint[16];
-        uint threshU = (uint)Math.Clamp(T, 0, uint.MaxValue);
-        int steps = (count + 15) >> 4;
-        int stepBytes = (16 * bitWidth + 7) >> 3;
-        Span<byte> chunkPad = stackalloc byte[64];
-
-        for (int s = 0; s < steps; s++)
+        if (intMode == 4)
         {
-            if (bitWidth == 0)
+            // Regular rows are all 0 (destinationBitmask already cleared).
+        }
+        else if (intMode == 5)
+        {
+            FillAllOnes(destinationBitmask, count, wordCount, ReadOnlySpan<ulong>.Empty);
+        }
+        else if (bitWidth > 32)
+        {
+            ReadOnlySpan<byte> packedPayload64 = compressedBlock.Slice(AlpCompressor.HeaderSize, packedBytes);
+            ulong maxU64 = bitWidth == 64 ? ulong.MaxValue : ((1UL << bitWidth) - 1UL);
+            ulong threshU64 = (ulong)T;
+            int bitOffset = 0;
+
+            for (int i = 0; i < count; i++)
             {
-                lanes.Clear();
+                ulong u = ReadPackedUInt64(packedPayload64, bitOffset, bitWidth, maxU64);
+                bitOffset += bitWidth;
+                bool m = intMode switch
+                {
+                    0 => u >= threshU64,
+                    1 => u <= threshU64,
+                    2 => u == threshU64,
+                    3 => u != threshU64,
+                    _ => false
+                };
+                if (m)
+                {
+                    destinationBitmask[i >> 6] |= (1UL << (i & 63));
+                }
             }
-            else
+        }
+        else
+        {
+            ReadOnlySpan<byte> packedPayload = compressedBlock.Slice(AlpCompressor.HeaderSize, packedBytes);
+
+            // In-register SIMD integer evaluation in batches of 16
+            Span<uint> lanes = stackalloc uint[16];
+            uint threshU = (uint)T;
+            int steps = (count + 15) >> 4;
+            int stepBytes = (16 * bitWidth + 7) >> 3;
+            Span<byte> chunkPad = stackalloc byte[64];
+
+            for (int s = 0; s < steps; s++)
             {
                 int sliceOffset = s * stepBytes;
                 if (sliceOffset + stepBytes <= packedPayload.Length)
@@ -529,62 +568,54 @@ public static partial class FilterKernels
                     }
                     FastLanesBitUnpacker.Unpack16(chunkPad.Slice(0, stepBytes), lanes, bitWidth);
                 }
-            }
 
-            uint laneMask16;
-            if (intMode == 4)
-            {
-                laneMask16 = 0;
-            }
-            else if (intMode == 5)
-            {
-                laneMask16 = 0xFFFF;
-            }
-            else if (Vector512.IsHardwareAccelerated)
-            {
-                var vUnpacked = Vector512.Create(lanes);
-                var vThresh = Vector512.Create(threshU);
-                var vCmp = intMode switch
+                uint laneMask16;
+                if (Vector512.IsHardwareAccelerated)
                 {
-                    0 => Vector512.GreaterThanOrEqual(vUnpacked, vThresh),
-                    1 => Vector512.LessThanOrEqual(vUnpacked, vThresh),
-                    2 => Vector512.Equals(vUnpacked, vThresh),
-                    3 => ~Vector512.Equals(vUnpacked, vThresh),
-                    _ => Vector512<uint>.Zero
-                };
-                laneMask16 = (uint)vCmp.ExtractMostSignificantBits();
-            }
-            else
-            {
-                // Scalar 16-lane comparison
-                laneMask16 = 0;
-                for (int l = 0; l < 16; l++)
-                {
-                    uint u = lanes[l];
-                    bool m = intMode switch
+                    var vUnpacked = Vector512.Create(lanes);
+                    var vThresh = Vector512.Create(threshU);
+                    var vCmp = intMode switch
                     {
-                        0 => u >= threshU,
-                        1 => u <= threshU,
-                        2 => u == threshU,
-                        3 => u != threshU,
-                        _ => false
+                        0 => Vector512.GreaterThanOrEqual(vUnpacked, vThresh),
+                        1 => Vector512.LessThanOrEqual(vUnpacked, vThresh),
+                        2 => Vector512.Equals(vUnpacked, vThresh),
+                        3 => ~Vector512.Equals(vUnpacked, vThresh),
+                        _ => Vector512<uint>.Zero
                     };
-                    if (m) laneMask16 |= (1u << l);
+                    laneMask16 = (uint)vCmp.ExtractMostSignificantBits();
                 }
+                else
+                {
+                    // Scalar 16-lane comparison
+                    laneMask16 = 0;
+                    for (int l = 0; l < 16; l++)
+                    {
+                        uint u = lanes[l];
+                        bool m = intMode switch
+                        {
+                            0 => u >= threshU,
+                            1 => u <= threshU,
+                            2 => u == threshU,
+                            3 => u != threshU,
+                            _ => false
+                        };
+                        if (m) laneMask16 |= (1u << l);
+                    }
+                }
+
+                int startRow = s * 16;
+                int wordIdx = startRow >> 6;
+                int bitShift = startRow & 63;
+                destinationBitmask[wordIdx] |= ((ulong)laneMask16 << bitShift);
             }
 
-            int startRow = s * 16;
-            int wordIdx = startRow >> 6;
-            int bitShift = startRow & 63;
-            destinationBitmask[wordIdx] |= ((ulong)laneMask16 << bitShift);
-        }
-
-        // Mask trailing bits past count
-        int rem = count & 63;
-        if (rem != 0)
-        {
-            ulong tailMask = (1UL << rem) - 1UL;
-            destinationBitmask[wordCount - 1] &= tailMask;
+            // Mask trailing bits past count
+            int rem = count & 63;
+            if (rem != 0)
+            {
+                ulong tailMask = (1UL << rem) - 1UL;
+                destinationBitmask[wordCount - 1] &= tailMask;
+            }
         }
 
         // Intersect with validity mask
@@ -598,6 +629,347 @@ public static partial class FilterKernels
         }
 
         // Patch Exceptions dictionary
+        if (exCount > 0)
+        {
+            PatchFloatExceptions(compressedBlock, packedBytes, exCount, threshold, op, optionalValidityMask, destinationBitmask);
+        }
+
+        return CountBits(destinationBitmask, wordCount);
+    }
+
+    public static int EvaluateCompressedBlock(
+        ReadOnlySpan<byte> compressedBlock,
+        float threshold,
+        FilterOperation op,
+        ReadOnlySpan<ulong> optionalValidityMask,
+        Span<int> destinationMatchingIndices)
+    {
+        if (compressedBlock.IsEmpty)
+            return 0;
+
+        if (compressedBlock.Length < AlpCompressor.HeaderSize)
+            throw new InvalidDataException("Source buffer is too small for an ALP header.");
+
+        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(0x0A, 2));
+        int wordCount = (count + 63) >> 6;
+        Span<ulong> bitmask = stackalloc ulong[wordCount];
+
+        EvaluateCompressedBlockToBitmap(compressedBlock, threshold, op, optionalValidityMask, bitmask);
+        if (count == 0) return 0;
+
+        int matchCount = 0;
+        for (int w = 0; w < wordCount && matchCount < destinationMatchingIndices.Length; w++)
+        {
+            ulong word = bitmask[w];
+            while (word != 0 && matchCount < destinationMatchingIndices.Length)
+            {
+                int tz = BitOperations.TrailingZeroCount(word);
+                destinationMatchingIndices[matchCount++] = (w << 6) + tz;
+                word &= word - 1; // clear lowest set bit
+            }
+        }
+
+        return matchCount;
+    }
+
+    public static int EvaluateCompressedBlockDouble(
+        ReadOnlySpan<byte> compressedBlock,
+        double threshold,
+        FilterOperation op,
+        ReadOnlySpan<ulong> optionalValidityMask,
+        Span<int> destinationMatchingIndices)
+    {
+        if (compressedBlock.IsEmpty)
+            return 0;
+
+        if (compressedBlock.Length < AlpCompressor.HeaderSize)
+            throw new InvalidDataException("Source buffer is too small for an ALP header.");
+
+        AlpCompressor.ReadHeader(compressedBlock, out var mode, out byte exp, out byte bitWidth,
+            out byte expR, out byte bitWidthR, out ushort count, out ushort exCount, out long minBase,
+            out long minBaseR, out ulong minBits, out ulong maxBits);
+
+        int packedBytes = 0;
+        int packedBytesL = 0;
+        int packedBytesR = 0;
+        int exOffset = 0;
+
+        if (mode == AlpCompressionMode.Constant)
+        {
+            // Constant blocks contain only the 48-byte header.
+        }
+        else if (mode == AlpCompressionMode.AlpDouble)
+        {
+            if (exp >= s_pow10.Length)
+                throw new InvalidDataException($"Invalid ALP exponent: {exp}.");
+            if (bitWidth > 64)
+                throw new InvalidDataException($"Invalid ALP bitWidth: {bitWidth}.");
+
+            packedBytes = (count * bitWidth + 7) >> 3;
+            int expectedTotal = AlpCompressor.HeaderSize + packedBytes + (exCount * 2) + (exCount * 8);
+            if (compressedBlock.Length < expectedTotal)
+                throw new InvalidDataException($"ALP stream truncated. Expected {expectedTotal} bytes, got {compressedBlock.Length}.");
+
+            exOffset = AlpCompressor.HeaderSize + packedBytes;
+            for (int k = 0; k < exCount; k++)
+            {
+                ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffset + (k * 2), 2));
+                if (rowIdx >= count)
+                    throw new InvalidDataException($"Invalid ALP exception index {rowIdx} for block count {count}.");
+            }
+        }
+        else if (mode == AlpCompressionMode.AlpRdDouble)
+        {
+            if (expR >= s_pow10.Length)
+                throw new InvalidDataException($"Invalid ALP_RD exponent: {expR}.");
+            if (bitWidth > 64 || bitWidthR > 64)
+                throw new InvalidDataException($"Invalid ALP_RD bitWidth: {bitWidth}/{bitWidthR}.");
+
+            packedBytesL = (count * bitWidth + 7) >> 3;
+            packedBytesR = (count * bitWidthR + 7) >> 3;
+            int expectedTotal = AlpCompressor.HeaderSize + packedBytesL + packedBytesR + (exCount * 2) + (exCount * 8);
+            if (compressedBlock.Length < expectedTotal)
+                throw new InvalidDataException($"ALP_RD stream truncated. Expected {expectedTotal} bytes, got {compressedBlock.Length}.");
+
+            exOffset = AlpCompressor.HeaderSize + packedBytesL + packedBytesR;
+            for (int k = 0; k < exCount; k++)
+            {
+                ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffset + (k * 2), 2));
+                if (rowIdx >= count)
+                    throw new InvalidDataException($"Invalid ALP exception index {rowIdx} for block count {count}.");
+            }
+        }
+        else
+        {
+            throw new InvalidDataException($"Unsupported ALP compression mode: {mode}");
+        }
+
+        if (count == 0) return 0;
+
+        double minD = BitConverter.UInt64BitsToDouble(minBits);
+        double maxD = BitConverter.UInt64BitsToDouble(maxBits);
+
+        if (double.IsNaN(threshold))
+        {
+            if (op == FilterOperation.NotEqual)
+            {
+                int matchCount = 0;
+                for (int i = 0; i < count && matchCount < destinationMatchingIndices.Length; i++)
+                {
+                    int w = i >> 6;
+                    int b = i & 63;
+                    if (optionalValidityMask.IsEmpty || w >= optionalValidityMask.Length || (optionalValidityMask[w] & (1UL << b)) != 0)
+                    {
+                        destinationMatchingIndices[matchCount++] = i;
+                    }
+                }
+                return matchCount;
+            }
+            return 0;
+        }
+
+        var prune = PruneBlock(minD, maxD, count, 0, threshold, op);
+        if (prune == BlockPruneResult.Skip && exCount == 0)
+        {
+            return 0;
+        }
+
+        if (mode == AlpCompressionMode.Constant)
+        {
+            if (!MatchesDouble(minD, threshold, op))
+            {
+                return 0;
+            }
+
+            int matchCount = 0;
+            for (int i = 0; i < count && matchCount < destinationMatchingIndices.Length; i++)
+            {
+                int w = i >> 6;
+                int b = i & 63;
+                if (optionalValidityMask.IsEmpty || w >= optionalValidityMask.Length || (optionalValidityMask[w] & (1UL << b)) != 0)
+                {
+                    destinationMatchingIndices[matchCount++] = i;
+                }
+            }
+            return matchCount;
+        }
+
+        int wordCount = (count + 63) >> 6;
+        Span<ulong> bitmask = stackalloc ulong[wordCount];
+        bitmask.Clear();
+
+        if (mode == AlpCompressionMode.AlpDouble)
+        {
+            double factor = s_pow10[exp];
+            if (bitWidth == 0)
+            {
+                double val = (double)minBase / factor;
+                if (MatchesDouble(val, threshold, op))
+                {
+                    FillAllOnes(bitmask, count, wordCount, ReadOnlySpan<ulong>.Empty);
+                }
+            }
+            else
+            {
+                ReadOnlySpan<byte> packedSlice = compressedBlock.Slice(AlpCompressor.HeaderSize, packedBytes);
+                ulong mask = bitWidth == 64 ? ulong.MaxValue : ((1UL << bitWidth) - 1UL);
+                int bitOffset = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    ulong u = ReadPackedUInt64(packedSlice, bitOffset, bitWidth, mask);
+                    bitOffset += bitWidth;
+                    long v = (long)u + minBase;
+                    double val = (double)v / factor;
+                    if (MatchesDouble(val, threshold, op))
+                    {
+                        bitmask[i >> 6] |= (1UL << (i & 63));
+                    }
+                }
+            }
+        }
+        else // AlpCompressionMode.AlpRdDouble
+        {
+            ReadOnlySpan<byte> packedSliceL = compressedBlock.Slice(AlpCompressor.HeaderSize, packedBytesL);
+            ReadOnlySpan<byte> packedSliceR = compressedBlock.Slice(AlpCompressor.HeaderSize + packedBytesL, packedBytesR);
+
+            double factorR = s_pow10[expR];
+            ulong maskL = bitWidth == 64 ? ulong.MaxValue : ((1UL << bitWidth) - 1UL);
+            ulong maskR = bitWidthR == 64 ? ulong.MaxValue : ((1UL << bitWidthR) - 1UL);
+            int bitOffsetL = 0;
+            int bitOffsetR = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                ulong uL = bitWidth == 0 ? 0UL : ReadPackedUInt64(packedSliceL, bitOffsetL, bitWidth, maskL);
+                ulong uR = bitWidthR == 0 ? 0UL : ReadPackedUInt64(packedSliceR, bitOffsetR, bitWidthR, maskR);
+                bitOffsetL += bitWidth;
+                bitOffsetR += bitWidthR;
+
+                long left = (long)uL + minBase;
+                long right = (long)uR + minBaseR;
+                double val = (double)left + ((double)right / factorR);
+                if (MatchesDouble(val, threshold, op))
+                {
+                    bitmask[i >> 6] |= (1UL << (i & 63));
+                }
+            }
+        }
+
+        if (!optionalValidityMask.IsEmpty)
+        {
+            int limit = Math.Min(wordCount, optionalValidityMask.Length);
+            for (int w = 0; w < limit; w++)
+            {
+                bitmask[w] &= optionalValidityMask[w];
+            }
+        }
+
+        int exValOffset = exOffset + (exCount * 2);
+        for (int k = 0; k < exCount; k++)
+        {
+            ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffset + (k * 2), 2));
+            ulong rawBits = BinaryPrimitives.ReadUInt64LittleEndian(compressedBlock.Slice(exValOffset + (k * 8), 8));
+            double rawDouble = BitConverter.UInt64BitsToDouble(rawBits);
+
+            bool matches = MatchesDouble(rawDouble, threshold, op);
+            int w = rowIdx >> 6;
+            int b = rowIdx & 63;
+            ulong bit = 1UL << b;
+
+            if (!optionalValidityMask.IsEmpty && w < optionalValidityMask.Length)
+            {
+                if ((optionalValidityMask[w] & bit) == 0)
+                {
+                    matches = false;
+                }
+            }
+
+            if (matches)
+            {
+                bitmask[w] |= bit;
+            }
+            else
+            {
+                bitmask[w] &= ~bit;
+            }
+        }
+
+        int totalMatches = 0;
+        for (int w = 0; w < wordCount && totalMatches < destinationMatchingIndices.Length; w++)
+        {
+            ulong word = bitmask[w];
+            while (word != 0 && totalMatches < destinationMatchingIndices.Length)
+            {
+                int tz = BitOperations.TrailingZeroCount(word);
+                destinationMatchingIndices[totalMatches++] = (w << 6) + tz;
+                word &= word - 1;
+            }
+        }
+
+        return totalMatches;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong ReadPackedUInt64(ReadOnlySpan<byte> packed, int bitOffset, int bitWidth, ulong mask)
+    {
+        int byteStart = bitOffset >> 3;
+        int bitInByte = bitOffset & 7;
+
+        ulong accumulator;
+        int bytesLeft = packed.Length - byteStart;
+        if (bytesLeft >= 8)
+        {
+            accumulator = BinaryPrimitives.ReadUInt64LittleEndian(packed.Slice(byteStart, 8));
+        }
+        else
+        {
+            accumulator = 0;
+            for (int b = 0; b < bytesLeft; b++)
+            {
+                accumulator |= ((ulong)packed[byteStart + b]) << (b * 8);
+            }
+        }
+
+        ulong val = (accumulator >> bitInByte) & mask;
+        if (bitInByte + bitWidth > 64 && (byteStart + 8) < packed.Length)
+        {
+            ulong high = (ulong)packed[byteStart + 8];
+            val |= (high << (64 - bitInByte)) & mask;
+        }
+
+        return val;
+    }
+
+    // =========================================================================
+    // HELPER UTILITIES
+    // =========================================================================
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void FillAllOnes(Span<ulong> destinationBitmask, int count, int wordCount, ReadOnlySpan<ulong> optionalValidityMask)
+    {
+        for (int w = 0; w < wordCount; w++)
+        {
+            destinationBitmask[w] = (w == wordCount - 1 && (count & 63) != 0)
+                ? ((1UL << (count & 63)) - 1UL)
+                : ulong.MaxValue;
+
+            if (!optionalValidityMask.IsEmpty && w < optionalValidityMask.Length)
+            {
+                destinationBitmask[w] &= optionalValidityMask[w];
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void PatchFloatExceptions(
+        ReadOnlySpan<byte> compressedBlock,
+        int packedBytes,
+        int exCount,
+        float threshold,
+        FilterOperation op,
+        ReadOnlySpan<ulong> optionalValidityMask,
+        Span<ulong> destinationBitmask)
+    {
         int exOffset = AlpCompressor.HeaderSize + packedBytes;
         int exValOffset = exOffset + (exCount * 2);
 
@@ -630,162 +1002,12 @@ public static partial class FilterKernels
                 destinationBitmask[w] &= ~bit;
             }
         }
-
-        return CountBits(destinationBitmask, wordCount);
-    }
-
-    public static int EvaluateCompressedBlock(
-        ReadOnlySpan<byte> compressedBlock,
-        float threshold,
-        FilterOperation op,
-        ReadOnlySpan<ulong> optionalValidityMask,
-        Span<int> destinationMatchingIndices)
-    {
-        if (compressedBlock.Length < AlpCompressor.HeaderSize)
-            return 0;
-
-        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(0x0A, 2));
-        if (count == 0) return 0;
-
-        int wordCount = (count + 63) >> 6;
-        Span<ulong> bitmask = stackalloc ulong[Math.Min(wordCount, 1024)];
-        ulong[]? rented = null;
-        if (wordCount > 1024)
-        {
-            rented = System.Buffers.ArrayPool<ulong>.Shared.Rent(wordCount);
-            bitmask = rented.AsSpan(0, wordCount);
-        }
-
-        try
-        {
-            EvaluateCompressedBlockToBitmap(compressedBlock, threshold, op, optionalValidityMask, bitmask);
-
-            int matchCount = 0;
-            for (int w = 0; w < wordCount && matchCount < destinationMatchingIndices.Length; w++)
-            {
-                ulong word = bitmask[w];
-                while (word != 0 && matchCount < destinationMatchingIndices.Length)
-                {
-                    int tz = BitOperations.TrailingZeroCount(word);
-                    destinationMatchingIndices[matchCount++] = (w << 6) + tz;
-                    word &= word - 1; // clear lowest set bit
-                }
-            }
-
-            return matchCount;
-        }
-        finally
-        {
-            if (rented != null)
-            {
-                System.Buffers.ArrayPool<ulong>.Shared.Return(rented);
-            }
-        }
-    }
-
-    public static int EvaluateCompressedBlockDouble(
-        ReadOnlySpan<byte> compressedBlock,
-        double threshold,
-        FilterOperation op,
-        ReadOnlySpan<ulong> optionalValidityMask,
-        Span<int> destinationMatchingIndices)
-    {
-        if (compressedBlock.Length < AlpCompressor.HeaderSize)
-            return 0;
-
-        AlpCompressor.ReadHeader(compressedBlock, out var mode, out byte exp, out byte bitWidth,
-            out byte expR, out byte bitWidthR, out ushort count, out ushort exCount, out long minBase,
-            out long minBaseR, out ulong minBits, out ulong maxBits);
-
-        if (count == 0) return 0;
-
-        double minD = BitConverter.UInt64BitsToDouble(minBits);
-        double maxD = BitConverter.UInt64BitsToDouble(maxBits);
-
-        if (double.IsNaN(threshold))
-        {
-            if (op == FilterOperation.NotEqual)
-            {
-                int matchCount = 0;
-                for (int i = 0; i < count && matchCount < destinationMatchingIndices.Length; i++)
-                {
-                    int w = i >> 6;
-                    int b = i & 63;
-                    if (optionalValidityMask.IsEmpty || w >= optionalValidityMask.Length || (optionalValidityMask[w] & (1UL << b)) != 0)
-                    {
-                        destinationMatchingIndices[matchCount++] = i;
-                    }
-                }
-                return matchCount;
-            }
-            return 0;
-        }
-
-        var prune = PruneBlock(minD, maxD, count, 0, threshold, op);
-        if (prune == BlockPruneResult.Skip && exCount == 0)
-        {
-            return 0;
-        }
-
-        // Decompress and filter for 100% bit-exact correctness
-        double[] tempDoubles = System.Buffers.ArrayPool<double>.Shared.Rent(count);
-        try
-        {
-            AlpCompressor.DecompressDouble(compressedBlock, tempDoubles.AsSpan(0, count));
-
-            int matchCount = 0;
-            for (int i = 0; i < count && matchCount < destinationMatchingIndices.Length; i++)
-            {
-                int w = i >> 6;
-                int b = i & 63;
-                ulong bit = 1UL << b;
-
-                if (!optionalValidityMask.IsEmpty && w < optionalValidityMask.Length)
-                {
-                    if ((optionalValidityMask[w] & bit) == 0) continue;
-                }
-
-                double val = tempDoubles[i];
-                bool match = MatchesDouble(val, threshold, op);
-                if (match)
-                {
-                    destinationMatchingIndices[matchCount++] = i;
-                }
-            }
-
-            return matchCount;
-        }
-        finally
-        {
-            System.Buffers.ArrayPool<double>.Shared.Return(tempDoubles);
-        }
-    }
-
-    // =========================================================================
-    // HELPER UTILITIES
-    // =========================================================================
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void FillAllOnes(Span<ulong> destinationBitmask, int count, int wordCount, ReadOnlySpan<ulong> optionalValidityMask)
-    {
-        for (int w = 0; w < wordCount; w++)
-        {
-            destinationBitmask[w] = (w == wordCount - 1 && (count & 63) != 0)
-                ? ((1UL << (count & 63)) - 1UL)
-                : ulong.MaxValue;
-
-            if (!optionalValidityMask.IsEmpty && w < optionalValidityMask.Length)
-            {
-                destinationBitmask[w] &= optionalValidityMask[w];
-            }
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int EvaluateExceptionsOnly(
         ReadOnlySpan<byte> compressedBlock,
-        int count,
-        int bitWidth,
+        int packedBytes,
         int exCount,
         float threshold,
         FilterOperation op,
@@ -793,29 +1015,7 @@ public static partial class FilterKernels
         Span<ulong> destinationBitmask,
         int wordCount)
     {
-        int packedBytes = (count * bitWidth + 7) >> 3;
-        int exOffset = AlpCompressor.HeaderSize + packedBytes;
-        int exValOffset = exOffset + (exCount * 2);
-
-        for (int k = 0; k < exCount; k++)
-        {
-            ushort rowIdx = BinaryPrimitives.ReadUInt16LittleEndian(compressedBlock.Slice(exOffset + (k * 2), 2));
-            uint rawBits = BinaryPrimitives.ReadUInt32LittleEndian(compressedBlock.Slice(exValOffset + (k * 4), 4));
-            float rawFloat = BitConverter.UInt32BitsToSingle(rawBits);
-
-            if (MatchesFloat(rawFloat, threshold, op))
-            {
-                int w = rowIdx >> 6;
-                int b = rowIdx & 63;
-                ulong bit = 1UL << b;
-
-                if (optionalValidityMask.IsEmpty || w >= optionalValidityMask.Length || (optionalValidityMask[w] & bit) != 0)
-                {
-                    destinationBitmask[w] |= bit;
-                }
-            }
-        }
-
+        PatchFloatExceptions(compressedBlock, packedBytes, exCount, threshold, op, optionalValidityMask, destinationBitmask);
         return CountBits(destinationBitmask, wordCount);
     }
 
