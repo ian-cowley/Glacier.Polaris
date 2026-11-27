@@ -52,9 +52,15 @@ namespace Glacier.Polaris
                     return result;
                 }
 
-                // Arithmetic
+                // Arithmetic / Boolean Kleene logic
                 var arithResult = DispatchArithmetic(left, right, binary.NodeType);
-                CombineMasks(left, right, arithResult);
+                bool isKleeneBoolean = arithResult is Data.BooleanSeries &&
+                    (binary.NodeType == ExpressionType.And || binary.NodeType == ExpressionType.AndAlso ||
+                     binary.NodeType == ExpressionType.Or || binary.NodeType == ExpressionType.OrElse);
+                if (!isKleeneBoolean)
+                {
+                    CombineMasks(left, right, arithResult);
+                }
                 disposables.Add(arithResult);
                 return arithResult;
             }

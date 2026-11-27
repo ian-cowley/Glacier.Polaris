@@ -425,7 +425,11 @@ namespace Glacier.Polaris
                 }
                 else if (col is Data.Utf8StringSeries)
                 {
-                    int totalBytes = results.Sum(df => ((Data.Utf8StringSeries)df.GetColumn(col.Name)).DataBytes.Length);
+                    int totalBytes = results.Sum(df =>
+                    {
+                        var uc = (Data.Utf8StringSeries)df.GetColumn(col.Name);
+                        return uc.Length > 0 ? uc.Offsets.Span[uc.Length] : 0;
+                    });
                     var newCol = new Data.Utf8StringSeries(col.Name, totalRows, totalBytes);
                     int rowOffset = 0;
                     int byteOffset = 0;
@@ -438,8 +442,9 @@ namespace Glacier.Polaris
                         var c = (Data.Utf8StringSeries)df.GetColumn(col.Name);
                         var cOffsets = c.Offsets.Span;
                         var cData = c.DataBytes.Span;
+                        int usedBytes = c.Length > 0 ? cOffsets[c.Length] : 0;
 
-                        cData.CopyTo(newData.Slice(byteOffset));
+                        cData.Slice(0, usedBytes).CopyTo(newData.Slice(byteOffset));
                         for (int i = 0; i < c.Length; i++)
                         {
                             newOffsets[rowOffset + i] = byteOffset + cOffsets[i];
@@ -447,7 +452,7 @@ namespace Glacier.Polaris
                         c.ValidityMask.CopyTo(newCol.ValidityMask, rowOffset);
 
                         rowOffset += c.Length;
-                        byteOffset += cData.Length;
+                        byteOffset += usedBytes;
                     }
                     newOffsets[totalRows] = byteOffset;
                     newCols.Add(newCol);

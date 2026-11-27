@@ -4,7 +4,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- NuGet Packaging Properties -->
-    <Version>1.2.5</Version>
+    <Version>1.2.6</Version>
+    <PackageReleaseNotes>v1.2.6: Kleene 3-valued logic, null-safe integer division, GroupBy/Join validity masks, ReDoS regex timeout, and dependency alignment.</PackageReleaseNotes>
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
@@ -29,14 +30,14 @@
     <ProjectReference Include="../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj" />
   </ItemGroup>
   <ItemGroup Condition="!Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') or '$(UseLocalProjectReferences)' == 'false'">
-    <PackageReference Include="Glacier.Formats" Version="1.0.0" />
-    <PackageReference Include="Glacier.Storage" Version="1.1.0" />
+    <PackageReference Include="Glacier.Formats" Version="1.0.1" />
+    <PackageReference Include="Glacier.Storage" Version="1.1.1" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="Parquet.Net" Version="5.6.1" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
-    <PackageReference Include="Glacier.Gpu" Version="1.0.9" />
+    <PackageReference Include="Glacier.Gpu" Version="1.2.1" />
   </ItemGroup>
 </Project>

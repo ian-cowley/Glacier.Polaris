@@ -11,18 +11,24 @@ namespace Glacier.Polaris
     {
         private void CombineMasks(ISeries left, ISeries right, ISeries result)
         {
-            // Handle broadcasting: if one is length 1, just use the other's mask
+            // Handle broadcasting and preserve any nulls already recorded in result (e.g. div-by-zero)
             if (left.Length == 1 && right.Length > 1)
             {
-                result.ValidityMask.CopyFrom(right.ValidityMask);
+                if (!left.ValidityMask.IsValid(0))
+                    result.ValidityMask.SetAllNull();
+                else
+                    result.ValidityMask.And(right.ValidityMask);
             }
             else if (right.Length == 1 && left.Length > 1)
             {
-                result.ValidityMask.CopyFrom(left.ValidityMask);
+                if (!right.ValidityMask.IsValid(0))
+                    result.ValidityMask.SetAllNull();
+                else
+                    result.ValidityMask.And(left.ValidityMask);
             }
             else
             {
-                result.ValidityMask.CopyFrom(left.ValidityMask);
+                result.ValidityMask.And(left.ValidityMask);
                 result.ValidityMask.And(right.ValidityMask);
             }
         }
@@ -180,20 +186,36 @@ namespace Glacier.Polaris
             else if (right.Length == 1 && left.Length > 1)
                 right = BroadcastScalar(right, left.Length);
 
-            // Boolean (And/Or) - BooleanSeries & BooleanSeries = BooleanSeries
+            // Boolean (And/Or) using Kleene 3-valued logic (false & NULL -> false; true | NULL -> true)
             if (left is Data.BooleanSeries lBool && right is Data.BooleanSeries rBool)
             {
                 var result = new Data.BooleanSeries("res", lBool.Length);
-                if (type == ExpressionType.And)
-                    for (int i = 0; i < lBool.Length; i++)
-                        result.Memory.Span[i] = lBool.Memory.Span[i] && rBool.Memory.Span[i];
-                else if (type == ExpressionType.Or)
-                    for (int i = 0; i < lBool.Length; i++)
-                        result.Memory.Span[i] = lBool.Memory.Span[i] || rBool.Memory.Span[i];
-                else
+                bool isAnd = type == ExpressionType.And || type == ExpressionType.AndAlso;
+                bool isOr = type == ExpressionType.Or || type == ExpressionType.OrElse;
+                if (!isAnd && !isOr)
                     throw new NotSupportedException($"BooleanSeries does not support operation {type}");
-                result.ValidityMask.CopyFrom(lBool.ValidityMask);
-                result.ValidityMask.And(rBool.ValidityMask);
+
+                var lSpan = lBool.Memory.Span;
+                var rSpan = rBool.Memory.Span;
+                var lMask = lBool.ValidityMask;
+                var rMask = rBool.ValidityMask;
+                var resSpan = result.Memory.Span;
+                var resMask = result.ValidityMask;
+
+                for (int i = 0; i < lBool.Length; i++)
+                {
+                    var kl = lMask.IsValid(i)
+                        ? (lSpan[i] ? Compute.KleeneBool.True : Compute.KleeneBool.False)
+                        : Compute.KleeneBool.NA;
+                    var kr = rMask.IsValid(i)
+                        ? (rSpan[i] ? Compute.KleeneBool.True : Compute.KleeneBool.False)
+                        : Compute.KleeneBool.NA;
+                    var kres = isAnd ? (kl & kr) : (kl | kr);
+                    if (kres.IsNA)
+                        resMask.SetNull(i);
+                    else
+                        resSpan[i] = kres.IsTrue;
+                }
                 return result;
             }
 
@@ -247,7 +269,19 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) Compute.ArithmeticKernels.Add<long>(l64.Memory.Span, r64.Memory.Span, res.Memory.Span);
                 else if (type == ExpressionType.Subtract) Compute.ArithmeticKernels.Subtract<long>(l64.Memory.Span, r64.Memory.Span, res.Memory.Span);
                 else if (type == ExpressionType.Multiply) Compute.ArithmeticKernels.Multiply<long>(l64.Memory.Span, r64.Memory.Span, res.Memory.Span);
-                else if (type == ExpressionType.Divide) Compute.ArithmeticKernels.Divide<long>(l64.Memory.Span, r64.Memory.Span, res.Memory.Span);
+                else if (type == ExpressionType.Divide)
+                {
+                    var lSpan = l64.Memory.Span;
+                    var rSpan = r64.Memory.Span;
+                    var resSpan = res.Memory.Span;
+                    for (int i = 0; i < l64.Length; i++)
+                    {
+                        if (!r64.ValidityMask.IsValid(i) || rSpan[i] == 0)
+                            res.ValidityMask.SetNull(i);
+                        else
+                            resSpan[i] = lSpan[i] / rSpan[i];
+                    }
+                }
                 return res;
             }
 
@@ -258,7 +292,15 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) for (int i = 0; i < lI8.Length; i++) res.Memory.Span[i] = lI8.Memory.Span[i] + rI8.Memory.Span[i];
                 else if (type == ExpressionType.Subtract) for (int i = 0; i < lI8.Length; i++) res.Memory.Span[i] = lI8.Memory.Span[i] - rI8.Memory.Span[i];
                 else if (type == ExpressionType.Multiply) for (int i = 0; i < lI8.Length; i++) res.Memory.Span[i] = lI8.Memory.Span[i] * rI8.Memory.Span[i];
-                else if (type == ExpressionType.Divide) for (int i = 0; i < lI8.Length; i++) res.Memory.Span[i] = lI8.Memory.Span[i] / rI8.Memory.Span[i];
+                else if (type == ExpressionType.Divide)
+                {
+                    for (int i = 0; i < lI8.Length; i++)
+                    {
+                        sbyte d = rI8.Memory.Span[i];
+                        if (!rI8.ValidityMask.IsValid(i) || d == 0) res.ValidityMask.SetNull(i);
+                        else res.Memory.Span[i] = lI8.Memory.Span[i] / d;
+                    }
+                }
                 return res;
             }
             if (left is Data.Int16Series lI16 && right is Data.Int16Series rI16)
@@ -267,7 +309,15 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) for (int i = 0; i < lI16.Length; i++) res.Memory.Span[i] = lI16.Memory.Span[i] + rI16.Memory.Span[i];
                 else if (type == ExpressionType.Subtract) for (int i = 0; i < lI16.Length; i++) res.Memory.Span[i] = lI16.Memory.Span[i] - rI16.Memory.Span[i];
                 else if (type == ExpressionType.Multiply) for (int i = 0; i < lI16.Length; i++) res.Memory.Span[i] = lI16.Memory.Span[i] * rI16.Memory.Span[i];
-                else if (type == ExpressionType.Divide) for (int i = 0; i < lI16.Length; i++) res.Memory.Span[i] = lI16.Memory.Span[i] / rI16.Memory.Span[i];
+                else if (type == ExpressionType.Divide)
+                {
+                    for (int i = 0; i < lI16.Length; i++)
+                    {
+                        short d = rI16.Memory.Span[i];
+                        if (!rI16.ValidityMask.IsValid(i) || d == 0) res.ValidityMask.SetNull(i);
+                        else res.Memory.Span[i] = lI16.Memory.Span[i] / d;
+                    }
+                }
                 return res;
             }
             if (left is Data.UInt8Series lU8 && right is Data.UInt8Series rU8)
@@ -276,7 +326,15 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) for (int i = 0; i < lU8.Length; i++) res.Memory.Span[i] = lU8.Memory.Span[i] + rU8.Memory.Span[i];
                 else if (type == ExpressionType.Subtract) for (int i = 0; i < lU8.Length; i++) res.Memory.Span[i] = lU8.Memory.Span[i] - rU8.Memory.Span[i];
                 else if (type == ExpressionType.Multiply) for (int i = 0; i < lU8.Length; i++) res.Memory.Span[i] = lU8.Memory.Span[i] * rU8.Memory.Span[i];
-                else if (type == ExpressionType.Divide) for (int i = 0; i < lU8.Length; i++) res.Memory.Span[i] = lU8.Memory.Span[i] / rU8.Memory.Span[i];
+                else if (type == ExpressionType.Divide)
+                {
+                    for (int i = 0; i < lU8.Length; i++)
+                    {
+                        byte d = rU8.Memory.Span[i];
+                        if (!rU8.ValidityMask.IsValid(i) || d == 0) res.ValidityMask.SetNull(i);
+                        else res.Memory.Span[i] = lU8.Memory.Span[i] / d;
+                    }
+                }
                 return res;
             }
             if (left is Data.UInt16Series lU16 && right is Data.UInt16Series rU16)
@@ -285,7 +343,15 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) for (int i = 0; i < lU16.Length; i++) res.Memory.Span[i] = lU16.Memory.Span[i] + rU16.Memory.Span[i];
                 else if (type == ExpressionType.Subtract) for (int i = 0; i < lU16.Length; i++) res.Memory.Span[i] = lU16.Memory.Span[i] - rU16.Memory.Span[i];
                 else if (type == ExpressionType.Multiply) for (int i = 0; i < lU16.Length; i++) res.Memory.Span[i] = lU16.Memory.Span[i] * rU16.Memory.Span[i];
-                else if (type == ExpressionType.Divide) for (int i = 0; i < lU16.Length; i++) res.Memory.Span[i] = lU16.Memory.Span[i] / rU16.Memory.Span[i];
+                else if (type == ExpressionType.Divide)
+                {
+                    for (int i = 0; i < lU16.Length; i++)
+                    {
+                        ushort d = rU16.Memory.Span[i];
+                        if (!rU16.ValidityMask.IsValid(i) || d == 0) res.ValidityMask.SetNull(i);
+                        else res.Memory.Span[i] = lU16.Memory.Span[i] / d;
+                    }
+                }
                 return res;
             }
             if (left is Data.UInt32Series lU32 && right is Data.UInt32Series rU32)
@@ -294,7 +360,15 @@ namespace Glacier.Polaris
                 if (type == ExpressionType.Add) for (int i = 0; i < lU32.Length; i++) res.Memory.Span[i] = (long)lU32.Memory.Span[i] + (long)rU32.Memory.Span[i];
                 else if (type == ExpressionType.Subtract) for (int i = 0; i < lU32.Length; i++) res.Memory.Span[i] = (long)lU32.Memory.Span[i] - (long)rU32.Memory.Span[i];
                 else if (type == ExpressionType.Multiply) for (int i = 0; i < lU32.Length; i++) res.Memory.Span[i] = (long)lU32.Memory.Span[i] * (long)rU32.Memory.Span[i];
-                else if (type == ExpressionType.Divide) for (int i = 0; i < lU32.Length; i++) res.Memory.Span[i] = (long)lU32.Memory.Span[i] / (long)rU32.Memory.Span[i];
+                else if (type == ExpressionType.Divide)
+                {
+                    for (int i = 0; i < lU32.Length; i++)
+                    {
+                        uint d = rU32.Memory.Span[i];
+                        if (!rU32.ValidityMask.IsValid(i) || d == 0) res.ValidityMask.SetNull(i);
+                        else res.Memory.Span[i] = (long)lU32.Memory.Span[i] / d;
+                    }
+                }
                 return res;
             }
             if (left is Data.UInt64Series lU64 && right is Data.UInt64Series rU64)

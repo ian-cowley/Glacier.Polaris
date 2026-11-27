@@ -25,7 +25,7 @@ namespace Glacier.Polaris.Compute
             // Use sort-based grouping for single numeric key columns (most common case).
             // The radix sort is O(n) per byte, and the linear group boundary scan is O(n),
             // which is dramatically faster than the hash-based approach for low-cardinality keys.
-            if (columns.Length == 1 && (columns[0] is Int32Series || columns[0] is Float64Series))
+            if (columns.Length == 1 && (columns[0] is Int32Series || columns[0] is Float64Series) && !columns[0].ValidityMask.HasNulls)
                 return GroupBySortBased(columns);
 
             return GroupByHashBased(columns);
@@ -36,74 +36,101 @@ namespace Glacier.Polaris.Compute
             hashes.Fill(17);
             int length = hashes.Length;
 
+            const long NullHashSentinel = 0x517CC1B727220A95L;
+
             foreach (var col in columns)
             {
+                bool hasNulls = col.ValidityMask.HasNulls;
+                var mask = col.ValidityMask;
+
                 if (col is Int32Series i32)
                 {
-                    fixed (long* pHashes = hashes)
-                    fixed (int* pVals = i32.Memory.Span)
+                    if (hasNulls)
                     {
-                        long* h = pHashes;
-                        int* v = pVals;
-
-                        int i = 0;
-                        if (Vector256.IsHardwareAccelerated && length >= Vector256<int>.Count)
+                        var vSpan = i32.Memory.Span;
+                        for (int i = 0; i < length; i++)
                         {
-                            int step = Vector256<int>.Count;
-                            var prime = Vector256.Create(31L);
-
-                            for (; i <= length - step; i += step)
-                            {
-                                var vHashesL = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i));
-                                var vHashesU = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i + 4));
-
-                                var vInts = Vector256.LoadUnsafe(ref Unsafe.AsRef<int>(v + i));
-                                var (vWidenL, vWidenU) = Vector256.Widen(vInts);
-
-                                vHashesL = vHashesL * prime;
-                                vHashesU = vHashesU * prime;
-
-                                vHashesL = vHashesL + vWidenL;
-                                vHashesU = vHashesU + vWidenU;
-
-                                vHashesL.StoreUnsafe(ref Unsafe.AsRef<long>(h + i));
-                                vHashesU.StoreUnsafe(ref Unsafe.AsRef<long>(h + i + 4));
-                            }
+                            hashes[i] = hashes[i] * 31 + (mask.IsValid(i) ? vSpan[i] : NullHashSentinel);
                         }
-                        for (; i < length; i++)
+                    }
+                    else
+                    {
+                        fixed (long* pHashes = hashes)
+                        fixed (int* pVals = i32.Memory.Span)
                         {
-                            h[i] = h[i] * 31 + v[i];
+                            long* h = pHashes;
+                            int* v = pVals;
+
+                            int i = 0;
+                            if (Vector256.IsHardwareAccelerated && length >= Vector256<int>.Count)
+                            {
+                                int step = Vector256<int>.Count;
+                                var prime = Vector256.Create(31L);
+
+                                for (; i <= length - step; i += step)
+                                {
+                                    var vHashesL = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i));
+                                    var vHashesU = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i + 4));
+
+                                    var vInts = Vector256.LoadUnsafe(ref Unsafe.AsRef<int>(v + i));
+                                    var (vWidenL, vWidenU) = Vector256.Widen(vInts);
+
+                                    vHashesL = vHashesL * prime;
+                                    vHashesU = vHashesU * prime;
+
+                                    vHashesL = vHashesL + vWidenL;
+                                    vHashesU = vHashesU + vWidenU;
+
+                                    vHashesL.StoreUnsafe(ref Unsafe.AsRef<long>(h + i));
+                                    vHashesU.StoreUnsafe(ref Unsafe.AsRef<long>(h + i + 4));
+                                }
+                            }
+                            for (; i < length; i++)
+                            {
+                                h[i] = h[i] * 31 + v[i];
+                            }
                         }
                     }
                 }
                 else if (col is Float64Series f64)
                 {
-                    fixed (long* pHashes = hashes)
-                    fixed (double* pVals = f64.Memory.Span)
+                    if (hasNulls)
                     {
-                        long* h = pHashes;
-                        double* v = pVals;
-
-                        int i = 0;
-                        if (Vector256.IsHardwareAccelerated && length >= Vector256<long>.Count)
+                        var vSpan = f64.Memory.Span;
+                        for (int i = 0; i < length; i++)
                         {
-                            int step = Vector256<long>.Count;
-                            var prime = Vector256.Create(31L);
-
-                            for (; i <= length - step; i += step)
-                            {
-                                var vHashes = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i));
-                                var vDoubles = Vector256.LoadUnsafe(ref Unsafe.AsRef<double>(v + i));
-                                var vLongs = Vector256.AsInt64(vDoubles);
-
-                                vHashes = vHashes * prime;
-                                vHashes = vHashes + vLongs;
-                                vHashes.StoreUnsafe(ref Unsafe.AsRef<long>(h + i));
-                            }
+                            hashes[i] = hashes[i] * 31 + (mask.IsValid(i) ? BitConverter.DoubleToInt64Bits(vSpan[i]) : NullHashSentinel);
                         }
-                        for (; i < length; i++)
+                    }
+                    else
+                    {
+                        fixed (long* pHashes = hashes)
+                        fixed (double* pVals = f64.Memory.Span)
                         {
-                            h[i] = h[i] * 31 + BitConverter.DoubleToInt64Bits(v[i]);
+                            long* h = pHashes;
+                            double* v = pVals;
+
+                            int i = 0;
+                            if (Vector256.IsHardwareAccelerated && length >= Vector256<long>.Count)
+                            {
+                                int step = Vector256<long>.Count;
+                                var prime = Vector256.Create(31L);
+
+                                for (; i <= length - step; i += step)
+                                {
+                                    var vHashes = Vector256.LoadUnsafe(ref Unsafe.AsRef<long>(h + i));
+                                    var vDoubles = Vector256.LoadUnsafe(ref Unsafe.AsRef<double>(v + i));
+                                    var vLongs = Vector256.AsInt64(vDoubles);
+
+                                    vHashes = vHashes * prime;
+                                    vHashes = vHashes + vLongs;
+                                    vHashes.StoreUnsafe(ref Unsafe.AsRef<long>(h + i));
+                                }
+                            }
+                            for (; i < length; i++)
+                            {
+                                h[i] = h[i] * 31 + BitConverter.DoubleToInt64Bits(v[i]);
+                            }
                         }
                     }
                 }
@@ -114,6 +141,11 @@ namespace Glacier.Polaris.Compute
                         long* h = pHashes;
                         for (int i = 0; i < length; i++)
                         {
+                            if (hasNulls && !mask.IsValid(i))
+                            {
+                                h[i] = h[i] * 31 + NullHashSentinel;
+                                continue;
+                            }
                             var s = u8.GetStringSpan(i);
                             long stringHash = 0;
                             if (s.Length > 0)
@@ -142,25 +174,7 @@ namespace Glacier.Polaris.Compute
             return buckets;
         }
 
-        private static bool AreRowsEqual(int r1, int r2, ISeries[] columns)
-        {
-            foreach (var col in columns)
-            {
-                if (col is Int32Series i32)
-                {
-                    if (i32.Memory.Span[r1] != i32.Memory.Span[r2]) return false;
-                }
-                else if (col is Float64Series f64)
-                {
-                    if (f64.Memory.Span[r1] != f64.Memory.Span[r2]) return false;
-                }
-                else if (col is Utf8StringSeries u8)
-                {
-                    if (!u8.GetStringSpan(r1).SequenceEqual(u8.GetStringSpan(r2))) return false;
-                }
-            }
-            return true;
-        }
+        private static bool AreRowsEqual(int r1, int r2, ISeries[] columns) => RowsEqual(r1, r2, columns);
 
         /// <summary>
         /// Sort-based grouping for low-cardinality keys.
@@ -224,6 +238,11 @@ namespace Glacier.Polaris.Compute
         {
             foreach (var col in columns)
             {
+                bool v1 = col.ValidityMask.IsValid(r1);
+                bool v2 = col.ValidityMask.IsValid(r2);
+                if (v1 != v2) return false;
+                if (!v1) continue;
+
                 if (col is Int32Series i32)
                 {
                     if (i32.Memory.Span[r1] != i32.Memory.Span[r2]) return false;

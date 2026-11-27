@@ -12,7 +12,7 @@ namespace Glacier.Polaris.Compute
 
         private static Regex GetOrAddRegex(string pattern) =>
             _regexCache.GetOrAdd(pattern, static p =>
-                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant));
+                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
 
         /// <summary>
         /// Filters a Utf8StringSeries using a Regex pattern.

@@ -223,5 +223,68 @@ namespace Glacier.Polaris.Tests
             int expected = rawInts.Where((v, idx) => idx % 2 != 0).Sum();
             Assert.Equal(expected, resCol.Memory.Span[0]);
         }
+
+        [Fact]
+        public async Task TestKleeneLogic_NullSafeDivide_GroupByNulls_JoinNulls_AndUtf8Concat()
+        {
+            // 1. Kleene 3-valued boolean logic & null-backed zero division
+            var bLeft = new BooleanSeries("lb", new[] { false, true, true, false });
+            var bRight = new BooleanSeries("rb", new[] { false, false, true, true });
+            bRight.ValidityMask.SetNull(0); // false & NULL -> false (valid); false | NULL -> NULL
+            bRight.ValidityMask.SetNull(1); // true  & NULL -> NULL;          true  | NULL -> true (valid)
+
+            var iNum = new Int64Series("num", new[] { 10L, 20L, 30L, 40L });
+            var iDen = new Int64Series("den", new[] { 2L, 0L, 0L, 5L });
+            iDen.ValidityMask.SetNull(1); // null-backed 0 must not throw DivideByZeroException
+
+            var df = new DataFrame(new System.Collections.Generic.List<ISeries> { bLeft, bRight, iNum, iDen });
+            var exprRes = await df.Lazy().Select(
+                (Expr.Col("lb") & Expr.Col("rb")).Alias("kleene_and"),
+                (Expr.Col("lb") | Expr.Col("rb")).Alias("kleene_or"),
+                (Expr.Col("num") / Expr.Col("den")).Alias("safe_div")
+            ).Collect();
+
+            var kAnd = (BooleanSeries)exprRes.GetColumn("kleene_and");
+            Assert.True(kAnd.ValidityMask.IsValid(0));
+            Assert.False(kAnd.Memory.Span[0]); // false & NULL == false
+            Assert.True(kAnd.ValidityMask.IsNull(1)); // true & NULL == NULL
+
+            var kOr = (BooleanSeries)exprRes.GetColumn("kleene_or");
+            Assert.True(kOr.ValidityMask.IsNull(0)); // false | NULL == NULL
+            Assert.True(kOr.ValidityMask.IsValid(1));
+            Assert.True(kOr.Memory.Span[1]); // true | NULL == true
+
+            var divCol = (Int64Series)exprRes.GetColumn("safe_div");
+            Assert.Equal(5L, divCol.Memory.Span[0]);
+            Assert.True(divCol.ValidityMask.IsNull(1));
+            Assert.True(divCol.ValidityMask.IsNull(2));
+            Assert.Equal(8L, divCol.Memory.Span[3]);
+
+            // 2. GroupBy must not conflate NULL (with 0 backing) and valid 0
+            var gKeys = new Int32Series("k", new[] { 0, 0, 1 });
+            gKeys.ValidityMask.SetNull(0);
+            var groups = Glacier.Polaris.Compute.GroupByKernels.GroupBy(gKeys);
+            Assert.Equal(3, groups.Count);
+
+            // 3. JoinKernels must not match NULL == NULL or NULL == 0
+            var lJoin = new Int32Series("lk", new[] { 0, 0, 2 });
+            lJoin.ValidityMask.SetNull(0);
+            var rJoin = new Int32Series("rk", new[] { 0, 0, 3 });
+            rJoin.ValidityMask.SetNull(0);
+            var inner = Glacier.Polaris.Compute.JoinKernels.InnerJoin(lJoin, rJoin);
+            Assert.Single(inner.LeftIndices);
+            Assert.Equal(1, inner.LeftIndices[0]);
+            Assert.Equal(1, inner.RightIndices[0]);
+
+            // 4. DataFrame.Concat on sliced Utf8StringSeries (Offsets[Length] < DataBytes.Length)
+            var s1 = new Utf8StringSeries("s", new[] { "alpha", "beta_long_tail" });
+            var sliced1 = new DataFrame(new System.Collections.Generic.List<ISeries> { s1 }).Slice(0, 1);
+            var s2 = new Utf8StringSeries("s", new[] { "gamma" });
+            var df2 = new DataFrame(new System.Collections.Generic.List<ISeries> { s2 });
+            var combined = DataFrame.Concat(new[] { sliced1, df2 });
+            var combinedStr = (Utf8StringSeries)combined.GetColumn("s");
+            Assert.Equal("alpha", combinedStr.GetString(0));
+            Assert.Equal("gamma", combinedStr.GetString(1));
+        }
     }
 }

@@ -24,18 +24,21 @@ namespace Glacier.Polaris.Compute
         /// </summary>
         public static JoinResult InnerJoin(Int32Series left, Int32Series right)
         {
-            // Fast path for small right-side tables (< 10K rows): avoid partition overhead
-            if (right.Length < 10000)
+            bool hasNulls = left.ValidityMask.HasNulls || right.ValidityMask.HasNulls;
+            // Fast path for small right-side tables (< 10K rows) without nulls: avoid partition overhead
+            if (!hasNulls && right.Length < 10000)
                 return InnerJoinSmallRight(left, right);
             const int Partitions = 64;
-            var leftBuckets = Bucketize(left.Memory.Span, Partitions);
-            var rightBuckets = Bucketize(right.Memory.Span, Partitions);
+            var leftMask = left.ValidityMask;
+            var rightMask = right.ValidityMask;
+            var leftBuckets = Bucketize(left.Memory.Span, leftMask, Partitions);
+            var rightBuckets = Bucketize(right.Memory.Span, rightMask, Partitions);
 
             var results = new System.Collections.Concurrent.ConcurrentBag<(int[] left, int[] right)>();
 
             System.Threading.Tasks.Parallel.For(0, Partitions, p =>
             {
-                var res = JoinBuckets(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span);
+                var res = JoinBuckets(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span, leftMask, rightMask);
                 if (res.left.Length > 0) results.Add(res);
             });
 
@@ -45,18 +48,21 @@ namespace Glacier.Polaris.Compute
         }
         public static JoinResult LeftJoin(Int32Series left, Int32Series right)
         {
-            // Fast path for small right-side tables (< 10K rows): avoid partition overhead
-            if (right.Length < 10000)
+            bool hasNulls = left.ValidityMask.HasNulls || right.ValidityMask.HasNulls;
+            // Fast path for small right-side tables (< 10K rows) without nulls: avoid partition overhead
+            if (!hasNulls && right.Length < 10000)
                 return LeftJoinSmallRight(left, right);
             const int Partitions = 64;
-            var leftBuckets = Bucketize(left.Memory.Span, Partitions);
-            var rightBuckets = Bucketize(right.Memory.Span, Partitions);
+            var leftMask = left.ValidityMask;
+            var rightMask = right.ValidityMask;
+            var leftBuckets = Bucketize(left.Memory.Span, leftMask, Partitions);
+            var rightBuckets = Bucketize(right.Memory.Span, rightMask, Partitions);
 
             var results = new System.Collections.Concurrent.ConcurrentBag<(int[] left, int[] right)>();
 
             System.Threading.Tasks.Parallel.For(0, Partitions, p =>
             {
-                var res = JoinBucketsLeft(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span);
+                var res = JoinBucketsLeft(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span, leftMask, rightMask);
                 if (res.left.Length > 0) results.Add(res);
             });
 
@@ -70,14 +76,16 @@ namespace Glacier.Polaris.Compute
         public static JoinResult OuterJoin(Int32Series left, Int32Series right)
         {
             const int Partitions = 64;
-            var leftBuckets = Bucketize(left.Memory.Span, Partitions);
-            var rightBuckets = Bucketize(right.Memory.Span, Partitions);
+            var leftMask = left.ValidityMask;
+            var rightMask = right.ValidityMask;
+            var leftBuckets = Bucketize(left.Memory.Span, leftMask, Partitions);
+            var rightBuckets = Bucketize(right.Memory.Span, rightMask, Partitions);
 
             var results = new System.Collections.Concurrent.ConcurrentBag<(int[] left, int[] right)>();
 
             System.Threading.Tasks.Parallel.For(0, Partitions, p =>
             {
-                var res = JoinBucketsOuter(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span);
+                var res = JoinBucketsOuter(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span, leftMask, rightMask);
                 if (res.left.Length > 0) results.Add(res);
             });
 
@@ -112,14 +120,16 @@ namespace Glacier.Polaris.Compute
         public static JoinResult SemiJoin(Int32Series left, Int32Series right)
         {
             const int Partitions = 64;
-            var leftBuckets = Bucketize(left.Memory.Span, Partitions);
-            var rightBuckets = Bucketize(right.Memory.Span, Partitions);
+            var leftMask = left.ValidityMask;
+            var rightMask = right.ValidityMask;
+            var leftBuckets = Bucketize(left.Memory.Span, leftMask, Partitions);
+            var rightBuckets = Bucketize(right.Memory.Span, rightMask, Partitions);
 
             var results = new System.Collections.Concurrent.ConcurrentBag<(int[] left, int[] right)>();
 
             System.Threading.Tasks.Parallel.For(0, Partitions, p =>
             {
-                var res = JoinBucketsSemi(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span);
+                var res = JoinBucketsSemi(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span, leftMask, rightMask);
                 if (res.left.Length > 0) results.Add(res);
             });
 
@@ -131,14 +141,16 @@ namespace Glacier.Polaris.Compute
         public static JoinResult AntiJoin(Int32Series left, Int32Series right)
         {
             const int Partitions = 64;
-            var leftBuckets = Bucketize(left.Memory.Span, Partitions);
-            var rightBuckets = Bucketize(right.Memory.Span, Partitions);
+            var leftMask = left.ValidityMask;
+            var rightMask = right.ValidityMask;
+            var leftBuckets = Bucketize(left.Memory.Span, leftMask, Partitions);
+            var rightBuckets = Bucketize(right.Memory.Span, rightMask, Partitions);
 
             var results = new System.Collections.Concurrent.ConcurrentBag<(int[] left, int[] right)>();
 
             System.Threading.Tasks.Parallel.For(0, Partitions, p =>
             {
-                var res = JoinBucketsAnti(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span);
+                var res = JoinBucketsAnti(leftBuckets[p], rightBuckets[p], left.Memory.Span, right.Memory.Span, leftMask, rightMask);
                 if (res.left.Length > 0) results.Add(res);
             });
 
@@ -204,36 +216,51 @@ namespace Glacier.Polaris.Compute
             }
         }
 
-        private static List<int>[] Bucketize(ReadOnlySpan<int> data, int count)
+        private static List<int>[] Bucketize(ReadOnlySpan<int> data, Glacier.Polaris.Memory.ValidityMask mask, int count)
         {
             var buckets = new List<int>[count];
             for (int i = 0; i < count; i++) buckets[i] = new List<int>();
 
+            bool hasNulls = mask.HasNulls;
             for (int i = 0; i < data.Length; i++)
             {
-                int bucket = (int)((uint)data[i].GetHashCode() % (uint)count);
+                int key = (hasNulls && !mask.IsValid(i)) ? int.MinValue : data[i];
+                int bucket = (int)((uint)key.GetHashCode() % (uint)count);
                 buckets[bucket].Add(i);
             }
             return buckets;
         }
 
-        private static (int[] left, int[] right) JoinBuckets(List<int> leftIndices, List<int> rightIndices, ReadOnlySpan<int> leftData, ReadOnlySpan<int> rightData)
+        private static (int[] left, int[] right) JoinBuckets(
+            List<int> leftIndices,
+            List<int> rightIndices,
+            ReadOnlySpan<int> leftData,
+            ReadOnlySpan<int> rightData,
+            Glacier.Polaris.Memory.ValidityMask leftMask,
+            Glacier.Polaris.Memory.ValidityMask rightMask)
         {
             if (leftIndices.Count == 0 || rightIndices.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
+
+            bool leftHasNulls = leftMask.HasNulls;
+            bool rightHasNulls = rightMask.HasNulls;
 
             var map = new Dictionary<int, List<int>>(leftIndices.Count);
             foreach (var idx in leftIndices)
             {
+                if (leftHasNulls && !leftMask.IsValid(idx)) continue;
                 int val = leftData[idx];
                 if (!map.TryGetValue(val, out var list)) map[val] = list = new List<int>();
                 list.Add(idx);
             }
+
+            if (map.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
 
             var lResult = new List<int>();
             var rResult = new List<int>();
 
             foreach (var idx in rightIndices)
             {
+                if (rightHasNulls && !rightMask.IsValid(idx)) continue;
                 int val = rightData[idx];
                 if (map.TryGetValue(val, out var matchingLeft))
                 {
@@ -248,13 +275,23 @@ namespace Glacier.Polaris.Compute
             return (lResult.ToArray(), rResult.ToArray());
         }
 
-        private static (int[] left, int[] right) JoinBucketsLeft(List<int> leftIndices, List<int> rightIndices, ReadOnlySpan<int> leftData, ReadOnlySpan<int> rightData)
+        private static (int[] left, int[] right) JoinBucketsLeft(
+            List<int> leftIndices,
+            List<int> rightIndices,
+            ReadOnlySpan<int> leftData,
+            ReadOnlySpan<int> rightData,
+            Glacier.Polaris.Memory.ValidityMask leftMask,
+            Glacier.Polaris.Memory.ValidityMask rightMask)
         {
             if (leftIndices.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
+
+            bool leftHasNulls = leftMask.HasNulls;
+            bool rightHasNulls = rightMask.HasNulls;
 
             var map = new Dictionary<int, List<int>>(rightIndices.Count);
             foreach (var idx in rightIndices)
             {
+                if (rightHasNulls && !rightMask.IsValid(idx)) continue;
                 int val = rightData[idx];
                 if (!map.TryGetValue(val, out var list)) map[val] = list = new List<int>();
                 list.Add(idx);
@@ -265,32 +302,43 @@ namespace Glacier.Polaris.Compute
 
             foreach (var idx in leftIndices)
             {
-                int val = leftData[idx];
-                if (map.TryGetValue(val, out var matchingRight))
+                if (!leftHasNulls || leftMask.IsValid(idx))
                 {
-                    foreach (var rIdx in matchingRight)
+                    int val = leftData[idx];
+                    if (map.TryGetValue(val, out var matchingRight))
                     {
-                        lResult.Add(idx);
-                        rResult.Add(rIdx);
+                        foreach (var rIdx in matchingRight)
+                        {
+                            lResult.Add(idx);
+                            rResult.Add(rIdx);
+                        }
+                        continue;
                     }
                 }
-                else
-                {
-                    lResult.Add(idx);
-                    rResult.Add(-1);
-                }
+                lResult.Add(idx);
+                rResult.Add(-1);
             }
 
             return (lResult.ToArray(), rResult.ToArray());
         }
 
-        private static (int[] left, int[] right) JoinBucketsOuter(List<int> leftIndices, List<int> rightIndices, ReadOnlySpan<int> leftData, ReadOnlySpan<int> rightData)
+        private static (int[] left, int[] right) JoinBucketsOuter(
+            List<int> leftIndices,
+            List<int> rightIndices,
+            ReadOnlySpan<int> leftData,
+            ReadOnlySpan<int> rightData,
+            Glacier.Polaris.Memory.ValidityMask leftMask,
+            Glacier.Polaris.Memory.ValidityMask rightMask)
         {
             if (leftIndices.Count == 0 && rightIndices.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
+
+            bool leftHasNulls = leftMask.HasNulls;
+            bool rightHasNulls = rightMask.HasNulls;
 
             var map = new Dictionary<int, List<int>>(rightIndices.Count);
             foreach (var idx in rightIndices)
             {
+                if (rightHasNulls && !rightMask.IsValid(idx)) continue;
                 int val = rightData[idx];
                 if (!map.TryGetValue(val, out var list)) map[val] = list = new List<int>();
                 list.Add(idx);
@@ -302,21 +350,22 @@ namespace Glacier.Polaris.Compute
 
             foreach (var idx in leftIndices)
             {
-                int val = leftData[idx];
-                if (map.TryGetValue(val, out var matchingRight))
+                if (!leftHasNulls || leftMask.IsValid(idx))
                 {
-                    foreach (var rIdx in matchingRight)
+                    int val = leftData[idx];
+                    if (map.TryGetValue(val, out var matchingRight))
                     {
-                        lResult.Add(idx);
-                        rResult.Add(rIdx);
-                        rightVisited.Add(rIdx);
+                        foreach (var rIdx in matchingRight)
+                        {
+                            lResult.Add(idx);
+                            rResult.Add(rIdx);
+                            rightVisited.Add(rIdx);
+                        }
+                        continue;
                     }
                 }
-                else
-                {
-                    lResult.Add(idx);
-                    rResult.Add(-1);
-                }
+                lResult.Add(idx);
+                rResult.Add(-1);
             }
 
             foreach (var idx in rightIndices)
@@ -331,19 +380,32 @@ namespace Glacier.Polaris.Compute
             return (lResult.ToArray(), rResult.ToArray());
         }
 
-        private static (int[] left, int[] right) JoinBucketsSemi(List<int> leftIndices, List<int> rightIndices, ReadOnlySpan<int> leftData, ReadOnlySpan<int> rightData)
+        private static (int[] left, int[] right) JoinBucketsSemi(
+            List<int> leftIndices,
+            List<int> rightIndices,
+            ReadOnlySpan<int> leftData,
+            ReadOnlySpan<int> rightData,
+            Glacier.Polaris.Memory.ValidityMask leftMask,
+            Glacier.Polaris.Memory.ValidityMask rightMask)
         {
             if (leftIndices.Count == 0 || rightIndices.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
 
+            bool leftHasNulls = leftMask.HasNulls;
+            bool rightHasNulls = rightMask.HasNulls;
+
             var rightKeys = new HashSet<int>(rightIndices.Count);
-            foreach (var idx in rightIndices) rightKeys.Add(rightData[idx]);
+            foreach (var idx in rightIndices)
+            {
+                if (!rightHasNulls || rightMask.IsValid(idx)) rightKeys.Add(rightData[idx]);
+            }
+            if (rightKeys.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
 
             var lResult = new List<int>();
             var rResult = new List<int>();
 
             foreach (var idx in leftIndices)
             {
-                if (rightKeys.Contains(leftData[idx]))
+                if ((!leftHasNulls || leftMask.IsValid(idx)) && rightKeys.Contains(leftData[idx]))
                 {
                     lResult.Add(idx);
                     rResult.Add(-1);
@@ -353,20 +415,32 @@ namespace Glacier.Polaris.Compute
             return (lResult.ToArray(), rResult.ToArray());
         }
 
-        private static (int[] left, int[] right) JoinBucketsAnti(List<int> leftIndices, List<int> rightIndices, ReadOnlySpan<int> leftData, ReadOnlySpan<int> rightData)
+        private static (int[] left, int[] right) JoinBucketsAnti(
+            List<int> leftIndices,
+            List<int> rightIndices,
+            ReadOnlySpan<int> leftData,
+            ReadOnlySpan<int> rightData,
+            Glacier.Polaris.Memory.ValidityMask leftMask,
+            Glacier.Polaris.Memory.ValidityMask rightMask)
         {
             if (leftIndices.Count == 0) return (Array.Empty<int>(), Array.Empty<int>());
             if (rightIndices.Count == 0) return (leftIndices.ToArray(), Enumerable.Repeat(-1, leftIndices.Count).ToArray());
 
+            bool leftHasNulls = leftMask.HasNulls;
+            bool rightHasNulls = rightMask.HasNulls;
+
             var rightKeys = new HashSet<int>(rightIndices.Count);
-            foreach (var idx in rightIndices) rightKeys.Add(rightData[idx]);
+            foreach (var idx in rightIndices)
+            {
+                if (!rightHasNulls || rightMask.IsValid(idx)) rightKeys.Add(rightData[idx]);
+            }
 
             var lResult = new List<int>();
             var rResult = new List<int>();
 
             foreach (var idx in leftIndices)
             {
-                if (!rightKeys.Contains(leftData[idx]))
+                if ((leftHasNulls && !leftMask.IsValid(idx)) || !rightKeys.Contains(leftData[idx]))
                 {
                     lResult.Add(idx);
                     rResult.Add(-1);
