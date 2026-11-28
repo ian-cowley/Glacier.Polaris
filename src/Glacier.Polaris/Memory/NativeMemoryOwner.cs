@@ -9,14 +9,16 @@ using System.Threading;
 /// <summary>
 /// Unmanaged memory owner backed by 64-byte aligned unmanaged memory (NativeMemory.AlignedAlloc).
 /// Implements MemoryManager&lt;T&gt; to provide zero-copy, cache-aligned Memory&lt;T&gt; and Span&lt;T&gt;
-/// directly suitable for SIMD (AVX-512, AVX2, ARM Neon) and high-throughput Arrow IPC streaming.
+/// directly suitable for SIMD (AVX-512, AVX2, ARM Neon) and high-throughput Glacier Compact Columnar IPC v1 streaming.
 /// </summary>
-public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unmanaged
+public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T>, IRefCountedMemoryLifetime where T : unmanaged
 {
-    private void* _pointer;
+    private nint _pointer;
     private readonly int _length;
     private readonly bool _ownsMemory;
     private int _disposed;
+    private int _refCount = 1;
+    private int _pinCount;
 
     /// <summary>
     /// Allocates unmanaged memory aligned to a 64-byte boundary.
@@ -30,13 +32,15 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
 
         if (length == 0)
         {
-            _pointer = null;
+            _pointer = 0;
+            GC.SuppressFinalize(this);
             return;
         }
 
-        nuint byteCount = (nuint)length * (nuint)sizeof(T);
-        _pointer = NativeMemory.AlignedAlloc(byteCount, 64);
-        NativeMemory.Clear(_pointer, byteCount);
+        nuint byteCount = checked((nuint)length * (nuint)sizeof(T));
+        void* allocated = NativeMemory.AlignedAlloc(byteCount, 64);
+        NativeMemory.Clear(allocated, byteCount);
+        _pointer = (nint)allocated;
     }
 
     /// <summary>
@@ -47,36 +51,115 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
         ArgumentOutOfRangeException.ThrowIfNegative(length);
         if (length > 0 && pointer == null)
             throw new ArgumentNullException(nameof(pointer));
-        _pointer = pointer;
+        _pointer = (nint)pointer;
         _length = length;
         _ownsMemory = ownsMemory;
+        if (!ownsMemory || pointer == null)
+        {
+            GC.SuppressFinalize(this);
+        }
+    }
+
+#pragma warning disable CA2015 // NativeMemoryOwner owns NativeMemory.AlignedAlloc buffers and refcounts pins/views via IRefCountedMemoryLifetime.
+    ~NativeMemoryOwner()
+    {
+        Dispose(false);
+    }
+#pragma warning restore CA2015
+
+    bool IRefCountedMemoryLifetime.IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    bool IRefCountedMemoryLifetime.TryRetain() => TryRetain();
+
+    void IRefCountedMemoryLifetime.Release() => Release();
+
+    private bool TryRetain()
+    {
+        while (true)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
+
+            int current = Volatile.Read(ref _refCount);
+            if (current <= 0)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _refCount, current + 1, current) == current)
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    Release();
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
+
+    private void Release()
+    {
+        if (Interlocked.Decrement(ref _refCount) == 0)
+        {
+            nint ptr = Interlocked.Exchange(ref _pointer, 0);
+            if (_ownsMemory && ptr != 0)
+            {
+                NativeMemory.AlignedFree((void*)ptr);
+            }
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override Span<T> GetSpan()
     {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        if (_length == 0 || _pointer == null)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_length == 0)
             return Span<T>.Empty;
 
-        return new Span<T>(_pointer, _length);
+        nint ptr = Volatile.Read(ref _pointer);
+        if (ptr == 0 || Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(NativeMemoryOwner<T>));
+
+        return new Span<T>((void*)ptr, _length);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override MemoryHandle Pin(int elementIndex = 0)
     {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (_length == 0 && elementIndex == 0)
             return new MemoryHandle(null);
 
         ArgumentOutOfRangeException.ThrowIfNegative(elementIndex);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(elementIndex, _length);
-        return new MemoryHandle((byte*)_pointer + ((nuint)elementIndex * (nuint)sizeof(T)));
+
+        if (!TryRetain())
+            throw new ObjectDisposedException(nameof(NativeMemoryOwner<T>));
+
+        nint ptr = Volatile.Read(ref _pointer);
+        if (ptr == 0)
+        {
+            Release();
+            throw new ObjectDisposedException(nameof(NativeMemoryOwner<T>));
+        }
+
+        Interlocked.Increment(ref _pinCount);
+        return new MemoryHandle((byte*)ptr + checked((nuint)elementIndex * (nuint)sizeof(T)), pinnable: this);
     }
 
     public override void Unpin()
     {
-        // Unmanaged memory does not move; no unpinning required.
+        while (true)
+        {
+            int current = Volatile.Read(ref _pinCount);
+            if (current <= 0)
+                return;
+
+            if (Interlocked.CompareExchange(ref _pinCount, current - 1, current) == current)
+            {
+                Release();
+                return;
+            }
+        }
     }
 
     public void Dispose()
@@ -89,11 +172,7 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
-            if (_ownsMemory && _pointer != null)
-            {
-                NativeMemory.AlignedFree(_pointer);
-                _pointer = null;
-            }
+            Release();
         }
     }
 
@@ -102,8 +181,8 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            return _pointer;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            return (void*)_pointer;
         }
     }
 
@@ -116,20 +195,30 @@ public sealed unsafe class NativeMemoryOwner<T> : MemoryManager<T> where T : unm
     /// <summary>Creates a zero-copy byte memory view over the unmanaged native buffer.</summary>
     public ReadOnlyMemory<byte> AsBytesMemory()
     {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        if (_length == 0 || _pointer == null)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_length == 0)
             return ReadOnlyMemory<byte>.Empty;
 
-        return new UnmanagedMemoryManager<byte>((byte*)_pointer, _length * sizeof(T)).Memory;
+        int byteCount = checked((int)checked((nuint)_length * (nuint)sizeof(T)));
+        nint ptr = Volatile.Read(ref _pointer);
+        if (ptr == 0 || Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(NativeMemoryOwner<T>));
+
+        return new UnmanagedMemoryManager<byte>((byte*)ptr, byteCount, this).Memory;
     }
 
     /// <summary>Creates a writable byte memory view over the unmanaged native buffer.</summary>
     public Memory<byte> AsWritableBytesMemory()
     {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        if (_length == 0 || _pointer == null)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_length == 0)
             return Memory<byte>.Empty;
 
-        return new UnmanagedMemoryManager<byte>((byte*)_pointer, _length * sizeof(T)).Memory;
+        int byteCount = checked((int)checked((nuint)_length * (nuint)sizeof(T)));
+        nint ptr = Volatile.Read(ref _pointer);
+        if (ptr == 0 || Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(NativeMemoryOwner<T>));
+
+        return new UnmanagedMemoryManager<byte>((byte*)ptr, byteCount, this).Memory;
     }
 }

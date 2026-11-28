@@ -9,8 +9,8 @@
     <PackageId>Glacier.Polaris</PackageId>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier</Company>
-    <Description>High-performance, memory-efficient, strongly-typed pure C# .NET 10 DataFrame library built for speed, with Native AOT compatibility, SIMD vectorization, CUDA GPU acceleration, Glacier.Storage persistence, and Kleene logic.</Description>
-    <PackageTags>polars dataframe series dotnet csharp analytics fast high-performance columnar arrow aot</PackageTags>
+    <Description>High-performance, memory-efficient, strongly-typed pure C# .NET 10 DataFrame library built for speed, with Native AOT compatibility, SIMD vectorization, NVIDIA CUDA GPU acceleration, Glacier.Formats Compact Columnar IPC v1 / Parquet I/O, Glacier.Storage columnar encoding, and Kleene logic.</Description>
+    <PackageTags>polars dataframe series dotnet csharp analytics fast high-performance columnar glacier-ipc ipc parquet aot</PackageTags>
     <RepositoryUrl>https://github.com/ian-cowley/Glacier.Polaris</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -18,26 +18,33 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <TieredPGO>true</TieredPGO>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn Condition="!$(NoWarn.Contains('CS1591'))">$(NoWarn);CS1591</NoWarn>
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
-  </ItemGroup>
-  <ItemGroup Condition="Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') and '$(UseLocalProjectReferences)' != 'false'">
-    <ProjectReference Include="../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj" />
-    <ProjectReference Include="../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj" />
-  </ItemGroup>
-  <ItemGroup Condition="!Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') or '$(UseLocalProjectReferences)' == 'false'">
-    <PackageReference Include="Glacier.Formats" Version="1.0.1" />
-    <PackageReference Include="Glacier.Storage" Version="1.1.1" />
+    <InternalsVisibleTo Include="Glacier.Polaris.Tests" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
-    <PackageReference Include="Npgsql" Version="10.0.2" />
-    <PackageReference Include="Parquet.Net" Version="5.6.1" />
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
-    <PackageReference Include="Glacier.Gpu" Version="1.2.1" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj" Condition="Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
+    <PackageReference Include="Glacier.Formats" Condition="!Exists('../../../Glacier.Formats/src/Glacier.Formats/Glacier.Formats.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+
+    <ProjectReference Include="../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj" Condition="Exists('../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
+    <PackageReference Include="Glacier.Storage" Condition="!Exists('../../../Glacier.Storage/src/Glacier.Storage/Glacier.Storage.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+
+    <ProjectReference Include="../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj" Condition="Exists('../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
+    <PackageReference Include="Glacier.Gpu" Condition="!Exists('../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Parquet.Net" />
+    <PackageReference Include="System.Numerics.Tensors" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 </Project>

@@ -11,7 +11,7 @@ namespace Glacier.Polaris.Data
         public int Length { get; }
         public int Width { get; }
 
-        public ISeries Values { get; }
+        public ISeries Values { get; internal set; }
         public Memory.ValidityMask ValidityMask { get; }
 
         public ArraySeries(string name, int width, ISeries values)
@@ -25,11 +25,72 @@ namespace Glacier.Polaris.Data
 
         public void CopyTo(ISeries target, int offset)
         {
-            if (target is ArraySeries t && t.Width == this.Width)
+            if (target is not ArraySeries t)
+                throw new InvalidOperationException($"Type mismatch in CopyTo: cannot copy ArraySeries to {target?.DataType.Name ?? "null"}");
+
+            if (t.Width != Width)
+                throw new ArgumentException($"ArraySeries width mismatch in CopyTo: source width {Width} != target width {t.Width}.", nameof(target));
+
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            if (offset > t.Length - Length)
+                throw new ArgumentOutOfRangeException(nameof(offset));
+
+            if (!ListSeries.AreValuesCompatible(Values, t.Values))
+                throw new InvalidOperationException($"Target ArraySeries values mismatch: expected {Values.GetType().Name}, got {t.Values.GetType().Name}.");
+
+            if (Length == 0 || ReferenceEquals(this, t))
+                return;
+
+            int targetValueOffset = checked(offset * Width);
+            int srcCount = checked(Length * Width);
+            if (Values is Utf8StringSeries srcUtf8 && t.Values is Utf8StringSeries dstUtf8)
             {
-                Values.CopyTo(t.Values, offset * Width);
-                ValidityMask.CopyTo(t.ValidityMask, offset);
+                int oldEnd = checked(targetValueOffset + srcCount);
+                int suffixCount = dstUtf8.Length - oldEnd;
+                var replacement = ListSeries.SpliceUtf8Series(
+                    srcUtf8,
+                    dstUtf8,
+                    targetValueOffset,
+                    oldEnd,
+                    suffixCount,
+                    0,
+                    srcCount,
+                    null,
+                    dstUtf8.Length,
+                    allowInPlace: true);
+                if (replacement != null)
+                {
+                    t.Values = replacement;
+                    dstUtf8.Dispose();
+                }
             }
+            else if (Values is BinarySeries srcBin && t.Values is BinarySeries dstBin)
+            {
+                int oldEnd = checked(targetValueOffset + srcCount);
+                int suffixCount = dstBin.Length - oldEnd;
+                var replacement = ListSeries.SpliceBinarySeries(
+                    srcBin,
+                    dstBin,
+                    targetValueOffset,
+                    oldEnd,
+                    suffixCount,
+                    0,
+                    srcCount,
+                    null,
+                    dstBin.Length,
+                    allowInPlace: true);
+                if (replacement != null)
+                {
+                    t.Values = replacement;
+                    dstBin.Dispose();
+                }
+            }
+            else
+            {
+                Values.CopyTo(t.Values, targetValueOffset);
+            }
+
+            ValidityMask.CopyRangeTo(t.ValidityMask, offset);
         }
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
@@ -42,10 +103,33 @@ namespace Glacier.Polaris.Data
                     int row = indices[i];
                     for (int j = 0; j < Width; j++)
                     {
-                        valueIndices[i * Width + j] = (row == -1) ? -1 : (row * Width + j);
+                        valueIndices[i * Width + j] = (row < 0) ? -1 : (row * Width + j);
                     }
                 }
-                Values.Take(t.Values, valueIndices);
+
+                if (Values is Utf8StringSeries srcUtf8 && t.Values is Utf8StringSeries dstUtf8)
+                {
+                    var replacement = ListSeries.TakeUtf8Into(srcUtf8, dstUtf8, valueIndices);
+                    if (replacement != null)
+                    {
+                        t.Values = replacement;
+                        dstUtf8.Dispose();
+                    }
+                }
+                else if (Values is BinarySeries srcBin && t.Values is BinarySeries dstBin)
+                {
+                    var replacement = ListSeries.TakeBinaryInto(srcBin, dstBin, valueIndices);
+                    if (replacement != null)
+                    {
+                        t.Values = replacement;
+                        dstBin.Dispose();
+                    }
+                }
+                else
+                {
+                    Values.Take(t.Values, valueIndices);
+                }
+
                 ValidityMask.Take(t.ValidityMask, indices);
             }
         }

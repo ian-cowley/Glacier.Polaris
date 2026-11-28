@@ -71,7 +71,8 @@ namespace Glacier.Polaris.Data
             if (Length == 0) return ReadOnlyMemory<byte>.Empty;
             if (_data is NativeMemoryOwner<T> nativeOwner)
             {
-                return nativeOwner.AsBytesMemory().Slice(0, Length * sizeof(T));
+                int byteLength = checked(Length * sizeof(T));
+                return nativeOwner.AsBytesMemory().Slice(0, byteLength);
             }
             return MemoryMarshal.AsBytes(Memory.Span.Slice(0, Length)).ToArray();
         }
@@ -98,7 +99,14 @@ namespace Glacier.Polaris.Data
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (target is Series<T> other)
             {
-                Memory.Span.CopyTo(other.Memory.Span.Slice(offset));
+                ArgumentOutOfRangeException.ThrowIfNegative(offset);
+                if (offset > other.Length - Length)
+                    throw new ArgumentOutOfRangeException(nameof(offset));
+                if (Length == 0)
+                    return;
+
+                Memory.Span.Slice(0, Length).CopyTo(other.Memory.Span.Slice(offset, Length));
+                _validityMask.CopyRangeTo(other.ValidityMask, offset);
             }
             else
             {
@@ -731,8 +739,8 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = length;
-            _offsets = new MemoryOwnerColumn<int>(length + 1);
-            _dataBytes = new MemoryOwnerColumn<byte>(Math.Max(1024, length * 16));
+            _offsets = new MemoryOwnerColumn<int>(checked(length + 1));
+            _dataBytes = new MemoryOwnerColumn<byte>(Math.Max(1024, checked(length * 16)));
             _validityMask = new ValidityMask(length);
         }
 
@@ -740,7 +748,7 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = length;
-            _offsets = new MemoryOwnerColumn<int>(length + 1);
+            _offsets = new MemoryOwnerColumn<int>(checked(length + 1));
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
             _validityMask = new ValidityMask(length);
         }
@@ -750,8 +758,8 @@ namespace Glacier.Polaris.Data
             Name = name;
             Length = data.Length;
             int totalBytes = 0;
-            foreach (var s in data) totalBytes += System.Text.Encoding.UTF8.GetByteCount(s);
-            _offsets = new MemoryOwnerColumn<int>(Length + 1);
+            foreach (var s in data) totalBytes = checked(totalBytes + System.Text.Encoding.UTF8.GetByteCount(s));
+            _offsets = new MemoryOwnerColumn<int>(checked(Length + 1));
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
             _validityMask = new ValidityMask(Length);
             var offsetSpan = _offsets.Memory.Span;
@@ -811,7 +819,7 @@ namespace Glacier.Polaris.Data
                 for (int i = 0; i < indices.Length; i++)
                 {
                     targetOffsets[i] = currentOffset;
-                    if (indices[i] == -1 || this.ValidityMask.IsNull(indices[i]))
+                    if (indices[i] < 0 || this.ValidityMask.IsNull(indices[i]))
                     {
                         other.ValidityMask.SetNull(i);
                         continue;
@@ -823,6 +831,7 @@ namespace Glacier.Polaris.Data
                     }
                     srcSpan.CopyTo(targetData.Slice(currentOffset));
                     currentOffset += srcSpan.Length;
+                    other.ValidityMask.SetValid(i);
                 }
                 targetOffsets[indices.Length] = currentOffset;
             }
@@ -857,7 +866,7 @@ namespace Glacier.Polaris.Data
         public static Utf8StringSeries FromStrings(string name, string?[] data)
         {
             int totalBytes = 0;
-            foreach (var s in data) if (s != null) totalBytes += System.Text.Encoding.UTF8.GetByteCount(s);
+            foreach (var s in data) if (s != null) totalBytes = checked(totalBytes + System.Text.Encoding.UTF8.GetByteCount(s));
             var series = new Utf8StringSeries(name, data.Length, totalBytes);
             var offsetSpan = series._offsets.Memory.Span;
             var dataSpan = series._dataBytes.Memory.Span;
@@ -934,7 +943,7 @@ namespace Glacier.Polaris.Data
 
         public ISeries CloneEmpty(int length)
         {
-            return new Utf8StringSeries(Name, length, Math.Max(1024, length * 16));
+            return new Utf8StringSeries(Name, length, Math.Max(1024, checked(length * 16)));
         }
         public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
         public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);

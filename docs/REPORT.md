@@ -125,7 +125,7 @@ All core lazy operations including `Select`, `Filter`, `WithColumns`, `Sort`, `L
 | CSV | ✅ `ScanCsv` | ✅ `WriteCsv` | ✅ Tier 14 |
 | Parquet | ✅ `ScanParquet` | ✅ `WriteParquet` | ✅ Tier 13 |
 | JSON / NDJSON | ✅ `ScanJson` | ✅ `WriteJson` | ✅ |
-| Arrow IPC | ✅ `FromArrow` | ✅ `WriteIpc` / `SinkIpc` | ✅ Tier 12 |
+| Glacier Compact Columnar IPC v1 | ✅ `FromArrowIpc` / `FromGlacierRecordBatch` | ✅ `WriteIpc` / `SinkIpc` | ✅ Tier 12 (`Glacier.Formats` compact framing, not FlatBuffers) |
 | SQL (ADO.NET) | ✅ `ScanSql` | — | ✅ Tier 14 (SQLite round-trip) |
 
 ### 2.12 Advanced / Niche Features
@@ -385,8 +385,8 @@ With core single-node execution, feature completeness (99.8%+), and all 23 perfo
 - **Distributed Shuffle Joins & Group-By**: Cluster-wide partition hashing and streaming exchange powered by [`Glacier.Serve`](../../Glacier.Serve) high-performance transport.
 - **Remote Parquet Row-Group Streaming**: Coordinated asynchronous prefetching across remote object stores and node clusters.
 
-### 8.2 Pure C# Arrow IPC & Storage Bus Integration
-- **Direct [`Glacier.Storage`](../../Glacier.Storage) Binding**: Native consumption of Glacier's pure C# Arrow IPC streaming bus and FlatBuffers format, achieving >250 Million rows/second throughput with zero GC allocations.
+### 8.2 Pure C# Compact Columnar IPC & Storage Integration
+- **Direct [`Glacier.Formats`](../../Glacier.Formats) & [`Glacier.Storage`](../../Glacier.Storage) Binding**: Native consumption of Glacier's pure C# **Compact Columnar IPC v1** streaming bus (`Glacier.Formats.Arrow`, custom compact binary framing — not Apache Arrow FlatBuffers wire-compatible) and compressed storage encoding.
 - **Vectorized Parquet Integration**: Pure C# Thrift metadata parser and AVX-512 bit-unpacking replacing external Parquet runtimes.
 
 ### 8.3 Zero-Copy In-Process Pipelines for AI & Visualization

@@ -1,18 +1,119 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Glacier.Polaris.Compute
 {
     public static partial class StringKernels
     {
-        private static readonly ConcurrentDictionary<string, Regex> _regexCache =
-            new ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
+        internal const int RegexCacheCapacity = 256;
+        private const RegexOptions DefaultRegexOptions = RegexOptions.Compiled | RegexOptions.CultureInvariant;
+        private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromSeconds(5);
+
+        private readonly struct RegexCacheKey : IEquatable<RegexCacheKey>
+        {
+            public string Pattern { get; }
+            public RegexOptions Options { get; }
+            public TimeSpan MatchTimeout { get; }
+
+            public RegexCacheKey(string pattern, RegexOptions options, TimeSpan matchTimeout)
+            {
+                Pattern = pattern;
+                Options = options;
+                MatchTimeout = matchTimeout;
+            }
+
+            public bool Equals(RegexCacheKey other) =>
+                Options == other.Options &&
+                MatchTimeout == other.MatchTimeout &&
+                StringComparer.Ordinal.Equals(Pattern, other.Pattern);
+
+            public override bool Equals(object? obj) => obj is RegexCacheKey other && Equals(other);
+
+            public override int GetHashCode() =>
+                HashCode.Combine(StringComparer.Ordinal.GetHashCode(Pattern), Options, MatchTimeout);
+        }
+
+        private sealed class RegexCacheEntry
+        {
+            public readonly RegexCacheKey Key;
+            public readonly Regex Value;
+
+            public RegexCacheEntry(RegexCacheKey key, Regex value)
+            {
+                Key = key;
+                Value = value;
+            }
+        }
+
+        private static readonly Lock _regexCacheLock = new();
+        private static readonly Dictionary<RegexCacheKey, LinkedListNode<RegexCacheEntry>> _regexCacheMap = new(RegexCacheCapacity);
+        private static readonly LinkedList<RegexCacheEntry> _regexCacheLru = new();
 
         private static Regex GetOrAddRegex(string pattern) =>
-            _regexCache.GetOrAdd(pattern, static p =>
-                new Regex(p, RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+            GetOrAddRegex(pattern, DefaultRegexOptions, DefaultRegexTimeout);
+
+        internal static Regex GetOrAddRegex(string pattern, RegexOptions options, TimeSpan matchTimeout)
+        {
+            ArgumentNullException.ThrowIfNull(pattern);
+            var key = new RegexCacheKey(pattern, options, matchTimeout);
+
+            lock (_regexCacheLock)
+            {
+                if (_regexCacheMap.TryGetValue(key, out var existingNode))
+                {
+                    _regexCacheLru.Remove(existingNode);
+                    _regexCacheLru.AddLast(existingNode);
+                    return existingNode.Value.Value;
+                }
+            }
+
+            // Compile outside the lock so invalid patterns throw cleanly without blocking or poisoning the cache.
+            var compiled = new Regex(pattern, options, matchTimeout);
+
+            lock (_regexCacheLock)
+            {
+                if (_regexCacheMap.TryGetValue(key, out var existingNode))
+                {
+                    _regexCacheLru.Remove(existingNode);
+                    _regexCacheLru.AddLast(existingNode);
+                    return existingNode.Value.Value;
+                }
+
+                while (_regexCacheMap.Count >= RegexCacheCapacity && _regexCacheLru.First is { } oldest)
+                {
+                    _regexCacheLru.RemoveFirst();
+                    _regexCacheMap.Remove(oldest.Value.Key);
+                }
+
+                var newNode = new LinkedListNode<RegexCacheEntry>(new RegexCacheEntry(key, compiled));
+                _regexCacheLru.AddLast(newNode);
+                _regexCacheMap[key] = newNode;
+                return compiled;
+            }
+        }
+
+        internal static int RegexCacheCount
+        {
+            get
+            {
+                lock (_regexCacheLock)
+                {
+                    return _regexCacheMap.Count;
+                }
+            }
+        }
+
+        internal static void ClearRegexCacheForTests()
+        {
+            lock (_regexCacheLock)
+            {
+                _regexCacheMap.Clear();
+                _regexCacheLru.Clear();
+            }
+        }
 
         /// <summary>
         /// Filters a Utf8StringSeries using a Regex pattern.

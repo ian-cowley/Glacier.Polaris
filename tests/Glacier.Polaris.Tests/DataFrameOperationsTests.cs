@@ -68,7 +68,7 @@ namespace Glacier.Polaris.Tests
             var table = df.ToDataTable();
 
             // Assert
-            Assert.Equal(0, table.Columns.Count);
+            Assert.Empty(table.Columns);
             Assert.Equal(0, table.Rows.Count);
         }
 

@@ -29,104 +29,681 @@ namespace Glacier.Polaris.Data
                 throw new ArgumentException("Target series type mismatch.", nameof(target));
 
             ArgumentOutOfRangeException.ThrowIfNegative(offset);
-            if (offset + Length > t.Length)
+            if (offset > t.Length - Length)
                 throw new ArgumentOutOfRangeException(nameof(offset), "Target ListSeries is smaller than source offset + length.");
+
+            // Upfront atomicity check before mutating target offsets, validity mask, or values.
+            if (!AreValuesCompatible(Values, t.Values))
+                throw new InvalidOperationException($"Target values series type mismatch: expected {Values.GetType().Name}, got {t.Values.GetType().Name}.");
+
+            if (Length == 0)
+                return;
 
             var srcOffsets = Offsets.Memory.Span;
             var targetOffsets = t.Offsets.Memory.Span;
-            if (offset == 0)
-                targetOffsets[0] = 0;
 
-            int baseValueOffset = targetOffsets[offset];
-            int currentTargetOffset = baseValueOffset;
+            int baseValueOffset = offset == 0 ? 0 : targetOffsets[offset];
+            int oldEnd = targetOffsets[offset + Length];
+            int totalTargetValues = targetOffsets[t.Length];
+
+            if (baseValueOffset < 0 || oldEnd < baseValueOffset || totalTargetValues < oldEnd || totalTargetValues > t.Values.Length)
+                throw new InvalidOperationException("Target ListSeries offsets are out of range of target values.");
+
             int srcValueStart = srcOffsets[0];
-            int totalSrcValues = srcOffsets[Length] - srcValueStart;
+            if (srcValueStart < 0 || srcOffsets[Length] < srcValueStart || srcOffsets[Length] > Values.Length)
+                throw new InvalidOperationException("Source ListSeries offsets are out of range of source values.");
 
+            int totalSrcValues = 0;
+            bool hasNonEmptyNullRow = false;
             for (int i = 0; i < Length; i++)
             {
+                int rowStart = srcOffsets[i];
+                int rowEnd = srcOffsets[i + 1];
+                if (rowEnd < rowStart)
+                    throw new InvalidOperationException($"Corrupt source list offsets at row {i}: start={rowStart}, end={rowEnd}.");
+
+                int rowLen = rowEnd - rowStart;
                 if (ValidityMask.IsNull(i))
                 {
-                    t.ValidityMask.SetNull(offset + i);
-                    targetOffsets[offset + i + 1] = currentTargetOffset;
+                    if (rowLen != 0)
+                        hasNonEmptyNullRow = true;
                 }
                 else
                 {
-                    t.ValidityMask.SetValid(offset + i);
-                    currentTargetOffset += srcOffsets[i + 1] - srcOffsets[i];
-                    targetOffsets[offset + i + 1] = currentTargetOffset;
+                    totalSrcValues = checked(totalSrcValues + rowLen);
                 }
             }
 
-            if (totalSrcValues == 0)
+            if (ReferenceEquals(this, t) && !hasNonEmptyNullRow)
                 return;
 
-            int requiredValuesLen = baseValueOffset + totalSrcValues;
-            if (t.Values.Length >= requiredValuesLen && srcValueStart == 0 && Values.Length == totalSrcValues)
+            int suffixCount = totalTargetValues - oldEnd;
+            int newEnd = checked(baseValueOffset + totalSrcValues);
+            int delta = checked(newEnd - oldEnd);
+            int newTotalValues = checked(totalTargetValues + delta);
+
+            int[]? nonContiguousSrcIndices = null;
+            if (hasNonEmptyNullRow && totalSrcValues > 0)
+            {
+                nonContiguousSrcIndices = new int[totalSrcValues];
+                int writePos = 0;
+                for (int i = 0; i < Length; i++)
+                {
+                    if (ValidityMask.IsNull(i)) continue;
+                    int rowStart = srcOffsets[i];
+                    int rowEnd = srcOffsets[i + 1];
+                    for (int j = rowStart; j < rowEnd; j++)
+                        nonContiguousSrcIndices[writePos++] = j;
+                }
+            }
+
+            // Capture source row lengths before mutating offsets in case of self-copy with non-empty null rows.
+            int[]? selfRowLengths = null;
+            bool[]? selfRowNulls = null;
+            if (ReferenceEquals(this, t))
+            {
+                selfRowLengths = new int[Length];
+                selfRowNulls = new bool[Length];
+                for (int i = 0; i < Length; i++)
+                {
+                    selfRowNulls[i] = ValidityMask.IsNull(i);
+                    selfRowLengths[i] = selfRowNulls[i] ? 0 : srcOffsets[i + 1] - srcOffsets[i];
+                }
+            }
+
+            // Phase 1: Update/splice t.Values BEFORE mutating t.Offsets or t.ValidityMask (exception-safe atomicity).
+            if (totalSrcValues > 0 || (suffixCount > 0 && delta != 0))
+            {
+                if (Values is Utf8StringSeries srcUtf8)
+                {
+                    CopyUtf8Values(srcUtf8, t, baseValueOffset, oldEnd, suffixCount, srcValueStart, totalSrcValues, nonContiguousSrcIndices, newTotalValues);
+                }
+                else if (Values is BinarySeries srcBin)
+                {
+                    CopyBinaryValues(srcBin, t, baseValueOffset, oldEnd, suffixCount, srcValueStart, totalSrcValues, nonContiguousSrcIndices, newTotalValues);
+                }
+                else
+                {
+                    CopyGenericValues(t, baseValueOffset, oldEnd, suffixCount, srcValueStart, totalSrcValues, delta, nonContiguousSrcIndices, newTotalValues);
+                }
+            }
+
+            // Phase 2: Update t.Offsets and t.ValidityMask now that t.Values succeeded.
+            if (offset == 0)
+                targetOffsets[0] = 0;
+
+            int currentTargetOffset = baseValueOffset;
+            if (selfRowLengths != null && selfRowNulls != null)
+            {
+                for (int i = 0; i < Length; i++)
+                {
+                    if (selfRowNulls[i])
+                    {
+                        t.ValidityMask.SetNull(offset + i);
+                        targetOffsets[offset + i + 1] = currentTargetOffset;
+                    }
+                    else
+                    {
+                        t.ValidityMask.SetValid(offset + i);
+                        currentTargetOffset = checked(currentTargetOffset + selfRowLengths[i]);
+                        targetOffsets[offset + i + 1] = currentTargetOffset;
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < Length; i++)
+                {
+                    if (ValidityMask.IsNull(i))
+                    {
+                        t.ValidityMask.SetNull(offset + i);
+                        targetOffsets[offset + i + 1] = currentTargetOffset;
+                    }
+                    else
+                    {
+                        t.ValidityMask.SetValid(offset + i);
+                        currentTargetOffset = checked(currentTargetOffset + (srcOffsets[i + 1] - srcOffsets[i]));
+                        targetOffsets[offset + i + 1] = currentTargetOffset;
+                    }
+                }
+            }
+
+            if (delta != 0)
+            {
+                for (int k = offset + Length + 1; k <= t.Length; k++)
+                {
+                    targetOffsets[k] = checked(targetOffsets[k] + delta);
+                }
+            }
+        }
+
+        internal static bool AreValuesCompatible(ISeries src, ISeries dst)
+        {
+            if (src.GetType() != dst.GetType())
+                return false;
+            if (src is ListSeries sl && dst is ListSeries dl)
+                return AreValuesCompatible(sl.Values, dl.Values);
+            if (src is ArraySeries sa && dst is ArraySeries da)
+                return sa.Width == da.Width && AreValuesCompatible(sa.Values, da.Values);
+            if (src is StructSeries ss && dst is StructSeries ds)
+            {
+                if (ss.Fields.Length != ds.Fields.Length)
+                    return false;
+                for (int i = 0; i < ss.Fields.Length; i++)
+                {
+                    if (!AreValuesCompatible(ss.Fields[i], ds.Fields[i]))
+                        return false;
+                }
+                return true;
+            }
+            if (src is EnumSeries se && dst is EnumSeries de)
+                return System.Linq.Enumerable.SequenceEqual(se.Categories, de.Categories);
+            if (src is CategoricalSeries sc && dst is CategoricalSeries dc)
+                return System.Linq.Enumerable.SequenceEqual(sc.RevMap, dc.RevMap);
+            return true;
+        }
+
+        private void CopyGenericValues(
+            ListSeries t,
+            int baseValueOffset,
+            int oldEnd,
+            int suffixCount,
+            int srcValueStart,
+            int totalSrcValues,
+            int delta,
+            int[]? nonContiguousSrcIndices,
+            int newTotalValues)
+        {
+            // Fast-path in-place copy when target has capacity, no suffix shift is needed, and source values are contiguous & full-length.
+            if (!ReferenceEquals(Values, t.Values) &&
+                totalSrcValues > 0 &&
+                (suffixCount == 0 || (delta == 0 && Values is not ListSeries)) &&
+                nonContiguousSrcIndices == null &&
+                srcValueStart == 0 &&
+                Values.Length == totalSrcValues &&
+                t.Values.Length >= newTotalValues)
             {
                 Values.CopyTo(t.Values, baseValueOffset);
                 return;
             }
 
-            // Grow target values series and merge existing prefix [0..baseValueOffset) + source slice
-            int[] srcIndices = new int[totalSrcValues];
-            for (int i = 0; i < totalSrcValues; i++)
-                srcIndices[i] = srcValueStart + i;
-
-            ISeries newValues = CreateTargetValuesSeries(Values, requiredValuesLen, t.Values, baseValueOffset, srcIndices);
-            if (baseValueOffset == 0)
+            ISeries newValues = t.Values.CloneEmpty(newTotalValues);
+            try
             {
-                Values.Take(newValues, srcIndices);
+                if (baseValueOffset > 0)
+                {
+                    int[] prefixIndices = new int[baseValueOffset];
+                    for (int i = 0; i < baseValueOffset; i++)
+                        prefixIndices[i] = i;
+
+                    using ISeries prefixCopy = t.Values.CloneEmpty(baseValueOffset);
+                    t.Values.Take(prefixCopy, prefixIndices);
+                    prefixCopy.CopyTo(newValues, 0);
+                }
+
+                if (totalSrcValues > 0)
+                {
+                    int[] srcIndices;
+                    if (nonContiguousSrcIndices != null)
+                    {
+                        srcIndices = nonContiguousSrcIndices;
+                    }
+                    else
+                    {
+                        srcIndices = new int[totalSrcValues];
+                        for (int i = 0; i < totalSrcValues; i++)
+                            srcIndices[i] = srcValueStart + i;
+                    }
+
+                    if (baseValueOffset == 0 && suffixCount == 0)
+                    {
+                        Values.Take(newValues, srcIndices);
+                    }
+                    else
+                    {
+                        using ISeries srcCopy = Values.CloneEmpty(totalSrcValues);
+                        Values.Take(srcCopy, srcIndices);
+                        srcCopy.CopyTo(newValues, baseValueOffset);
+                    }
+                }
+
+                if (suffixCount > 0)
+                {
+                    int[] suffixIndices = new int[suffixCount];
+                    for (int i = 0; i < suffixCount; i++)
+                        suffixIndices[i] = oldEnd + i;
+
+                    using ISeries suffixCopy = t.Values.CloneEmpty(suffixCount);
+                    t.Values.Take(suffixCopy, suffixIndices);
+                    suffixCopy.CopyTo(newValues, checked(baseValueOffset + totalSrcValues));
+                }
             }
-            else
+            catch
             {
-                int[] prefixIndices = new int[baseValueOffset];
-                for (int i = 0; i < baseValueOffset; i++) prefixIndices[i] = i;
-                using ISeries prefixCopy = CreateTargetValuesSeries(t.Values, baseValueOffset, t.Values, 0, prefixIndices);
-                t.Values.Take(prefixCopy, prefixIndices);
-                prefixCopy.CopyTo(newValues, 0);
-
-                using ISeries srcCopy = CreateTargetValuesSeries(Values, totalSrcValues, t.Values, 0, srcIndices);
-                Values.Take(srcCopy, srcIndices);
-                srcCopy.CopyTo(newValues, baseValueOffset);
+                newValues.Dispose();
+                throw;
             }
 
-            t.Values.Dispose();
+            ISeries oldValues = t.Values;
             t.Values = newValues;
+            oldValues.Dispose();
         }
 
-        private static ISeries CreateTargetValuesSeries(ISeries srcValues, int totalLength, ISeries existingTargetValues, int existingPrefixLen, int[] srcIndices)
+        private static void CopyUtf8Values(
+            Utf8StringSeries src,
+            ListSeries target,
+            int baseValueOffset,
+            int oldEnd,
+            int suffixCount,
+            int srcValueStart,
+            int totalSrcValues,
+            int[]? nonContiguousSrcIndices,
+            int newTotalValues)
         {
-            if (srcValues is Utf8StringSeries u8)
+            if (target.Values is not Utf8StringSeries dst)
+                throw new InvalidOperationException($"Target values series type mismatch: expected Utf8StringSeries, got {target.Values.GetType().Name}.");
+
+            var replacement = SpliceUtf8Series(
+                src,
+                dst,
+                baseValueOffset,
+                oldEnd,
+                suffixCount,
+                srcValueStart,
+                totalSrcValues,
+                nonContiguousSrcIndices,
+                newTotalValues,
+                allowInPlace: true);
+
+            if (replacement != null)
             {
-                int totalBytes = 0;
-                if (existingTargetValues is Utf8StringSeries tu8)
-                {
-                    for (int i = 0; i < existingPrefixLen; i++)
-                        if (!tu8.ValidityMask.IsNull(i)) totalBytes += tu8.GetStringSpan(i).Length;
-                }
-                for (int i = 0; i < srcIndices.Length; i++)
-                {
-                    if (!u8.ValidityMask.IsNull(srcIndices[i])) totalBytes += u8.GetStringSpan(srcIndices[i]).Length;
-                }
-                return new Utf8StringSeries(srcValues.Name, totalLength, totalBytes);
+                ISeries oldValues = target.Values;
+                target.Values = replacement;
+                oldValues.Dispose();
+            }
+        }
+
+        internal static Utf8StringSeries? SpliceUtf8Series(
+            Utf8StringSeries src,
+            Utf8StringSeries dst,
+            int baseValueOffset,
+            int oldEnd,
+            int suffixCount,
+            int srcValueStart,
+            int totalSrcValues,
+            int[]? nonContiguousSrcIndices,
+            int newTotalValues,
+            bool allowInPlace = true)
+        {
+            if (baseValueOffset < 0 || oldEnd < baseValueOffset || suffixCount < 0 || baseValueOffset > dst.Length || oldEnd > dst.Length || checked(oldEnd + suffixCount) > dst.Length)
+                throw new InvalidOperationException($"Target value range [{baseValueOffset}..{oldEnd}) with suffix {suffixCount} exceeds target values length {dst.Length}.");
+
+            int srcBytes = 0;
+            for (int i = 0; i < totalSrcValues; i++)
+            {
+                int idx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                if (!src.ValidityMask.IsNull(idx))
+                    srcBytes = checked(srcBytes + src.GetStringSpan(idx).Length);
             }
 
-            if (srcValues is BinarySeries bin)
+            var dstOffsets = dst.Offsets.Span;
+            int existingPrefixEndByte = baseValueOffset > 0 ? dstOffsets[baseValueOffset] : 0;
+            int existingEndByte = dstOffsets[dst.Length];
+
+            // Fast-path in-place copy only when there are no suffix elements and target has element + byte capacity
+            if (allowInPlace &&
+                suffixCount == 0 &&
+                !ReferenceEquals(src, dst) &&
+                dst.Length >= newTotalValues &&
+                existingEndByte == existingPrefixEndByte &&
+                checked(existingPrefixEndByte + srcBytes) <= dst.DataBytes.Length)
             {
-                int totalBytes = 0;
-                if (existingTargetValues is BinarySeries tbin)
+                var dstData = dst.DataBytes.Span;
+                int curByte = existingPrefixEndByte;
+                for (int i = 0; i < totalSrcValues; i++)
                 {
-                    for (int i = 0; i < existingPrefixLen; i++)
-                        if (!tbin.ValidityMask.IsNull(i)) totalBytes += tbin.GetSpan(i).Length;
+                    int srcIdx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                    int dstIdx = baseValueOffset + i;
+                    dstOffsets[dstIdx] = curByte;
+                    if (src.ValidityMask.IsNull(srcIdx))
+                    {
+                        dst.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        dst.ValidityMask.SetValid(dstIdx);
+                        var span = src.GetStringSpan(srcIdx);
+                        span.CopyTo(dstData.Slice(curByte));
+                        curByte += span.Length;
+                    }
                 }
-                for (int i = 0; i < srcIndices.Length; i++)
+                for (int k = newTotalValues; k <= dst.Length; k++)
                 {
-                    if (!bin.ValidityMask.IsNull(srcIndices[i])) totalBytes += bin.GetSpan(srcIndices[i]).Length;
+                    dstOffsets[k] = curByte;
                 }
-                return new BinarySeries(srcValues.Name, totalLength, totalBytes);
+                return null;
             }
 
-            return srcValues.CloneEmpty(totalLength);
+            int prefixBytes = 0;
+            for (int i = 0; i < baseValueOffset; i++)
+            {
+                if (!dst.ValidityMask.IsNull(i))
+                    prefixBytes = checked(prefixBytes + dst.GetStringSpan(i).Length);
+            }
+
+            int suffixBytes = 0;
+            for (int i = 0; i < suffixCount; i++)
+            {
+                int idx = oldEnd + i;
+                if (!dst.ValidityMask.IsNull(idx))
+                    suffixBytes = checked(suffixBytes + dst.GetStringSpan(idx).Length);
+            }
+
+            int totalBytes = checked(prefixBytes + srcBytes + suffixBytes);
+            var newValues = new Utf8StringSeries(dst.Name, newTotalValues, totalBytes);
+            try
+            {
+                var newOffsets = newValues.Offsets.Span;
+                var newData = newValues.DataBytes.Span;
+                int writeByte = 0;
+
+                for (int i = 0; i < baseValueOffset; i++)
+                {
+                    newOffsets[i] = writeByte;
+                    if (dst.ValidityMask.IsNull(i))
+                    {
+                        newValues.ValidityMask.SetNull(i);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(i);
+                        var span = dst.GetStringSpan(i);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                for (int i = 0; i < totalSrcValues; i++)
+                {
+                    int srcIdx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                    int dstIdx = baseValueOffset + i;
+                    newOffsets[dstIdx] = writeByte;
+                    if (src.ValidityMask.IsNull(srcIdx))
+                    {
+                        newValues.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(dstIdx);
+                        var span = src.GetStringSpan(srcIdx);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                for (int i = 0; i < suffixCount; i++)
+                {
+                    int srcIdx = oldEnd + i;
+                    int dstIdx = baseValueOffset + totalSrcValues + i;
+                    newOffsets[dstIdx] = writeByte;
+                    if (dst.ValidityMask.IsNull(srcIdx))
+                    {
+                        newValues.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(dstIdx);
+                        var span = dst.GetStringSpan(srcIdx);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                newOffsets[newTotalValues] = writeByte;
+                return newValues;
+            }
+            catch
+            {
+                newValues.Dispose();
+                throw;
+            }
+        }
+
+        private static void CopyBinaryValues(
+            BinarySeries src,
+            ListSeries target,
+            int baseValueOffset,
+            int oldEnd,
+            int suffixCount,
+            int srcValueStart,
+            int totalSrcValues,
+            int[]? nonContiguousSrcIndices,
+            int newTotalValues)
+        {
+            if (target.Values is not BinarySeries dst)
+                throw new InvalidOperationException($"Target values series type mismatch: expected BinarySeries, got {target.Values.GetType().Name}.");
+
+            var replacement = SpliceBinarySeries(
+                src,
+                dst,
+                baseValueOffset,
+                oldEnd,
+                suffixCount,
+                srcValueStart,
+                totalSrcValues,
+                nonContiguousSrcIndices,
+                newTotalValues,
+                allowInPlace: true);
+
+            if (replacement != null)
+            {
+                ISeries oldValues = target.Values;
+                target.Values = replacement;
+                oldValues.Dispose();
+            }
+        }
+
+        internal static BinarySeries? SpliceBinarySeries(
+            BinarySeries src,
+            BinarySeries dst,
+            int baseValueOffset,
+            int oldEnd,
+            int suffixCount,
+            int srcValueStart,
+            int totalSrcValues,
+            int[]? nonContiguousSrcIndices,
+            int newTotalValues,
+            bool allowInPlace = true)
+        {
+            if (baseValueOffset < 0 || oldEnd < baseValueOffset || suffixCount < 0 || baseValueOffset > dst.Length || oldEnd > dst.Length || checked(oldEnd + suffixCount) > dst.Length)
+                throw new InvalidOperationException($"Target value range [{baseValueOffset}..{oldEnd}) with suffix {suffixCount} exceeds target values length {dst.Length}.");
+
+            int srcBytes = 0;
+            for (int i = 0; i < totalSrcValues; i++)
+            {
+                int idx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                if (!src.ValidityMask.IsNull(idx))
+                    srcBytes = checked(srcBytes + src.GetSpan(idx).Length);
+            }
+
+            var dstOffsets = dst.Offsets.Span;
+            int existingPrefixEndByte = baseValueOffset > 0 ? dstOffsets[baseValueOffset] : 0;
+            int existingEndByte = dstOffsets[dst.Length];
+
+            if (allowInPlace &&
+                suffixCount == 0 &&
+                !ReferenceEquals(src, dst) &&
+                dst.Length >= newTotalValues &&
+                existingEndByte == existingPrefixEndByte &&
+                checked(existingPrefixEndByte + srcBytes) <= dst.DataBytes.Length)
+            {
+                var dstData = dst.DataBytes.Span;
+                int curByte = existingPrefixEndByte;
+                for (int i = 0; i < totalSrcValues; i++)
+                {
+                    int srcIdx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                    int dstIdx = baseValueOffset + i;
+                    dstOffsets[dstIdx] = curByte;
+                    if (src.ValidityMask.IsNull(srcIdx))
+                    {
+                        dst.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        dst.ValidityMask.SetValid(dstIdx);
+                        var span = src.GetSpan(srcIdx);
+                        span.CopyTo(dstData.Slice(curByte));
+                        curByte += span.Length;
+                    }
+                }
+                for (int k = newTotalValues; k <= dst.Length; k++)
+                {
+                    dstOffsets[k] = curByte;
+                }
+                return null;
+            }
+
+            int prefixBytes = 0;
+            for (int i = 0; i < baseValueOffset; i++)
+            {
+                if (!dst.ValidityMask.IsNull(i))
+                    prefixBytes = checked(prefixBytes + dst.GetSpan(i).Length);
+            }
+
+            int suffixBytes = 0;
+            for (int i = 0; i < suffixCount; i++)
+            {
+                int idx = oldEnd + i;
+                if (!dst.ValidityMask.IsNull(idx))
+                    suffixBytes = checked(suffixBytes + dst.GetSpan(idx).Length);
+            }
+
+            int totalBytes = checked(prefixBytes + srcBytes + suffixBytes);
+            var newValues = new BinarySeries(dst.Name, newTotalValues, totalBytes);
+            try
+            {
+                var newOffsets = newValues.Offsets.Span;
+                var newData = newValues.DataBytes.Span;
+                int writeByte = 0;
+
+                for (int i = 0; i < baseValueOffset; i++)
+                {
+                    newOffsets[i] = writeByte;
+                    if (dst.ValidityMask.IsNull(i))
+                    {
+                        newValues.ValidityMask.SetNull(i);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(i);
+                        var span = dst.GetSpan(i);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                for (int i = 0; i < totalSrcValues; i++)
+                {
+                    int srcIdx = nonContiguousSrcIndices != null ? nonContiguousSrcIndices[i] : srcValueStart + i;
+                    int dstIdx = baseValueOffset + i;
+                    newOffsets[dstIdx] = writeByte;
+                    if (src.ValidityMask.IsNull(srcIdx))
+                    {
+                        newValues.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(dstIdx);
+                        var span = src.GetSpan(srcIdx);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                for (int i = 0; i < suffixCount; i++)
+                {
+                    int srcIdx = oldEnd + i;
+                    int dstIdx = baseValueOffset + totalSrcValues + i;
+                    newOffsets[dstIdx] = writeByte;
+                    if (dst.ValidityMask.IsNull(srcIdx))
+                    {
+                        newValues.ValidityMask.SetNull(dstIdx);
+                    }
+                    else
+                    {
+                        newValues.ValidityMask.SetValid(dstIdx);
+                        var span = dst.GetSpan(srcIdx);
+                        span.CopyTo(newData.Slice(writeByte));
+                        writeByte += span.Length;
+                    }
+                }
+
+                newOffsets[newTotalValues] = writeByte;
+                return newValues;
+            }
+            catch
+            {
+                newValues.Dispose();
+                throw;
+            }
+        }
+
+        internal static Utf8StringSeries? TakeUtf8Into(Utf8StringSeries src, Utf8StringSeries dst, ReadOnlySpan<int> indices)
+        {
+            int totalBytes = 0;
+            for (int i = 0; i < indices.Length; i++)
+            {
+                int idx = indices[i];
+                if (idx != -1 && !src.ValidityMask.IsNull(idx))
+                    totalBytes = checked(totalBytes + src.GetStringSpan(idx).Length);
+            }
+
+            if (!ReferenceEquals(src, dst) && dst.Length >= indices.Length && dst.DataBytes.Length >= totalBytes)
+            {
+                src.Take(dst, indices);
+                return null;
+            }
+
+            var newDst = new Utf8StringSeries(dst.Name, indices.Length, totalBytes);
+            try
+            {
+                src.Take(newDst, indices);
+                return newDst;
+            }
+            catch
+            {
+                newDst.Dispose();
+                throw;
+            }
+        }
+
+        internal static BinarySeries? TakeBinaryInto(BinarySeries src, BinarySeries dst, ReadOnlySpan<int> indices)
+        {
+            int totalBytes = 0;
+            for (int i = 0; i < indices.Length; i++)
+            {
+                int idx = indices[i];
+                if (idx != -1 && !src.ValidityMask.IsNull(idx))
+                    totalBytes = checked(totalBytes + src.GetSpan(idx).Length);
+            }
+
+            if (!ReferenceEquals(src, dst) && dst.Length >= indices.Length && dst.DataBytes.Length >= totalBytes)
+            {
+                src.Take(dst, indices);
+                return null;
+            }
+
+            var newDst = new BinarySeries(dst.Name, indices.Length, totalBytes);
+            try
+            {
+                src.Take(newDst, indices);
+                return newDst;
+            }
+            catch
+            {
+                newDst.Dispose();
+                throw;
+            }
         }
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
@@ -198,9 +775,17 @@ namespace Glacier.Polaris.Data
                     newValues = Values.CloneEmpty(totalValues);
                 }
 
-                if (totalValues > 0)
+                try
                 {
-                    Values.Take(newValues, allValueIndices);
+                    if (totalValues > 0)
+                    {
+                        Values.Take(newValues, allValueIndices);
+                    }
+                }
+                catch
+                {
+                    newValues.Dispose();
+                    throw;
                 }
 
                 t.Values.Dispose();

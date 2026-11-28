@@ -103,7 +103,7 @@ namespace Glacier.Polaris
         public DataFrame Agg(params Expr[] exprs)
         {
             // Delegate to lazy engine using the actual groupby columns, not all df columns
-            return _source.Lazy().GroupBy(_columns).Agg(exprs).Collect().GetAwaiter().GetResult();
+            return ExecutionEngine.EvaluateGroupAggregations(_source, _columns, _groups, exprs);
         }
         /// <summary>
         /// Returns a DataFrame with the group keys and a "groups" column containing the row indices for each group.

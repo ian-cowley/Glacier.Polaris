@@ -134,8 +134,14 @@ namespace Glacier.Polaris.IO
                 else if (_f32 != null) writer.WriteNumber(_name, _f32.Memory.Span[row]);
                 else if (_date != null)
                 {
-                    var dateOnly = DateOnly.FromDayNumber((int)_date.Memory.Span[row]);
-                    writer.WriteString(_name, dateOnly.ToString("yyyy-MM-dd"));
+                    int days = _date.Memory.Span[row];
+                    var epoch = new DateOnly(1970, 1, 1);
+                    int minDays = DateOnly.MinValue.DayNumber - epoch.DayNumber;
+                    int maxDays = DateOnly.MaxValue.DayNumber - epoch.DayNumber;
+                    var dateOnly = days <= minDays ? DateOnly.MinValue
+                        : days >= maxDays ? DateOnly.MaxValue
+                        : epoch.AddDays(days);
+                    writer.WriteString(_name, dateOnly.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
                 }
                 else if (_datetime != null)
                 {

@@ -61,7 +61,7 @@ namespace Glacier.Polaris.Tests
         [Fact]
         public void TestCategoricalCreation()
         {
-            var strings = new[] { "a", "b", null, "a" };
+            var strings = new string?[] { "a", "b", null, "a" };
             var cat = CategoricalSeries.FromStrings("cat", strings);
 
             Assert.Equal(4, cat.Length);
@@ -70,6 +70,33 @@ namespace Glacier.Polaris.Tests
             Assert.Equal(1u, cat.Memory.Span[1]);
             Assert.True(cat.ValidityMask.IsNull(2));
             Assert.Equal(0u, cat.Memory.Span[3]);
+        }
+
+        [Fact]
+        public void TestCategoricalCreation_NullableSpanAndStringCacheToggle()
+        {
+            StringCache.Disable();
+            try
+            {
+                ReadOnlySpan<string?> nullableSpan = new string?[] { "x", null, "x", "y", null };
+                using var catLocal = CategoricalSeries.FromStrings("local", nullableSpan);
+                Assert.Equal(5, catLocal.Length);
+                Assert.Equal("x", catLocal.Get(0));
+                Assert.Null(catLocal.Get(1));
+                Assert.True(catLocal.ValidityMask.IsNull(1));
+                Assert.True(catLocal.ValidityMask.IsNull(4));
+                Assert.Equal(catLocal.Memory.Span[0], catLocal.Memory.Span[2]);
+
+                StringCache.Enable();
+                using var catCached = CategoricalSeries.FromStrings("cached", ["x", null, "y"]);
+                Assert.Equal("x", catCached.Get(0));
+                Assert.True(catCached.ValidityMask.IsNull(1));
+                Assert.Equal("y", catCached.Get(2));
+            }
+            finally
+            {
+                StringCache.Disable();
+            }
         }
         [Fact]
         public async Task TestCategoricalCast()

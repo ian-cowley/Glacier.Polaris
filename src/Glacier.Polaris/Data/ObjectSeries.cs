@@ -11,9 +11,9 @@ namespace Glacier.Polaris.Data
     // Stores arbitrary CLR objects. Useful for mixed-type prototype columns
     // or as an escape hatch when no concrete series type fits.
     //
-    // Arrow serialisation: each element is ToString()'d and emitted as a
-    // StringArray, because Arrow has no generic Object type. Round-tripping
-    // through Arrow will yield a Utf8StringSeries on the way back.
+    // Compact Columnar IPC serialisation: each element is ToString()'d and emitted as a
+    // Utf8 column, because Glacier Compact Columnar IPC v1 has no generic Object type.
+    // Round-tripping through Compact Columnar IPC yields a Utf8StringSeries on the way back.
 
     public sealed class ObjectSeries : ISeries
     {
@@ -69,7 +69,7 @@ namespace Glacier.Polaris.Data
         {
             if (target is ObjectSeries t)
                 for (int i = 0; i < indices.Length; i++)
-                    t.SetValue(i, indices[i] == -1 ? null : _data[indices[i]]);
+                    t.SetValue(i, indices[i] < 0 ? null : _data[indices[i]]);
             else throw new InvalidOperationException("Type mismatch in Take.");
         }
 
@@ -87,7 +87,7 @@ namespace Glacier.Polaris.Data
         public ISeries MapElements(Func<object?, object?> mapping, Type returnType) => Compute.ComputeKernels.MapElements(this, mapping, returnType);
 
         /// <summary>
-        /// Serialise to Arrow as a StringArray (each value is ToString()'d).
+        /// Serialise to Glacier Compact Columnar IPC v1 as a Utf8 column (each value is ToString()'d).
         /// This is a lossy conversion: round-tripping yields Utf8StringSeries.
         /// </summary>
         public ArrowColumn ToArrowColumn()

@@ -1,40 +1,51 @@
 using System;
-using System.Linq.Expressions;
 using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Threading.Tasks;
 
 namespace Glacier.Polaris
 {
     /// <summary>
     /// Represents a deferred execution plan for a DataFrame.
-    /// Accumulates operations as an expression tree.
+    /// Accumulates operations as a strongly-typed <see cref="LogicalPlanNode"/> tree.
     /// </summary>
     public sealed class LazyFrame
     {
-        public Expression Plan { get; }
+        private Expression? _cachedLegacyPlan;
+
+        internal LogicalPlanNode PlanNode { get; }
+
+        internal LogicalPlanNode LogicalPlan => PlanNode;
+
+        public Expression Plan => _cachedLegacyPlan ??= PlanNode.ToLegacyExpression();
 
         public LazyFrame(Expression plan)
         {
-            Plan = plan;
+            PlanNode = LogicalPlanNode.FromLegacyExpression(plan);
+            _cachedLegacyPlan = plan;
+        }
+
+        internal LazyFrame(LogicalPlanNode planNode)
+        {
+            PlanNode = planNode ?? throw new ArgumentNullException(nameof(planNode));
         }
 
         public LazyFrame Filter(Expression<Func<Expr, Expr>> predicate)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(FilterOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Quote(predicate));
-            return new LazyFrame(methodCall);
+            var expr = ExprLambdaEvaluator.Evaluate(predicate);
+            return new LazyFrame(new FilterPlanNode(PlanNode, expr, predicate));
         }
 
         public LazyFrame Filter(Expr predicate)
         {
-            return Filter(_ => predicate);
+            ArgumentNullException.ThrowIfNull(predicate);
+            return new LazyFrame(new FilterPlanNode(PlanNode, predicate));
         }
 
         public LazyFrame Select(params Expr[] selections)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(SelectOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.Constant(selections, typeof(Expr[]));
-            var methodCall = Expression.Call(null, method, Plan, arrayExpr);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new SelectPlanNode(PlanNode, selections));
         }
 
         public LazyFrame Select(params Expression<Func<Expr, Expr>>[] selections)
@@ -45,47 +56,34 @@ namespace Glacier.Polaris
 
         public LazyFrame GroupBy(params string[] columns)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(GroupByOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.Constant(columns, typeof(string[]));
-            var methodCall = Expression.Call(null, method, Plan, arrayExpr);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new GroupByPlanNode(PlanNode, columns));
         }
 
         public LazyFrame Agg(params Expr[] aggregations)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(AggOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.Constant(aggregations, typeof(Expr[]));
-            var methodCall = Expression.Call(null, method, Plan, arrayExpr);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new AggPlanNode(PlanNode, null, aggregations));
         }
 
         public static LazyFrame ScanCsv(string filePath)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ScanCsvOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(filePath), Expression.Constant(null, typeof(string[])), Expression.Constant(null, typeof(int?)));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ScanCsvPlanNode(filePath, null, null));
         }
 
         public static LazyFrame ScanParquet(string filePath)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ScanParquetOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(filePath), Expression.Constant(null, typeof(string[])));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ScanParquetPlanNode(filePath, null));
         }
 
         public static LazyFrame ScanJson(string filePath, string[]? columns = null)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ScanJsonOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(filePath), Expression.Constant(columns, typeof(string[])));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ScanJsonPlanNode(filePath, columns));
         }
 
         public static LazyFrame ScanSql(System.Data.IDbConnection connection, string sql)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ScanSqlOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(connection), Expression.Constant(sql));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ScanSqlPlanNode(connection, sql));
         }
+
         /// <summary>
         /// Collect and optionally stream results.
         /// When streaming=false (default): materialize into a single DataFrame (existing behavior).
@@ -104,10 +102,12 @@ namespace Glacier.Polaris
             {
                 yield return df;
             }
-        }        /// <summary>
-                 /// Collect the plan in batches of the specified size (streaming).
-                 /// Each batch is a DataFrame with at most batchSize rows.
-                 /// </summary>
+        }
+
+        /// <summary>
+        /// Collect the plan in batches of the specified size (streaming).
+        /// Each batch is a DataFrame with at most batchSize rows.
+        /// </summary>
         public async IAsyncEnumerable<DataFrame> CollectStreaming(int batchSize = 65536)
         {
             await foreach (var df in CollectAsync())
@@ -138,34 +138,52 @@ namespace Glacier.Polaris
                 }
             }
         }
+
         public LazyFrame Join(LazyFrame other, string on, JoinType type = JoinType.Inner)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(JoinOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, other.Plan, Expression.Constant(on), Expression.Constant(type));
-            return new LazyFrame(methodCall);
+            ArgumentNullException.ThrowIfNull(other);
+            var keys = type == JoinType.Cross && string.IsNullOrEmpty(on) ? Array.Empty<string>() : new[] { on };
+            return new LazyFrame(new JoinPlanNode(PlanNode, other.PlanNode, keys, keys, type));
+        }
+
+        public LazyFrame Join(LazyFrame other, string[] on, JoinType type = JoinType.Inner)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            return Join(other, on, on, type);
+        }
+
+        public LazyFrame Join(LazyFrame other, string[] leftOn, string[] rightOn, JoinType type = JoinType.Inner)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+            if (type == JoinType.Cross)
+            {
+                return new LazyFrame(new JoinPlanNode(PlanNode, other.PlanNode, Array.Empty<string>(), Array.Empty<string>(), type));
+            }
+            ArgumentNullException.ThrowIfNull(leftOn);
+            ArgumentNullException.ThrowIfNull(rightOn);
+            if (leftOn.Length == 0)
+                throw new ArgumentException("At least one join key column is required.", nameof(leftOn));
+            if (leftOn.Length != rightOn.Length)
+                throw new ArgumentException($"Join key arity mismatch: left has {leftOn.Length} keys, right has {rightOn.Length} keys.");
+            return new LazyFrame(new JoinPlanNode(PlanNode, other.PlanNode, leftOn, rightOn, type));
         }
 
         public LazyFrame Limit(int n)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(LimitOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(n));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new LimitPlanNode(PlanNode, n));
         }
+
         /// <summary>
         /// Returns the first n rows (default 5). Matches Polars lf.head(n).
         /// </summary>
         public LazyFrame Head(int n = 5) => Limit(n);
 
-
         public LazyFrame WithColumns(params Expr[] columns)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(WithColumnsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var arrayExpr = Expression.Constant(columns, typeof(Expr[]));
-            var methodCall = Expression.Call(null, method, Plan, arrayExpr);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new WithColumnsPlanNode(PlanNode, columns));
         }
 
-        // Dummy static methods to form the AST
+        // Marker methods retained for legacy Expression AST compatibility (bound via delegate .Method, zero reflection).
         internal static LazyFrame ScanCsvOp(string filePath, string[]? columns = null, int? nRows = null) => null!;
         internal static LazyFrame ScanParquetOp(string filePath, string[]? columns = null) => null!;
         internal static LazyFrame ScanJsonOp(string filePath, string[]? columns = null) => null!;
@@ -174,7 +192,9 @@ namespace Glacier.Polaris
         internal static LazyFrame SelectOp(LazyFrame source, Expr[] selections) => null!;
         internal static LazyFrame GroupByOp(LazyFrame source, string[] columns) => null!;
         internal static LazyFrame AggOp(LazyFrame source, Expr[] aggregations) => null!;
+        internal static LazyFrame GroupByAggOp(LazyFrame source, string[] columns, Expr[] aggregations) => null!;
         internal static LazyFrame JoinOp(LazyFrame left, LazyFrame right, string on, JoinType type) => null!;
+        internal static LazyFrame JoinMultiOp(LazyFrame left, LazyFrame right, string[] leftOn, string[] rightOn, JoinType type) => null!;
         internal static LazyFrame LimitOp(LazyFrame source, int n) => null!;
         internal static LazyFrame WithColumnsOp(LazyFrame source, Expr[] columns) => null!;
 
@@ -198,53 +218,41 @@ namespace Glacier.Polaris
 
         public IAsyncEnumerable<DataFrame> CollectAsync()
         {
-            // The execution engine evaluates the optimized expression tree and streams the results.
             var optimizer = new QueryOptimizer();
-            var optimizedPlan = optimizer.Optimize(Plan);
+            var optimizedPlan = optimizer.Optimize(PlanNode);
 
             var executor = new ExecutionEngine(optimizer.NestedFieldPaths);
             return executor.ExecuteAsync(optimizedPlan);
         }
+
         public LazyFrame Delay(int ms)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(DelayOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(ms));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new DelayPlanNode(PlanNode, ms));
         }
 
         public LazyFrame Unnest(params string[] columns)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(UnnestOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(columns));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new UnnestPlanNode(PlanNode, columns));
         }
 
         public LazyFrame Unpivot(string[] on, string[] index)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(UnpivotOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(on), Expression.Constant(index));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new UnpivotPlanNode(PlanNode, on, index));
         }
 
         public LazyFrame Pivot(string[] index, string pivot, string values, string aggregate = "sum")
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(PivotOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(index), Expression.Constant(new[] { pivot }), Expression.Constant(new[] { values }), Expression.Constant(aggregate));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new PivotPlanNode(PlanNode, index, new[] { pivot }, new[] { values }, aggregate));
         }
 
         public LazyFrame Transpose(bool include_header = false, string header_name = "column", string[]? column_names = null)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(TransposeOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(include_header), Expression.Constant(header_name), Expression.Constant(column_names, typeof(string[])));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new TransposePlanNode(PlanNode, include_header, header_name, column_names));
         }
 
         public LazyFrame Explode(string column)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ExplodeOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(column));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ExplodePlanNode(PlanNode, column));
         }
 
         public LazyFrame Sort(string columnName, bool descending = false)
@@ -259,9 +267,7 @@ namespace Glacier.Polaris
 
         public LazyFrame Sort(string[] columnNames, bool[] descending)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(SortOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(columnNames), Expression.Constant(descending));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new SortPlanNode(PlanNode, columnNames, descending));
         }
 
         internal static LazyFrame SortOp(LazyFrame source, string[] columnNames, bool[] descending) => null!;
@@ -293,10 +299,10 @@ namespace Glacier.Polaris
 
         public static LazyFrame FromDataFrame(DataFrame df)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(DataFrameOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Expression.Constant(df));
-            return new LazyFrame(methodCall);
-        }    /// <summary>Remove duplicate rows (distinct). Polars API: distinct()</summary>
+            return new LazyFrame(new DataFramePlanNode(df));
+        }
+
+        /// <summary>Remove duplicate rows (distinct). Polars API: distinct()</summary>
         public LazyFrame Distinct(string[]? subset = null, bool maintainOrder = true)
         {
             return Unique(subset, maintainOrder);
@@ -305,59 +311,50 @@ namespace Glacier.Polaris
         /// <summary>Remove duplicate rows (distinct).</summary>
         public LazyFrame Unique(string[]? subset = null, bool maintainOrder = true)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(UniqueOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(subset, typeof(string[])), Expression.Constant(maintainOrder));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new UniquePlanNode(PlanNode, subset, maintainOrder));
         }
         internal static LazyFrame UniqueOp(LazyFrame source, string[]? subset = null, bool maintainOrder = true) => null!;
+
         /// <summary>Return a slice of rows (offset, length). Supports negative offset.</summary>
         public LazyFrame Slice(int offset, int length)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(SliceOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(offset), Expression.Constant(length));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new SlicePlanNode(PlanNode, offset, length));
         }
+
         /// <summary>Return the last n rows.</summary>
         public LazyFrame Tail(int n)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(TailOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(n));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new TailPlanNode(PlanNode, n));
         }
+
         /// <summary>Remove rows containing nulls. If anyNull is true (default), drops rows where any column has null; if false, drops rows where all columns have null.</summary>
         public LazyFrame DropNulls(string[]? subset = null, bool anyNull = true)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(DropNullsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(subset, typeof(string[])), Expression.Constant(anyNull));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new DropNullsPlanNode(PlanNode, subset, anyNull));
         }
+
         /// <summary>Replace NaN values in float columns with the specified value.</summary>
         public LazyFrame FillNan(double value)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(FillNanOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(value));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new FillNanPlanNode(PlanNode, value));
         }
+
         /// <summary>Prepend a 0-based row index column with the given name.</summary>
         public LazyFrame WithRowIndex(string name = "index")
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(WithRowIndexOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(name));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new WithRowIndexPlanNode(PlanNode, name));
         }
+
         /// <summary>Rename columns using a dictionary of old name to new name mappings.</summary>
         public LazyFrame Rename(Dictionary<string, string> mapping)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(RenameOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(mapping));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new RenamePlanNode(PlanNode, mapping));
         }
+
         /// <summary>Return a 2-column DataFrame with per-column null counts (column name + null_count).</summary>
         public LazyFrame NullCount()
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(NullCountOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new NullCountPlanNode(PlanNode));
         }
 
         /// <summary>
@@ -365,9 +362,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame Fetch(int n)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(FetchOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(n));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new FetchPlanNode(PlanNode, n));
         }
 
         /// <summary>
@@ -383,21 +378,19 @@ namespace Glacier.Polaris
         }
 
         /// <summary>
-        /// Collect the plan and write the results to a CSV file.
+        /// Stream the plan chunk-by-chunk directly to a CSV file without materializing all rows.
         /// </summary>
         public async Task SinkCsv(string filePath)
         {
-            var df = await Collect();
-            df.WriteCsv(filePath);
+            await IO.CsvWriter.WriteStreamAsync(CollectAsync(), filePath).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Collect the plan and write the results to a Parquet file.
+        /// Stream the plan chunk-by-chunk directly to a Parquet file without materializing all rows.
         /// </summary>
         public async Task SinkParquet(string filePath)
         {
-            var df = await Collect();
-            df.WriteParquet(filePath);
+            await IO.ParquetWriter.WriteStreamAsync(CollectAsync(), filePath).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -406,33 +399,31 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame ShiftColumns(int n)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ShiftColumnsOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(n));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ShiftColumnsPlanNode(PlanNode, n));
         }
+
         /// <summary>Shift columns by n positions (alias for ShiftColumns). Polars API: shift()</summary>
         public LazyFrame Shift(int n)
         {
             return ShiftColumns(n);
         }
+
         /// <summary>
-        /// Collect the plan and write the results to an Arrow IPC file.
+        /// Stream the plan chunk-by-chunk directly to a Glacier Compact Columnar IPC v1 file without materializing all rows.
         /// </summary>
         public async Task SinkIpc(string filePath)
         {
-            var df = await Collect();
-            df.WriteIpc(filePath);
+            await IO.IpcWriter.WriteStreamAsync(CollectAsync(), filePath).ConfigureAwait(false);
         }
         internal static LazyFrame SinkIpcOp(LazyFrame source, string filePath) => null!;
         internal static LazyFrame AggGroupsOp(LazyFrame source, string[] columns) => null!;
+
         /// <summary>
         /// Group-by dynamic (time-window-based grouping). Ported from Glacier.Polaris_OLD.
         /// </summary>
         public LazyFrame GroupByDynamic(string indexColumn, string every, string? period = null, string? offset = null, string closed = "left", string startBy = "window")
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(GroupByDynamicOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(every), Expression.Constant(period, typeof(string)), Expression.Constant(offset, typeof(string)), Expression.Constant(closed), Expression.Constant(startBy));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new GroupByDynamicPlanNode(PlanNode, indexColumn, every, period, offset, closed, startBy));
         }
 
         /// <summary>
@@ -440,9 +431,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame GroupByRolling(string indexColumn, string period, string? offset = null, string closed = "right")
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(GroupByRollingOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(indexColumn), Expression.Constant(period), Expression.Constant(offset, typeof(string)), Expression.Constant(closed));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new GroupByRollingPlanNode(PlanNode, indexColumn, period, offset, closed));
         }
 
         /// <summary>
@@ -450,9 +439,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame Clear()
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ClearOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ClearPlanNode(PlanNode));
         }
 
         /// <summary>
@@ -460,9 +447,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame ShrinkToFit()
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(ShrinkToFitOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new ShrinkToFitPlanNode(PlanNode));
         }
 
         /// <summary>
@@ -471,9 +456,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame Rechunk()
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(RechunkOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new RechunkPlanNode(PlanNode));
         }
 
         /// <summary>
@@ -482,9 +465,7 @@ namespace Glacier.Polaris
         /// </summary>
         public LazyFrame Map(Func<DataFrame, DataFrame> func)
         {
-            var method = typeof(LazyFrame).GetMethod(nameof(MapOp), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var methodCall = Expression.Call(null, method, Plan, Expression.Constant(func));
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new MapPlanNode(PlanNode, func));
         }
     }
 }

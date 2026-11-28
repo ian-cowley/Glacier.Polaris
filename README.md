@@ -14,7 +14,7 @@
 
 > 📖 **Read the Deep-Dive**: **[I built a native C# DataFrame engine to rival Python Polars. It’s actually faster on some things.](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg)**
 
-**Glacier.Polaris** (`v1.1.0`) is a 100% pure C#, Native AOT-compatible, high-performance columnar DataFrame and lazy query engine for .NET 10, inspired by [Polars](https://github.com/pola-rs/polars) and built natively on the Apache Arrow memory layout via `Glacier.Storage`.
+**Glacier.Polaris** (`v1.2.6`) is a 100% pure C#, Native AOT-compatible, high-performance columnar DataFrame and lazy query engine for .NET 10, inspired by [Polars](https://github.com/pola-rs/polars) and built on **Glacier Compact Columnar IPC v1** (`Glacier.Formats`) and compressed columnar storage primitives (`Glacier.Storage`). *(Note: Glacier Compact Columnar IPC v1 uses a custom compact binary framing and is not Apache Arrow FlatBuffers wire-compatible.)*
 
 > [!TIP]
 > For detailed architecture, memory ownership invariants, optimizer soundness rules, and execution design, see **[ARCHITECTURE.md](ARCHITECTURE.md)** and **[docs/REPORT.md](docs/REPORT.md)**.
@@ -39,10 +39,10 @@ Install-Package Glacier.Polaris
 
 * **100% Pure C# & Native AOT Compatible (`IsAotCompatible=true`)**: Zero runtime IL emission, zero `LambdaExpression.Compile()`, zero dynamic type construction (`Activator.CreateInstance` / `Type.GetType`). Ready for Native AOT single-file deployment.
 * **Strongly Typed Columnar Memory**: 64-byte cache-line-aligned unmanaged buffers (`NativeMemoryOwner<T>`) and `Memory<T>` / `Span<T>` zero-boxing series (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Decimal`, `Boolean`, `Utf8String`, `Binary`, `Date`, `Datetime`, `Duration`, `Time`, `Categorical`, `Enum`, `List`, `Struct`, `Array`).
-* **Arrow-Compatible Nullability & Kleene Logic**: Bit-packed 64-bit `ValidityMask` with strict tail-bit masking invariants (`0 <= NullCount <= Length`) and three-valued `KleeneBool` (`True`, `False`, `NA`) algebra across arithmetic, sorting, joins, grouping, and deduplication.
-* **SIMD CPU Kernels + Optional NVIDIA CUDA Offload**: Multi-threaded `Vector512<T>` (AVX-512) and `Vector256<T>` (AVX2) CPU kernels across filters, aggregations, math, strings, and 8-bit LSD radix sorts, plus optional bare-metal NVIDIA CUDA PTX offload (`nvcuda` driver API via `Glacier.Gpu`) with automatic SIMD CPU fallback when no NVIDIA GPU is present. *(Note: AMD ROCm/HIP is not supported; `GpuTarget.Amd` throws `PlatformNotSupportedException`.)*
+* **Arrow-Style Bit-Packed Nullability & Kleene Logic**: Little-endian 64-bit `ValidityMask` (matching Apache Arrow's bit convention) with strict tail-bit masking invariants (`0 <= NullCount <= Length`) and three-valued `KleeneBool` (`True`, `False`, `NA`) algebra across arithmetic, sorting, joins, grouping, and deduplication.
+* **SIMD CPU Kernels + Optional NVIDIA CUDA Offload**: Multi-threaded `Vector512<T>` (AVX-512), `Vector256<T>` (AVX2), and `TensorPrimitives` CPU kernels across filters, aggregations, math, strings, and 8-bit LSD radix sorts, plus optional bare-metal NVIDIA CUDA PTX offload (`nvcuda` driver API via `Glacier.Gpu`) with automatic SIMD CPU fallback when no NVIDIA GPU is present. *(Note: AMD ROCm/HIP and multi-GPU targets are not supported; `GpuTarget.Amd` throws `PlatformNotSupportedException` and `GpuTarget.DualGpu` throws `NotSupportedException`.)*
 * **Sound Relational Query Optimizer**: Predicate pushdown (with alias rewriting and window/aggregation barriers), projection pushdown across `ScanCsv` / `ScanParquet` / `ScanJson` / `Join`, slice (`Limit`) pushdown, and cardinality-aware inner-join reordering that preserves output schema order.
-* **Streaming & Out-of-Core I/O**: Pipelined CSV, Parquet, Arrow IPC (`Glacier.Storage`), and multi-column NDJSON / JSON-array (`Utf8JsonReader`) readers and writers, plus spillable K-way external merge sort.
+* **Streaming & Out-of-Core I/O**: Pipelined CSV, Parquet, **Glacier Compact Columnar IPC v1** (`Glacier.Formats` — custom compact binary framing, not Apache Arrow FlatBuffers wire-compatible), and multi-column NDJSON / JSON-array (`Utf8JsonReader`) readers and writers, plus spillable K-way external merge sort.
 
 ---
 
@@ -121,14 +121,15 @@ GpuPolarisAccelerator.VectorAdd(colA, colB, dst, GpuTarget.Auto);
 
 ---
 
-## 🆕 What's New in v1.1.0
+## 🆕 What's New in v1.2.6
 
-- **Full Native AOT Compatibility (`<IsAotCompatible>true</IsAotCompatible>`) & `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`**: Replaced all runtime lambda compilation (`LambdaExpression.Compile()`), `Expression.NewArrayInit`, `Activator.CreateInstance`, `Type.GetType`, and reflection-based JSON serialization with static AST evaluation (`ExprLambdaEvaluator`), typed series factories, and `Utf8JsonWriter`.
+- **Hardened GPU & SIMD Acceleration**: Stack-allocated CUDA kernel parameter marshaling (`stackalloc void*[]`), overflow-checked `(nuint)` device sizing, bounded CUDA stream pooling with `ReleaseGpuResources()`, `TensorPrimitives` vectorized unary math fallbacks, and honest `NotSupportedException` handling for `GpuTarget.DualGpu`.
+- **Full Native AOT Compatibility (`<IsAotCompatible>true</IsAotCompatible>`, `<EnableTrimAnalyzer>true</EnableTrimAnalyzer>`, `<TieredPGO>true</TieredPGO>`) & `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`**: Replaced runtime lambda compilation (`LambdaExpression.Compile()`), `Expression.NewArrayInit`, `Activator.CreateInstance`, `Type.GetType`, reflection-based plan dispatch, and reflection-based JSON serialization with static AST evaluation (`ExprLambdaEvaluator`), sealed plan nodes, typed series factories, and `Utf8JsonWriter`.
 - **Sound `QueryOptimizer` Rules**: Guarded `Filter -> Select` pushdown against aggregations/windows/computed expressions (with alias rewriting on pass-through columns), guarded `Limit -> Select` against row-collapsing projections, resolved `DataFrameOp` / `ScanJsonOp` / `SelectOp` / `RenameOp` schemas in `Filter -> Join`, preserved `SortOp` / `GroupByOp` / `DropNullsOp` / `UniqueOp` columns during projection pushdown, and restricted join reordering to `JoinType.Inner` while preserving exact output column order.
-- **Multi-Column Null-Aware `Unique()` & Stable Multi-Column Radix `Sort`**: Rebuilt single- and multi-column deduplication (`DataFrame.Unique`, `LazyFrame.Unique`, `UniqueKernels`) to distinguish `null` from `0`/`0.0`/`""` across all series types, fixed `DataFrame.SortBy` / `SortByEager`, and fixed tie-stability and row-index preservation in multi-column `Int32`/`Float64` LSD radix `ArgSort`.
-- **Memory & `ValidityMask` Hardening**: Enforced tail-bit masking across all `ValidityMask` paths (`0 <= NullCount <= Length`), eliminated permanent `MemoryHandle` / `GCHandle` / `NativeMemoryOwner` leaks across Arrow/byte exports and `SchemaRegistry`, and added `ValidityMask` propagation to `Float32Series` hardware-accelerated operations.
-- **Real Multi-Column `JsonReader`**: Streaming and eager NDJSON (with or without trailing newline) and JSON-array (`[...]`) reader over `Utf8JsonReader` with schema inference, numeric/string promotion, null masks, exact batch slicing, and column projection.
-- **Supply-Chain & Backend Hygiene**: Upgraded to `Glacier.Storage` `1.0.2` and `Parquet.Net` `5.6.1` with zero vulnerable direct or transitive NuGet dependencies, removed unused packages (`Lokad.Utf8Regex`, direct `Snappier`) and all Python scripts, and quarantined unimplemented `GpuTarget.Amd` cleanly (`IsAmdAvailable == false`).
+- **Multi-Column Joins, Null-Aware `Unique()` & Stable Multi-Column Radix `Sort`**: Generalized `DataFrame.Join` across hashable single/multi-column keys, rebuilt deduplication (`DataFrame.Unique`, `LazyFrame.Unique`, `UniqueKernels`) to distinguish `null` from `0`/`0.0`/`""`, and preserved tie-stability in multi-column `Int32`/`Float64` LSD radix `ArgSort`.
+- **Memory & `ValidityMask` Hardening**: Enforced read-only tail-bit masking across all `ValidityMask` paths (`0 <= NullCount <= Length`), ref-counted `NativeMemoryOwner<T>` lifetime with finalizer and overflow checks, and `ValidityMask` propagation to `Float32Series` hardware-accelerated operations.
+- **Streaming Multi-Column `JsonReader`, `CsvParser`, `Parquet` & Sealed `LazyFrame` Sinks**: Streaming and eager NDJSON and JSON-array (`[...]`) readers via `RandomAccess`/`MemoryMappedFile`, quoted CSV multi-line/escaped `""` support, true streaming `SinkCsv`/`SinkParquet`/`SinkIpc`, and `Glacier.Formats` (`1.0.1`) Compact Columnar IPC v1 interoperability.
+- **Supply-Chain & Backend Hygiene**: Aligned with `Glacier.Formats` `1.0.1`, `Glacier.Storage` `1.1.1`, `Glacier.Gpu` `1.2.1`, `System.Numerics.Tensors` `10.0.12`, and `Parquet.Net` `5.6.1`, with zero vulnerable dependencies and quarantined `GpuTarget.Amd` (`IsAmdAvailable == false`).
 
 ---
 

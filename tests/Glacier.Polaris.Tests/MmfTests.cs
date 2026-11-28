@@ -76,7 +76,7 @@ namespace Glacier.Polaris.Tests
             using (var series = Int32Series.FromMmf("ids", _tempFileInt, length))
             {
                 var df = new DataFrame(new ISeries[] { series });
-                Assert.Equal(1, df.Columns.Count);
+                Assert.Single(df.Columns);
                 Assert.Equal(length, df.RowCount);
 
                 // Try accessing values via DataFrame API

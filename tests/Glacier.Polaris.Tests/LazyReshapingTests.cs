@@ -27,8 +27,8 @@ namespace Glacier.Polaris.Tests
             Assert.Contains("A", pivoted.Columns.Select(c => c.Name));
             Assert.Contains("B", pivoted.Columns.Select(c => c.Name));
             
-            var aCol = pivoted.GetColumn("A") as Int32Series;
-            var bCol = pivoted.GetColumn("B") as Int32Series;
+            var aCol = Assert.IsType<Int32Series>(pivoted.GetColumn("A"));
+            var bCol = Assert.IsType<Int32Series>(pivoted.GetColumn("B"));
             
             int sumA = 0;
             for(int i=0; i<4; i++) if (!aCol.ValidityMask.IsNull(i)) sumA += aCol.Memory.Span[i];

@@ -49,7 +49,7 @@ Thank you for your interest in contributing to Glacier.Polaris! We welcome contr
 
 If you add a new feature that has a Python Polars equivalent, please add a parity test:
 
-1. Generate golden data using Python Polars (see `tests/parity/generate_parity_data.py`)
+1. Add or update the static golden JSON fixture under `tests/Glacier.Polaris.Tests/ParityTests/golden/` (generated from Python Polars; no Python scripts are bundled in this repo)
 2. Add the corresponding C# test in `tests/Glacier.Polaris.Tests/ParityTests/ParityTests.cs`
 3. Verify both the golden file and the C# test are committed
 

@@ -40,7 +40,7 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = length;
-            _offsets = new MemoryOwnerColumn<int>(length + 1);
+            _offsets = new MemoryOwnerColumn<int>(checked(length + 1));
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
             _validityMask = new ValidityMask(length);
         }
@@ -49,8 +49,12 @@ namespace Glacier.Polaris.Data
         {
             Name = name;
             Length = data.Length;
-            int totalBytes = data.Sum(b => b?.Length ?? 0);
-            _offsets = new MemoryOwnerColumn<int>(Length + 1);
+            int totalBytes = 0;
+            foreach (var b in data)
+            {
+                if (b != null) totalBytes = checked(totalBytes + b.Length);
+            }
+            _offsets = new MemoryOwnerColumn<int>(checked(Length + 1));
             _dataBytes = new MemoryOwnerColumn<byte>(totalBytes);
             _validityMask = new ValidityMask(Length);
 
@@ -119,7 +123,7 @@ namespace Glacier.Polaris.Data
                 for (int i = 0; i < indices.Length; i++)
                 {
                     targetOffsets[i] = currentOffset;
-                    if (indices[i] == -1 || ValidityMask.IsNull(indices[i]))
+                    if (indices[i] < 0 || ValidityMask.IsNull(indices[i]))
                     {
                         other.ValidityMask.SetNull(i);
                     }
@@ -193,7 +197,7 @@ namespace Glacier.Polaris.Data
 
         public ISeries CloneEmpty(int length)
         {
-            return new BinarySeries(Name, length, Math.Max(1024, length * 16));
+            return new BinarySeries(Name, length, Math.Max(1024, checked(length * 16)));
         }
         public DataFrame ValueCounts(bool sort = false, bool parallel = true) => Compute.UniqueKernels.ValueCounts(this, sort, parallel);
         public ISeries IsFirst() => Compute.UniqueKernels.IsFirst(this);

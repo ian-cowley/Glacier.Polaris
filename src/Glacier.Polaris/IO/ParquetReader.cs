@@ -24,17 +24,22 @@ namespace Glacier.Polaris.IO
             _columns = columns;
         }
 
+        private static readonly ParquetOptions DefaultReaderOptions = new() { UseDateOnlyTypeForDates = true };
+
         public static string[] PeekHeaders(string filePath)
         {
-            using var fileStream = File.OpenRead(filePath);
-            using var reader = Parquet.ParquetReader.CreateAsync(fileStream).GetAwaiter().GetResult();
-            return reader.Schema.GetDataFields().Select(f => f.Name).ToArray();
+            return Task.Run(async () =>
+            {
+                using var fileStream = File.OpenRead(filePath);
+                using var reader = await Parquet.ParquetReader.CreateAsync(fileStream, DefaultReaderOptions).ConfigureAwait(false);
+                return reader.Schema.GetDataFields().Select(f => f.Name).ToArray();
+            }).GetAwaiter().GetResult();
         }
 
         public async IAsyncEnumerable<DataFrame> ReadAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             using var fileStream = File.OpenRead(_filePath);
-            using var reader = await Parquet.ParquetReader.CreateAsync(fileStream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var reader = await Parquet.ParquetReader.CreateAsync(fileStream, DefaultReaderOptions, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             var fields = reader.Schema.GetDataFields();
             if (_columns != null && _columns.Length > 0)
@@ -42,12 +47,29 @@ namespace Glacier.Polaris.IO
                 fields = fields.Where(f => _columns.Contains(f.Name)).ToArray();
             }
 
-            if (reader.RowGroupCount <= 1)
+            if (reader.RowGroupCount == 0)
             {
-                for (int i = 0; i < reader.RowGroupCount; i++)
+                if (fields.Length > 0)
                 {
-                    yield return await ReadRowGroupAsync(reader, i, fields, cancellationToken).ConfigureAwait(false);
+                    var emptyCols = new List<ISeries>(fields.Length);
+                    foreach (var field in fields)
+                    {
+                        var emptySeries = CreateEmptySeries(field);
+                        if (emptySeries != null)
+                        {
+                            emptyCols.Add(emptySeries);
+                        }
+                    }
+
+                    if (emptyCols.Count > 0)
+                    {
+                        yield return new DataFrame(emptyCols);
+                    }
                 }
+            }
+            else if (reader.RowGroupCount == 1)
+            {
+                yield return await ReadRowGroupAsync(reader, 0, fields, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -88,7 +110,8 @@ namespace Glacier.Polaris.IO
                 finally
                 {
                     cts.Cancel();
-                    try { await producerTask.ConfigureAwait(false); } catch { }
+                    try { await producerTask.ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
                 }
             }
         }
@@ -114,6 +137,31 @@ namespace Glacier.Polaris.IO
             }
 
             return new DataFrame(columns);
+        }
+
+        private static ISeries? CreateEmptySeries(DataField field)
+        {
+            var clrType = field.ClrType;
+            if (clrType == typeof(int) || clrType == typeof(int?)) return new Int32Series(field.Name, 0);
+            if (clrType == typeof(long) || clrType == typeof(long?)) return new Int64Series(field.Name, 0);
+            if (clrType == typeof(double) || clrType == typeof(double?)) return new Float64Series(field.Name, 0);
+            if (clrType == typeof(float) || clrType == typeof(float?)) return new Float32Series(field.Name, 0);
+            if (clrType == typeof(bool) || clrType == typeof(bool?)) return new BooleanSeries(field.Name, 0);
+            if (clrType == typeof(string)) return Utf8StringSeries.FromStrings(field.Name, Array.Empty<string?>());
+            if (clrType == typeof(byte[])) return new BinarySeries(field.Name, Array.Empty<byte[]?>());
+            if (clrType == typeof(sbyte) || clrType == typeof(sbyte?)) return new Int8Series(field.Name, 0);
+            if (clrType == typeof(byte) || clrType == typeof(byte?)) return new UInt8Series(field.Name, 0);
+            if (clrType == typeof(short) || clrType == typeof(short?)) return new Int16Series(field.Name, 0);
+            if (clrType == typeof(ushort) || clrType == typeof(ushort?)) return new UInt16Series(field.Name, 0);
+            if (clrType == typeof(uint) || clrType == typeof(uint?)) return new UInt32Series(field.Name, 0);
+            if (clrType == typeof(ulong) || clrType == typeof(ulong?)) return new UInt64Series(field.Name, 0);
+            if (clrType == typeof(DateTime) || clrType == typeof(DateTime?) ||
+                clrType == typeof(DateTimeOffset) || clrType == typeof(DateTimeOffset?))
+                return new DatetimeSeries(field.Name, 0);
+            if (clrType == typeof(DateOnly) || clrType == typeof(DateOnly?)) return new DateSeries(field.Name, 0);
+            if (clrType == typeof(decimal) || clrType == typeof(decimal?)) return new DecimalSeries(field.Name, 0);
+            if (clrType == typeof(TimeSpan) || clrType == typeof(TimeSpan?)) return new DurationSeries(field.Name, 0);
+            return Utf8StringSeries.FromStrings(field.Name, Array.Empty<string?>());
         }
 
         private static ISeries? ConvertDataColumn(DataField field, DataColumn dataColumn, int rowCount)
@@ -244,7 +292,33 @@ namespace Glacier.Polaris.IO
             {
                 if (dataColumn.Data is string?[] strArray)
                 {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    if (defLevels != null)
+                    {
+                        var normalized = new string?[rowCount];
+                        for (int j = 0; j < rowCount; j++)
+                            normalized[j] = defLevels[j] == 0 ? null : strArray[j];
+                        return Utf8StringSeries.FromStrings(field.Name, normalized);
+                    }
                     return Utf8StringSeries.FromStrings(field.Name, strArray);
+                }
+                return null;
+            }
+
+            if (clrType == typeof(byte[]))
+            {
+                if (dataColumn.Data is byte[]?[] byteArrays)
+                {
+                    var defLevels = dataColumn.DefinitionLevels;
+                    var normalized = new byte[]?[rowCount];
+                    for (int j = 0; j < rowCount; j++)
+                    {
+                        if ((defLevels != null && defLevels[j] == 0) || byteArrays[j] == null)
+                            normalized[j] = null;
+                        else
+                            normalized[j] = byteArrays[j];
+                    }
+                    return new BinarySeries(field.Name, normalized);
                 }
                 return null;
             }
@@ -448,16 +522,17 @@ namespace Glacier.Polaris.IO
                 var epoch = new DateOnly(1970, 1, 1);
                 if (dataColumn.Data is DateOnly?[] nullableDates)
                 {
+                    var defLevels = dataColumn.DefinitionLevels;
                     for (int j = 0; j < rowCount; j++)
                     {
-                        if (nullableDates[j].HasValue)
+                        if ((defLevels != null && defLevels[j] == 0) || !nullableDates[j].HasValue)
                         {
-                            series.Memory.Span[j] = nullableDates[j]!.Value.DayNumber - epoch.DayNumber;
-                            series.ValidityMask.SetValid(j);
+                            series.ValidityMask.SetNull(j);
                         }
                         else
                         {
-                            series.ValidityMask.SetNull(j);
+                            series.Memory.Span[j] = nullableDates[j]!.Value.DayNumber - epoch.DayNumber;
+                            series.ValidityMask.SetValid(j);
                         }
                     }
                 }

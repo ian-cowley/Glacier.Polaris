@@ -10,14 +10,16 @@ using Glacier.Polaris.Memory;
 using Glacier.Formats.Arrow;
 
 /// <summary>
-/// Direct zero-copy, zero-heap-allocation bridge between Glacier.Polaris DataFrames and the
-/// first-party Glacier.Storage engine. Provides pure C# streaming Arrow IPC serialization and
-/// deserialization across all 16 supported Polaris types with bit-blitted validity masks.
+/// Direct bridge between Glacier.Polaris DataFrames and the <c>Glacier.Formats</c> (<c>Glacier.Formats.Arrow</c>)
+/// Compact Columnar IPC v1 engine. Provides pure C# streaming IPC serialization and deserialization across
+/// supported Polaris types with bit-blitted validity masks (custom compact binary framing; not Apache Arrow
+/// FlatBuffers wire-compatible).
 /// </summary>
 public static class GlacierStorageBridge
 {
     /// <summary>
-    /// Writes a DataFrame to an Arrow IPC stream using the zero-allocation Glacier.Storage engine.
+    /// Writes a DataFrame to a Glacier Compact Columnar IPC v1 stream via <c>Glacier.Formats.Arrow</c>
+    /// (not Apache Arrow FlatBuffers wire-compatible).
     /// </summary>
     public static void ToArrowIpc(this DataFrame df, Stream destinationStream, bool leaveOpen = false)
     {
@@ -40,7 +42,7 @@ public static class GlacierStorageBridge
     }
 
     /// <summary>
-    /// Reads a DataFrame from an Arrow IPC stream using the Glacier.Storage pure C# engine.
+    /// Reads a DataFrame from a Glacier Compact Columnar IPC v1 stream using the <c>Glacier.Formats.Arrow</c> pure C# engine.
     /// </summary>
     public static DataFrame FromArrowIpc(Stream sourceStream, bool leaveOpen = false)
     {
@@ -76,7 +78,7 @@ public static class GlacierStorageBridge
     }
 
     /// <summary>
-    /// Creates a Glacier.Storage ArrowRecordBatch from a Glacier.Polaris DataFrame with zero-copy column views.
+    /// Creates a <c>Glacier.Formats.Arrow.ArrowRecordBatch</c> from a Glacier.Polaris DataFrame with column views.
     /// </summary>
     public static ArrowRecordBatch ToGlacierRecordBatch(this DataFrame df)
     {
@@ -99,8 +101,8 @@ public static class GlacierStorageBridge
     }
 
     /// <summary>
-    /// Constructs a Glacier.Polaris DataFrame directly from a Glacier.Storage ArrowRecordBatch
-    /// using unmanaged NativeMemoryOwner backing for all 16 supported column types.
+    /// Constructs a Glacier.Polaris DataFrame directly from a <c>Glacier.Formats.Arrow.ArrowRecordBatch</c>
+    /// using unmanaged <see cref="NativeMemoryOwner{T}"/> backing for supported column types.
     /// </summary>
     public static DataFrame FromGlacierRecordBatch(ArrowRecordBatch batch)
     {

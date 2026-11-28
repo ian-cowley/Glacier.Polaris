@@ -23,7 +23,7 @@ namespace Glacier.Polaris
 
         public static bool IsEnabled => _isEnabled;
 
-        public static uint GetOrCreate(string s)
+        public static uint GetOrCreate(string? s)
         {
             if (s == null) return uint.MaxValue;
             if (_stringToCode.TryGetValue(s, out uint code)) return code;

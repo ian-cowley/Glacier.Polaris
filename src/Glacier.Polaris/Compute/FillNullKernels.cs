@@ -56,11 +56,15 @@ namespace Glacier.Polaris.Compute
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private static unsafe ISeries FillInt32(Data.Int32Series source, FillStrategy strategy)
         {
-            var result = new Data.Int32Series(source.Name, source.Length, clear: false, setAllValid: false);
+            int n = source.Length;
+            var result = new Data.Int32Series(source.Name, n, clear: false, setAllValid: false);
+            if (n == 0)
+            {
+                return result;
+            }
             var srcSpan = source.Memory.Span;
             var resSpan = result.Memory.Span;
             var mask = source.ValidityMask;
-            int n = source.Length;
 
             if (strategy == FillStrategy.Forward)
             {
@@ -277,12 +281,16 @@ namespace Glacier.Polaris.Compute
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private static unsafe ISeries FillFloat64(Data.Float64Series source, FillStrategy strategy)
         {
-            var result = new Data.Float64Series(source.Name, source.Length, clear: false, setAllValid: false);
+            int n = source.Length;
+            var result = new Data.Float64Series(source.Name, n, clear: false, setAllValid: false);
+            if (n == 0)
+            {
+                return result;
+            }
             var srcSpan = source.Memory.Span;
             var resSpan = result.Memory.Span;
             var mask = source.ValidityMask;
             var resMask = result.ValidityMask;
-            int n = source.Length;
 
             if (strategy == FillStrategy.Forward)
             {

@@ -22,7 +22,7 @@ namespace Glacier.Polaris.Data
             _categoryMap = categories.Select((s, i) => new { s, i }).ToDictionary(x => x.s, x => (uint)x.i);
         }
 
-        public static EnumSeries FromStrings(string name, ReadOnlySpan<string> strings, string[] categories)
+        public static EnumSeries FromStrings(string name, ReadOnlySpan<string?> strings, string[] categories)
         {
             var series = new EnumSeries(name, strings.Length, categories);
             var span = series.Memory.Span;
@@ -30,7 +30,7 @@ namespace Glacier.Polaris.Data
 
             for (int i = 0; i < strings.Length; i++)
             {
-                string s = strings[i];
+                string? s = strings[i];
                 if (s == null)
                 {
                     series.ValidityMask.SetNull(i);

@@ -10,57 +10,149 @@ namespace Glacier.Polaris.Memory
     /// An IMemoryOwner implementation that maps a file on disk directly into unmanaged memory.
     /// Exposes the file contents as a standard Memory&lt;T&gt; for zero-copy column operations.
     /// </summary>
-    public sealed unsafe class MmfMemoryOwnerColumn<T> : IMemoryOwner<T> where T : unmanaged
+    public sealed unsafe class MmfMemoryOwnerColumn<T> : IMemoryOwner<T>, IRefCountedMemoryLifetime where T : unmanaged
     {
         private MemoryMappedFile? _mmf;
         private MemoryMappedViewAccessor? _accessor;
         private byte* _pointer;
+        private bool _pointerAcquired;
         private readonly int _length;
-        private readonly UnmanagedMemoryManager<T> _manager;
+        private readonly UnmanagedMemoryManager<T>? _manager;
         private int _disposed;
+        private int _refCount = 1;
 
         public MmfMemoryOwnerColumn(string filePath, int length)
         {
+            ArgumentException.ThrowIfNullOrEmpty(filePath);
             ArgumentOutOfRangeException.ThrowIfNegative(length);
             _length = length;
-            long bytesRequired = (long)length * sizeof(T);
 
-            // Open or create the file, resizing if it's too small
-            var fileStream = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
-            if (fileStream.Length < bytesRequired)
+            if (length == 0)
             {
-                fileStream.SetLength(bytesRequired);
+                using (new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                }
+                _manager = new UnmanagedMemoryManager<T>(null, 0, this);
+                GC.SuppressFinalize(this);
+                return;
             }
 
-            _mmf = MemoryMappedFile.CreateFromFile(fileStream, null, bytesRequired, MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, leaveOpen: false);
-            _accessor = _mmf.CreateViewAccessor(0, bytesRequired, MemoryMappedFileAccess.ReadWrite);
-            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref _pointer);
+            long bytesRequired = checked((long)length * sizeof(T));
+            FileStream? fileStream = null;
+            bool mmfOwnsStream = false;
 
-            _manager = new UnmanagedMemoryManager<T>((T*)(_pointer + _accessor.PointerOffset), length);
+            try
+            {
+                // Open or create the file, resizing if it's too small
+                fileStream = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+                if (fileStream.Length < bytesRequired)
+                {
+                    fileStream.SetLength(bytesRequired);
+                }
+
+                _mmf = MemoryMappedFile.CreateFromFile(fileStream, null, bytesRequired, MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, leaveOpen: false);
+                mmfOwnsStream = true;
+                _accessor = _mmf.CreateViewAccessor(0, bytesRequired, MemoryMappedFileAccess.ReadWrite);
+                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref _pointer);
+                _pointerAcquired = true;
+
+                _manager = new UnmanagedMemoryManager<T>((T*)(_pointer + _accessor.PointerOffset), length, this);
+            }
+            catch
+            {
+                if (!mmfOwnsStream)
+                {
+                    fileStream?.Dispose();
+                }
+                Dispose();
+                throw;
+            }
+        }
+
+        ~MmfMemoryOwnerColumn()
+        {
+            Dispose(false);
         }
 
         public Memory<T> Memory
         {
             get
             {
-                ObjectDisposedException.ThrowIf(_disposed != 0, this);
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+                if (_length == 0 || _manager == null)
+                    return Memory<T>.Empty;
                 return _manager.Memory;
             }
         }
 
+        bool IRefCountedMemoryLifetime.IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        bool IRefCountedMemoryLifetime.TryRetain()
+        {
+            while (true)
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    return false;
+
+                int current = Volatile.Read(ref _refCount);
+                if (current <= 0)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _refCount, current + 1, current) == current)
+                {
+                    if (Volatile.Read(ref _disposed) != 0)
+                    {
+                        Release(disposing: true);
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        void IRefCountedMemoryLifetime.Release() => Release(disposing: true);
+
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            ((IDisposable)_manager).Dispose();
-            if (_pointer != null)
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        private void Dispose(bool disposing)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                _accessor?.SafeMemoryMappedViewHandle.ReleasePointer();
-                _pointer = null;
+                if (disposing)
+                {
+                    ((IDisposable?)_manager)?.Dispose();
+                }
+                Release(disposing);
             }
-            _accessor?.Dispose();
-            _accessor = null;
-            _mmf?.Dispose();
-            _mmf = null;
+        }
+
+        private void Release(bool disposing)
+        {
+            if (Interlocked.Decrement(ref _refCount) == 0)
+            {
+                if (_pointerAcquired && _accessor != null)
+                {
+                    var handle = _accessor.SafeMemoryMappedViewHandle;
+                    if (!handle.IsClosed)
+                    {
+                        handle.ReleasePointer();
+                    }
+                    _pointerAcquired = false;
+                    _pointer = null;
+                }
+
+                if (disposing)
+                {
+                    _accessor?.Dispose();
+                    _mmf?.Dispose();
+                }
+                _accessor = null;
+                _mmf = null;
+            }
         }
     }
 }

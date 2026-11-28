@@ -1,6 +1,6 @@
-# Glacier.Polaris Architecture (`v1.1.0`)
+# Glacier.Polaris Architecture (`v1.2.6`)
 
-`Glacier.Polaris` is a 100% pure C#, Native AOT-compatible columnar DataFrame and lazy relational execution engine targeting `.NET 10.0`. It combines Apache Arrow-aligned unmanaged columnar storage (`Glacier.Storage`), SIMD CPU vectorization (`Vector512<T>` / `Vector256<T>`), optional NVIDIA CUDA PTX acceleration (`Glacier.Gpu`), and a rule-based relational query optimizer.
+`Glacier.Polaris` is a 100% pure C#, Native AOT-compatible columnar DataFrame and lazy relational execution engine targeting `.NET 10.0`. It combines Glacier Compact Columnar IPC v1 & Parquet framing (`Glacier.Formats` `1.0.1`), compressed columnar storage (`Glacier.Storage` `1.1.1`), SIMD CPU vectorization (`Vector512<T>` / `Vector256<T>` / `TensorPrimitives`), optional NVIDIA CUDA PTX acceleration (`Glacier.Gpu` `1.2.1`), and a rule-based relational query optimizer.
 
 ---
 
@@ -12,9 +12,9 @@ flowchart TD
     OPT["QueryOptimizer: Predicate, Projection & Slice Pushdown + Inner-Join Reordering"]
     EXEC["ExecutionEngine: Streaming Async Batch Pipeline & Static AST Evaluator"]
     KERN["Compute Kernels: SIMD Filter, Hash GroupBy, Radix Sort, Null-Aware Unique, Joins, Windows"]
-    GPU["Hardware Offload: NVIDIA CUDA PTX (nvcuda) + Multi-Threaded AVX-512 / AVX2 Fallback"]
-    MEM["Columnar Memory: NativeMemoryOwner&lt;T&gt;, ValidityMask, KleeneBool, Arrow IPC Bridge"]
-    IO["Streaming I/O: CsvReader/Writer, ParquetReader/Writer, JsonReader/Writer, IpcReader/Writer"]
+    GPU["Hardware Offload: NVIDIA CUDA PTX (nvcuda) + Multi-Threaded AVX-512 / AVX2 / TensorPrimitives Fallback"]
+    MEM["Columnar Memory: NativeMemoryOwner&lt;T&gt;, ValidityMask, KleeneBool, Compact Columnar IPC v1 Bridge"]
+    IO["Streaming I/O: CsvReader/Writer, ParquetReader/Writer, JsonReader/Writer, GlacierStorageBridge/IpcWriter"]
 
     API --> OPT
     OPT --> EXEC
@@ -78,14 +78,14 @@ flowchart TD
 - **Null-Aware Deduplication (`UniqueKernels`)**:
   - Single-column and multi-column row hashing/equality (`Unique`, `UniqueIndices`, `NUnique`, `ApproxNUnique`, `IsFirst`, `ValueCounts`, `UniqueRowIndices`) explicitly separate `null` from `0`, `0.0`, `false`, and `""`, retaining the first null occurrence when `maintainOrder: true`.
 - **GPU Acceleration (`GpuPolarisAccelerator`)**:
-  - Supports NVIDIA CUDA devices via `Glacier.Gpu` driver P/Invoke (`CuDriver`) for `Float32Series` vector arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Fma`), math (`Exp`, `Log`, `Sqrt`, `Sigmoid`), and `Sum` reductions, propagating `ValidityMask` bitmaps across unary/binary ops and masking null lanes to `0.0f` before reductions.
-  - When no NVIDIA GPU is available (or `GpuTarget.Cpu` is selected), execution falls back transparently to multi-threaded `Vector512<float>` / `Vector256<float>` CPU loops.
-  - AMD ROCm/HIP kernels are not implemented (`IsAmdAvailable => false`, and `GpuTarget.Amd` throws `PlatformNotSupportedException`).
+  - Supports NVIDIA CUDA devices via `Glacier.Gpu` (`1.2.1`) driver API (`CuDriver`) with `stackalloc void*[]` parameter marshaling and a bounded CUDA stream pool (`ReleaseGpuResources()`) for `Float32Series` vector arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Fma`), math (`Exp`, `Log`, `Sqrt`, `Sigmoid`), and `Sum` reductions, propagating `ValidityMask` bitmaps across unary/binary ops and masking null lanes to `0.0f` before reductions.
+  - When no NVIDIA GPU is available (or `GpuTarget.Cpu` is selected), execution falls back transparently to multi-threaded `Vector512<float>` / `Vector256<float>` / `TensorPrimitives` CPU loops.
+  - AMD ROCm/HIP and multi-GPU targets are not implemented (`IsAmdAvailable => false`; `GpuTarget.Amd` throws `PlatformNotSupportedException` and `GpuTarget.DualGpu` throws `NotSupportedException`).
 
 ---
 
 ## 6. Streaming I/O Subsystem (`src/Glacier.Polaris/IO/`)
 
-- **CSV & Parquet**: Multi-threaded chunked readers/writers supporting predicate/projection/limit pushdown.
-- **Arrow IPC (`GlacierStorageBridge`, `IpcReader`, `IpcWriter`)**: Round-trips all primitive, temporal, decimal, string, and binary column types through `Glacier.Storage` (`1.0.2`) `ArrowRecordBatch` streams.
+- **CSV & Parquet**: Multi-threaded chunked readers/writers supporting predicate/projection/limit pushdown and streaming `LazyFrame` sinks.
+- **Glacier Compact Columnar IPC v1 (`GlacierStorageBridge`, `IpcWriter`)**: Round-trips all primitive, temporal, decimal, string, and binary column types through `Glacier.Formats` (`1.0.1`) `Glacier.Formats.Arrow.ArrowRecordBatch` streams (custom compact binary framing; **not** Apache Arrow FlatBuffers wire-compatible).
 - **Multi-Column JSON (`JsonReader`, `JsonWriter`)**: Built on `System.Text.Json.Utf8JsonReader` + `System.IO.Pipelines.PipeReader`, supporting both newline-delimited JSON (`NDJSON`, with or without a trailing `\n`) and top-level JSON arrays (`[...]`), `int` -> `long` -> `double` -> `string` type promotion, `ValidityMask` nulls, exact `chunkSize` batch slicing, and early column projection.

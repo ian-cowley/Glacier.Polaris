@@ -55,9 +55,7 @@ namespace Glacier.Polaris
 
         public DataFrame Agg(params Expr[] exprs)
         {
-            // Fallback: LazyGroupByDynamic on eager DataFrames can delegate to LazyFrame execution
-            var lazyFrame = _source.Lazy().GroupByDynamic(_indexColumn, "1h", period: "1h");
-            return lazyFrame.Agg(exprs).Collect().GetAwaiter().GetResult();
+            return ExecutionEngine.EvaluateGroupAggregationsStatic(_source, new[] { _windowKeys }, _groups, exprs);
         }
     }
 }

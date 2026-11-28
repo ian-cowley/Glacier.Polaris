@@ -82,7 +82,14 @@ namespace Glacier.Polaris.Compute
                 {
                     if (File.Exists(path))
                     {
-                        try { File.Delete(path); } catch { }
+                        try
+                        {
+                            File.Delete(path);
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            System.Diagnostics.Trace.TraceWarning($"ExternalMergeSort cleanup failed for '{path}': {ex.Message}");
+                        }
                     }
                 }
             }

@@ -10,8 +10,8 @@ using Glacier.Polaris.Compute;
 namespace Glacier.Polaris.Benchmarks
 {
     /// <summary>
-    /// Comprehensive benchmark suite, mirroring Python Polars benchmarks
-    /// (benchmarks/python_bench_full.py) for direct comparison.
+    /// Comprehensive benchmark suite mirroring Python Polars workloads
+    /// for direct throughput and memory comparison.
     /// </summary>
     public class FullSuiteBenchmark
     {

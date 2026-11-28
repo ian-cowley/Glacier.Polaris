@@ -418,13 +418,13 @@ namespace Glacier.Polaris
                     {
                         if (series is Data.Utf8StringSeries utf8)
                         {
-                            var strings = new string[utf8.Length];
+                            var strings = new string?[utf8.Length];
                             for (int i = 0; i < utf8.Length; i++)
                             {
                                 if (utf8.ValidityMask.IsValid(i))
                                     strings[i] = System.Text.Encoding.UTF8.GetString(utf8.GetStringSpan(i));
                                 else
-                                    strings[i] = null!;
+                                    strings[i] = null;
                             }
                             var result = CategoricalSeries.FromStrings(utf8.Name, strings);
                             disposables.Add(result);

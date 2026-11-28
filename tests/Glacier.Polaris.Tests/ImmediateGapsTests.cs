@@ -119,7 +119,7 @@ namespace Glacier.Polaris.Tests
             var t = df.Transpose();
             // 3 columns → 3 rows; 1 original row → 1 column
             Assert.Equal(3, t.RowCount);
-            Assert.Equal(1, t.Columns.Count);
+            Assert.Single(t.Columns);
         }
 
         // ─────────────────────────────────────────────────────────────────────

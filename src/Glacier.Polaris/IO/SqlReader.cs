@@ -115,11 +115,11 @@ namespace Glacier.Polaris.IO
 
         private string BuildSql()
         {
-            string sql = _query.TrimEnd(';', ' ', '\r', '\n');
+            string sql = SqlDialectFactory.StripTrailingSemicolons(_query);
 
-            // Apply column projection before limit so both can nest correctly.
-            sql = SqlDialectFactory.ApplyProjection(_dialect, sql, _columns);
+            // Apply limit before column projection so ORDER BY on unprojected columns sorts before truncation.
             sql = SqlDialectFactory.ApplyLimit(_dialect, sql, _limit);
+            sql = SqlDialectFactory.ApplyProjection(_dialect, sql, _columns);
 
             return sql;
         }

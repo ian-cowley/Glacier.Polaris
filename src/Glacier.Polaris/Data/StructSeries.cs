@@ -32,15 +32,109 @@ namespace Glacier.Polaris.Data
 
         public void CopyTo(ISeries target, int offset)
         {
-            if (target is StructSeries other)
+            if (target is not StructSeries other)
+                throw new InvalidOperationException("Type mismatch in CopyTo");
+
+            if (Fields.Length != other.Fields.Length)
+                throw new ArgumentException($"Struct field count mismatch in CopyTo: source has {Fields.Length}, target has {other.Fields.Length}.", nameof(target));
+
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            if (offset > other.Length - Length)
+                throw new ArgumentOutOfRangeException(nameof(offset));
+
+            // Upfront atomicity check across ALL fields before mutating any field or ValidityMask.
+            for (int i = 0; i < Fields.Length; i++)
             {
+                if (!ListSeries.AreValuesCompatible(Fields[i], other.Fields[i]))
+                    throw new InvalidOperationException($"Struct field {i} type mismatch in CopyTo: expected {Fields[i].GetType().Name}, got {other.Fields[i].GetType().Name}.");
+            }
+
+            if (Length == 0 || ReferenceEquals(this, other))
+                return;
+
+            ISeries?[]? pendingReplacements = null;
+            try
+            {
+                bool allowInPlace = Fields.Length == 1;
                 for (int i = 0; i < Fields.Length; i++)
                 {
-                    Fields[i].CopyTo(other.Fields[i], offset);
+                    if (Fields[i] is Utf8StringSeries srcUtf8 && other.Fields[i] is Utf8StringSeries dstUtf8)
+                    {
+                        int oldEnd = checked(offset + Length);
+                        int suffixCount = dstUtf8.Length - oldEnd;
+                        var replacement = ListSeries.SpliceUtf8Series(
+                            srcUtf8,
+                            dstUtf8,
+                            offset,
+                            oldEnd,
+                            suffixCount,
+                            0,
+                            Length,
+                            null,
+                            dstUtf8.Length,
+                            allowInPlace);
+                        if (replacement != null)
+                        {
+                            pendingReplacements ??= new ISeries?[Fields.Length];
+                            pendingReplacements[i] = replacement;
+                        }
+                    }
+                    else if (Fields[i] is BinarySeries srcBin && other.Fields[i] is BinarySeries dstBin)
+                    {
+                        int oldEnd = checked(offset + Length);
+                        int suffixCount = dstBin.Length - oldEnd;
+                        var replacement = ListSeries.SpliceBinarySeries(
+                            srcBin,
+                            dstBin,
+                            offset,
+                            oldEnd,
+                            suffixCount,
+                            0,
+                            Length,
+                            null,
+                            dstBin.Length,
+                            allowInPlace);
+                        if (replacement != null)
+                        {
+                            pendingReplacements ??= new ISeries?[Fields.Length];
+                            pendingReplacements[i] = replacement;
+                        }
+                    }
                 }
-                ValidityMask.CopyTo(other.ValidityMask, offset);
+
+                for (int i = 0; i < Fields.Length; i++)
+                {
+                    if (Fields[i] is not Utf8StringSeries and not BinarySeries)
+                    {
+                        Fields[i].CopyTo(other.Fields[i], offset);
+                    }
+                }
             }
-            else throw new InvalidOperationException("Type mismatch in CopyTo");
+            catch
+            {
+                if (pendingReplacements != null)
+                {
+                    for (int i = 0; i < pendingReplacements.Length; i++)
+                        pendingReplacements[i]?.Dispose();
+                }
+                throw;
+            }
+
+            if (pendingReplacements != null)
+            {
+                for (int i = 0; i < pendingReplacements.Length; i++)
+                {
+                    var replacement = pendingReplacements[i];
+                    if (replacement != null)
+                    {
+                        ISeries oldField = other.Fields[i];
+                        other.Fields[i] = replacement;
+                        oldField.Dispose();
+                    }
+                }
+            }
+
+            ValidityMask.CopyRangeTo(other.ValidityMask, offset);
         }
 
         public void Take(ISeries target, ReadOnlySpan<int> indices)
@@ -49,7 +143,28 @@ namespace Glacier.Polaris.Data
             {
                 for (int i = 0; i < Fields.Length; i++)
                 {
-                    Fields[i].Take(other.Fields[i], indices);
+                    if (Fields[i] is Utf8StringSeries srcUtf8 && other.Fields[i] is Utf8StringSeries dstUtf8)
+                    {
+                        var replacement = ListSeries.TakeUtf8Into(srcUtf8, dstUtf8, indices);
+                        if (replacement != null)
+                        {
+                            other.Fields[i] = replacement;
+                            dstUtf8.Dispose();
+                        }
+                    }
+                    else if (Fields[i] is BinarySeries srcBin && other.Fields[i] is BinarySeries dstBin)
+                    {
+                        var replacement = ListSeries.TakeBinaryInto(srcBin, dstBin, indices);
+                        if (replacement != null)
+                        {
+                            other.Fields[i] = replacement;
+                            dstBin.Dispose();
+                        }
+                    }
+                    else
+                    {
+                        Fields[i].Take(other.Fields[i], indices);
+                    }
                 }
                 ValidityMask.Take(other.ValidityMask, indices);
             }

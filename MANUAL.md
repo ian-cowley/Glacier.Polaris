@@ -86,7 +86,7 @@ Built-in compute kernels support advanced analytics directly on the columnar dat
 
 ---
 
-## 5. Apache Arrow & Parquet Integration
+## 5. Glacier Compact Columnar IPC v1 & Parquet Integration
 
-- **ToArrowArray()**: Converts Polaris columns directly into standard `Apache.Arrow` arrays for zero-copy sharing with Arrow-compatible tools.
-- **Arrow IPC / Parquet**: Read and write dataframes to standard file formats with high throughput.
+- **`ToGlacierRecordBatch()` / `FromGlacierRecordBatch()`**: Converts Polaris `DataFrame` columns directly to and from `Glacier.Formats.Arrow.ArrowRecordBatch` structures (`Glacier.Formats`) with unmanaged memory backing and little-endian bit-packed validity masks.
+- **`ToArrowIpc()` / `FromArrowIpc()` / `WriteIpc()` / `SinkIpc()` / `Parquet`**: Read and write DataFrames using **Glacier Compact Columnar IPC v1** (`Glacier.Formats.Arrow` — custom compact binary framing, not Apache Arrow FlatBuffers wire-compatible) and standard Parquet files (`Parquet.Net`).

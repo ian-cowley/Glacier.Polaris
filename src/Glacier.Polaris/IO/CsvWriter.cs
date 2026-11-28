@@ -1,16 +1,21 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Glacier.Polaris.Data;
 
 namespace Glacier.Polaris.IO
 {
     internal static class CsvWriter
     {
+        private const int FlushThresholdBytes = 65536;
+
         public static void Write(DataFrame df, string filePath, char separator = ',', bool includeHeader = true, bool includeBom = false)
         {
-            using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
+            using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
 
             if (includeBom)
             {
@@ -23,50 +28,139 @@ namespace Glacier.Polaris.IO
             int colCount = df.Columns.Count;
             if (rowCount == 0 || colCount == 0) return;
 
-            // Write header
+            var buffer = new ArrayBufferWriter<byte>(65536);
+
             if (includeHeader)
             {
-                var headerBytes = EncodeCsvField(df.Columns[0].Name, separator);
-                for (int i = 1; i < colCount; i++)
-                {
-                    headerBytes.Add((byte)separator);
-                    headerBytes.AddRange(EncodeCsvField(df.Columns[i].Name, separator));
-                }
-                headerBytes.Add((byte)'\n');
-                fs.Write(headerBytes.ToArray(), 0, headerBytes.Count);
+                WriteHeaderRow(df, separator, buffer);
             }
 
-            // Prepare column readers
-            var readers = new ColumnReader[colCount];
-            for (int i = 0; i < colCount; i++)
+            WriteDataRows(df, separator, buffer, fs);
+            if (buffer.WrittenCount > 0)
             {
-                readers[i] = new ColumnReader(df.Columns[i]);
-            }
-
-            // Write rows
-            var rowBytes = new List<byte>(1024);
-            for (int r = 0; r < rowCount; r++)
-            {
-                rowBytes.Clear();
-
-                // First column
-                rowBytes.AddRange(readers[0].GetFormattedValue(r, separator));
-
-                // Remaining columns
-                for (int c = 1; c < colCount; c++)
-                {
-                    rowBytes.Add((byte)separator);
-                    rowBytes.AddRange(readers[c].GetFormattedValue(r, separator));
-                }
-                rowBytes.Add((byte)'\n');
-                fs.Write(rowBytes.ToArray(), 0, rowBytes.Count);
+                fs.Write(buffer.WrittenSpan);
+                buffer.Clear();
             }
         }
 
-        private static List<byte> EncodeCsvField(string field, char separator)
+        internal static async Task WriteStreamAsync(
+            IAsyncEnumerable<DataFrame> batches,
+            string filePath,
+            char separator = ',',
+            bool includeHeader = true,
+            bool includeBom = false,
+            CancellationToken ct = default)
         {
-            var result = new List<byte>();
+            await using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, FileOptions.SequentialScan);
 
+            if (includeBom)
+            {
+                ReadOnlyMemory<byte> bom = new byte[] { 0xEF, 0xBB, 0xBF };
+                await fs.WriteAsync(bom, ct).ConfigureAwait(false);
+            }
+
+            var buffer = new ArrayBufferWriter<byte>(65536);
+            bool headerWritten = false;
+
+            await foreach (var df in batches.WithCancellation(ct).ConfigureAwait(false))
+            {
+                int colCount = df.Columns.Count;
+                if (colCount == 0) continue;
+
+                if (includeHeader && !headerWritten)
+                {
+                    WriteHeaderRow(df, separator, buffer);
+                    headerWritten = true;
+                }
+
+                if (df.RowCount > 0)
+                {
+                    var readers = new ColumnReader[colCount];
+                    for (int i = 0; i < colCount; i++)
+                        readers[i] = new ColumnReader(df.Columns[i]);
+
+                    for (int r = 0; r < df.RowCount; r++)
+                    {
+                        WriteFormattedValue(in readers[0], r, separator, buffer);
+                        for (int c = 1; c < colCount; c++)
+                        {
+                            WriteByte(buffer, (byte)separator);
+                            WriteFormattedValue(in readers[c], r, separator, buffer);
+                        }
+                        WriteByte(buffer, (byte)'\n');
+
+                        if (buffer.WrittenCount >= FlushThresholdBytes)
+                        {
+                            await fs.WriteAsync(buffer.WrittenMemory, ct).ConfigureAwait(false);
+                            buffer.Clear();
+                        }
+                    }
+                }
+            }
+
+            if (buffer.WrittenCount > 0)
+            {
+                await fs.WriteAsync(buffer.WrittenMemory, ct).ConfigureAwait(false);
+                buffer.Clear();
+            }
+        }
+
+        private static void WriteHeaderRow(DataFrame df, char separator, ArrayBufferWriter<byte> buffer)
+        {
+            int colCount = df.Columns.Count;
+            WriteEncodedCsvField(df.Columns[0].Name, separator, buffer);
+            for (int i = 1; i < colCount; i++)
+            {
+                WriteByte(buffer, (byte)separator);
+                WriteEncodedCsvField(df.Columns[i].Name, separator, buffer);
+            }
+            WriteByte(buffer, (byte)'\n');
+        }
+
+        private static void WriteDataRows(DataFrame df, char separator, ArrayBufferWriter<byte> buffer, FileStream fs)
+        {
+            int rowCount = df.RowCount;
+            int colCount = df.Columns.Count;
+            var readers = new ColumnReader[colCount];
+            for (int i = 0; i < colCount; i++)
+                readers[i] = new ColumnReader(df.Columns[i]);
+
+            for (int r = 0; r < rowCount; r++)
+            {
+                WriteFormattedValue(in readers[0], r, separator, buffer);
+                for (int c = 1; c < colCount; c++)
+                {
+                    WriteByte(buffer, (byte)separator);
+                    WriteFormattedValue(in readers[c], r, separator, buffer);
+                }
+                WriteByte(buffer, (byte)'\n');
+
+                if (buffer.WrittenCount >= FlushThresholdBytes)
+                {
+                    fs.Write(buffer.WrittenSpan);
+                    buffer.Clear();
+                }
+            }
+        }
+
+        private static void WriteByte(ArrayBufferWriter<byte> buffer, byte b)
+        {
+            var span = buffer.GetSpan(1);
+            span[0] = b;
+            buffer.Advance(1);
+        }
+
+        private static void WriteUtf8String(ArrayBufferWriter<byte> buffer, string text)
+        {
+            if (text.Length == 0) return;
+            int maxBytes = Encoding.UTF8.GetMaxByteCount(text.Length);
+            var span = buffer.GetSpan(maxBytes);
+            int written = Encoding.UTF8.GetBytes(text, span);
+            buffer.Advance(written);
+        }
+
+        private static void WriteEncodedCsvField(string field, char separator, ArrayBufferWriter<byte> buffer)
+        {
             bool needsQuoting = false;
             for (int i = 0; i < field.Length; i++)
             {
@@ -80,28 +174,40 @@ namespace Glacier.Polaris.IO
 
             if (!needsQuoting)
             {
-                result.AddRange(Encoding.UTF8.GetBytes(field));
-                return result;
+                WriteUtf8String(buffer, field);
+                return;
             }
 
-            // Encode with quoting
-            result.Add((byte)'"');
+            WriteByte(buffer, (byte)'"');
+            Span<char> ch = stackalloc char[1];
             for (int i = 0; i < field.Length; i++)
             {
                 char c = field[i];
                 if (c == '"')
                 {
-                    // Escape double-quote by doubling it
-                    result.Add((byte)'"');
-                    result.Add((byte)'"');
+                    WriteByte(buffer, (byte)'"');
+                    WriteByte(buffer, (byte)'"');
                 }
                 else
                 {
-                    result.AddRange(Encoding.UTF8.GetBytes(new[] { c }));
+                    ch[0] = c;
+                    var dst = buffer.GetSpan(4);
+                    int written = Encoding.UTF8.GetBytes(ch, dst);
+                    buffer.Advance(written);
                 }
             }
-            result.Add((byte)'"');
-            return result;
+            WriteByte(buffer, (byte)'"');
+        }
+
+        private static void WriteFormattedValue(in ColumnReader reader, int row, char separator, ArrayBufferWriter<byte> buffer)
+        {
+            var bytes = reader.GetFormattedValue(row, separator);
+            if (bytes.Count > 0)
+            {
+                var span = buffer.GetSpan(bytes.Count);
+                bytes.CopyTo(span);
+                buffer.Advance(bytes.Count);
+            }
         }
 
         private struct ColumnReader
@@ -234,8 +340,14 @@ namespace Glacier.Polaris.IO
                 }
                 else if (_date != null)
                 {
-                    var dateOnly = DateOnly.FromDayNumber((int)_date.Memory.Span[row]);
-                    result.AddRange(Encoding.UTF8.GetBytes(dateOnly.ToString("yyyy-MM-dd")));
+                    int days = _date.Memory.Span[row];
+                    var epoch = new DateOnly(1970, 1, 1);
+                    int minDays = DateOnly.MinValue.DayNumber - epoch.DayNumber;
+                    int maxDays = DateOnly.MaxValue.DayNumber - epoch.DayNumber;
+                    var dateOnly = days <= minDays ? DateOnly.MinValue
+                        : days >= maxDays ? DateOnly.MaxValue
+                        : epoch.AddDays(days);
+                    result.AddRange(Encoding.UTF8.GetBytes(dateOnly.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)));
                 }
                 else if (_datetime != null)
                 {

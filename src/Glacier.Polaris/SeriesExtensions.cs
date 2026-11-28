@@ -59,32 +59,75 @@ namespace Glacier.Polaris
             return ArrayKernels.SliceSeries(series, start, len);
         }
 
-        public static ISeries Clone(this ISeries col)
+        public static ISeries Clone(this ISeries col) => col.CloneWithName(col.Name);
+
+        internal static ISeries CloneWithName(this ISeries col, string newName)
         {
             ISeries newCol;
             if (col is Utf8StringSeries u8)
             {
-                newCol = new Utf8StringSeries(col.Name, col.Length, u8.DataBytes.Length);
-                u8.Offsets.Span.CopyTo(((Utf8StringSeries)newCol).Offsets.Span);
-                u8.DataBytes.Span.CopyTo(((Utf8StringSeries)newCol).DataBytes.Span);
+                int usedBytes = u8.Length > 0 ? u8.Offsets.Span[u8.Length] : 0;
+                var cloned = new Utf8StringSeries(newName, u8.Length, usedBytes);
+                u8.Offsets.Span.Slice(0, u8.Length + 1).CopyTo(cloned.Offsets.Span);
+                if (usedBytes > 0)
+                    u8.DataBytes.Span.Slice(0, usedBytes).CopyTo(cloned.DataBytes.Span);
+                cloned.ValidityMask.CopyFrom(u8.ValidityMask);
+                return cloned;
             }
-            else if (col is BinarySeries bin)
+            if (col is BinarySeries bin)
             {
-                newCol = new BinarySeries(col.Name, col.Length, bin.DataBytes.Length);
-                bin.Offsets.Span.CopyTo(((BinarySeries)newCol).Offsets.Span);
-                bin.DataBytes.Span.CopyTo(((BinarySeries)newCol).DataBytes.Span);
+                int usedBytes = bin.Length > 0 ? bin.Offsets.Span[bin.Length] : 0;
+                var cloned = new BinarySeries(newName, bin.Length, usedBytes);
+                bin.Offsets.Span.Slice(0, bin.Length + 1).CopyTo(cloned.Offsets.Span);
+                if (usedBytes > 0)
+                    bin.DataBytes.Span.Slice(0, usedBytes).CopyTo(cloned.DataBytes.Span);
+                cloned.ValidityMask.CopyFrom(bin.ValidityMask);
+                return cloned;
             }
-            else if (col is ListSeries)
+            if (col is ListSeries list)
             {
-                newCol = col.CloneEmpty(col.Length);
-                var idx = Enumerable.Range(0, col.Length).ToArray();
-                col.Take(newCol, idx);
-                return newCol;
+                var clonedOffsets = (Int32Series)list.Offsets.CloneWithName(list.Offsets.Name);
+                var clonedValues = list.Values.Clone();
+                var cloned = new ListSeries(newName, clonedOffsets, clonedValues);
+                cloned.ValidityMask.CopyFrom(list.ValidityMask);
+                return cloned;
             }
-            else
+            if (col is ArraySeries arr)
             {
-                newCol = col.CloneEmpty(col.Length);
-                for (int i = 0; i < col.Length; i++) col.Take(newCol, i, i);
+                var clonedValues = arr.Values.Clone();
+                var cloned = new ArraySeries(newName, arr.Width, clonedValues);
+                cloned.ValidityMask.CopyFrom(arr.ValidityMask);
+                return cloned;
+            }
+            if (col is StructSeries st)
+            {
+                var clonedFields = new ISeries[st.Fields.Length];
+                for (int i = 0; i < st.Fields.Length; i++)
+                    clonedFields[i] = st.Fields[i].Clone();
+                var cloned = new StructSeries(newName, clonedFields);
+                cloned.ValidityMask.CopyFrom(st.ValidityMask);
+                return cloned;
+            }
+            if (col is NullSeries)
+            {
+                return new NullSeries(newName, col.Length);
+            }
+            if (col is ObjectSeries obj)
+            {
+                var cloned = new ObjectSeries(newName, obj.Length);
+                obj.CopyTo(cloned, 0);
+                cloned.ValidityMask.CopyFrom(obj.ValidityMask);
+                return cloned;
+            }
+
+            newCol = col.CloneEmpty(col.Length);
+            if (newCol.Name != newName)
+            {
+                newCol.Rename(newName);
+            }
+            if (col.Length > 0)
+            {
+                col.CopyTo(newCol, 0);
             }
             newCol.ValidityMask.CopyFrom(col.ValidityMask);
             return newCol;

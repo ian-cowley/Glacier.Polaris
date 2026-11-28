@@ -49,8 +49,7 @@ namespace Glacier.Polaris
 
         public DataFrame Agg(params Expr[] exprs)
         {
-            var lazyFrame = _source.Lazy().GroupByRolling(_indexColumn, "1h");
-            return lazyFrame.Agg(exprs).Collect().GetAwaiter().GetResult();
+            return ExecutionEngine.EvaluateGroupAggregationsStatic(_source, new[] { _source.GetColumn(_indexColumn) }, _groups, exprs);
         }
     }
 }

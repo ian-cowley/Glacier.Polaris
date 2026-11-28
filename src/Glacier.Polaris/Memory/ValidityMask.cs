@@ -1,11 +1,12 @@
 using System;
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Glacier.Polaris.Memory
 {
     /// <summary>
-    /// Bit-packed validity mask (Apache Arrow compatible).
+    /// Bit-packed validity mask using an Apache Arrow-style little-endian bitmap layout.
     /// Each bit = 1 (Valid) or 0 (Null/NA).
     /// Optimized with bitmap-level operations for bulk fills and scanning.
     /// </summary>
@@ -141,7 +142,9 @@ namespace Glacier.Polaris.Memory
         /// <summary>Returns a reference to the first element of the raw bitmap for unsafe access.</summary>
         internal ref ulong GetRawBitsRef()
         {
-            return ref _mask[0];
+            if (_mask.Length == 0)
+                return ref Unsafe.NullRef<ulong>();
+            return ref MemoryMarshal.GetArrayDataReference(_mask);
         }
 
         public void SetAllValid()
@@ -186,21 +189,38 @@ namespace Glacier.Polaris.Memory
         public void Take(ValidityMask target, ReadOnlySpan<int> indices)
         {
             if (target.Length != indices.Length) throw new ArgumentException("Target length mismatch");
-            if (!HasNulls) return; // all valid, nothing to propagate
+            if (!HasNulls)
+            {
+                target.SetAllValid();
+                for (int i = 0; i < indices.Length; i++)
+                {
+                    if (indices[i] < 0)
+                    {
+                        target.SetNull(i);
+                    }
+                }
+                return;
+            }
+
             for (int i = 0; i < indices.Length; i++)
             {
-                if (IsNull(indices[i])) target.SetNull(i);
+                int idx = indices[i];
+                if (idx < 0 || IsNull(idx))
+                {
+                    target.SetNull(i);
+                }
+                else
+                {
+                    target.SetValid(i);
+                }
             }
         }
 
         public void CopyTo(ValidityMask target, int offset)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(offset);
-            if (offset + Length > target.Length) throw new ArgumentOutOfRangeException(nameof(offset));
-            for (int i = 0; i < Length; i++)
-            {
-                if (IsNull(i)) target.SetNull(offset + i);
-            }
+            if (offset > target.Length - Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            CopyToBulk(target, offset);
         }
 
         /// <summary>
@@ -210,13 +230,119 @@ namespace Glacier.Polaris.Memory
         public void CopyToBulk(ValidityMask target, int targetOffset)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(targetOffset);
-            if (targetOffset + Length > target.Length) throw new ArgumentOutOfRangeException(nameof(targetOffset));
-            if (!HasNulls) return;
+            if (targetOffset > target.Length - Length) throw new ArgumentOutOfRangeException(nameof(targetOffset));
+            if (Length == 0 || !HasNulls) return;
 
-            for (int i = 0; i < Length; i++)
+            int srcWords = UlongCount;
+            int dstWord = targetOffset >> 6;
+            int dstBit = targetOffset & 63;
+
+            if (dstBit == 0)
             {
-                if (IsNull(i)) target.SetNull(targetOffset + i);
+                for (int w = 0; w < srcWords; w++)
+                {
+                    ulong nullBits = ~GetEffectiveWord(w);
+                    if (nullBits != 0)
+                    {
+                        target._mask[dstWord + w] &= ~nullBits;
+                    }
+                }
             }
+            else
+            {
+                int shiftRight = 64 - dstBit;
+                for (int w = 0; w < srcWords; w++)
+                {
+                    ulong nullBits = ~GetEffectiveWord(w);
+                    if (nullBits == 0) continue;
+
+                    target._mask[dstWord + w] &= ~(nullBits << dstBit);
+                    ulong hiNulls = nullBits >> shiftRight;
+                    if (hiNulls != 0)
+                    {
+                        target._mask[dstWord + w + 1] &= ~hiNulls;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Overwrites the target validity bits in [targetOffset, targetOffset + Length) with this mask's bits,
+        /// leaving all bits outside that range untouched.
+        /// </summary>
+        internal void CopyRangeTo(ValidityMask target, int targetOffset)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(targetOffset);
+            if (targetOffset > target.Length - Length) throw new ArgumentOutOfRangeException(nameof(targetOffset));
+            if (Length == 0 || ReferenceEquals(this, target)) return;
+
+            if (!HasNulls)
+            {
+                if (target.HasNulls)
+                {
+                    SetRangeValid(target, targetOffset, Length);
+                }
+                return;
+            }
+
+            int srcWords = UlongCount;
+            int dstWord = targetOffset >> 6;
+            int dstBit = targetOffset & 63;
+
+            if (dstBit == 0)
+            {
+                for (int w = 0; w < srcWords; w++)
+                {
+                    int validBitsInWord = (w == srcWords - 1 && (Length & 63) != 0) ? (Length & 63) : 64;
+                    ulong rangeMask = validBitsInWord == 64 ? ulong.MaxValue : ((1UL << validBitsInWord) - 1UL);
+                    ulong srcWord = _mask[w] & rangeMask;
+                    target._mask[dstWord + w] = (target._mask[dstWord + w] & ~rangeMask) | srcWord;
+                }
+            }
+            else
+            {
+                int shiftRight = 64 - dstBit;
+                for (int w = 0; w < srcWords; w++)
+                {
+                    int validBitsInWord = (w == srcWords - 1 && (Length & 63) != 0) ? (Length & 63) : 64;
+                    ulong rangeMask = validBitsInWord == 64 ? ulong.MaxValue : ((1UL << validBitsInWord) - 1UL);
+                    ulong srcWord = _mask[w] & rangeMask;
+
+                    ulong loMask = rangeMask << dstBit;
+                    target._mask[dstWord + w] = (target._mask[dstWord + w] & ~loMask) | (srcWord << dstBit);
+
+                    ulong hiMask = rangeMask >> shiftRight;
+                    if (hiMask != 0)
+                    {
+                        target._mask[dstWord + w + 1] = (target._mask[dstWord + w + 1] & ~hiMask) | (srcWord >> shiftRight);
+                    }
+                }
+            }
+        }
+
+        private static void SetRangeValid(ValidityMask target, int targetOffset, int length)
+        {
+            int startWord = targetOffset >> 6;
+            int startBit = targetOffset & 63;
+            int endIndex = targetOffset + length;
+            int endWord = (endIndex - 1) >> 6;
+            int endBit = ((endIndex - 1) & 63) + 1;
+
+            ulong firstMask = ulong.MaxValue << startBit;
+            ulong lastMask = endBit == 64 ? ulong.MaxValue : ((1UL << endBit) - 1UL);
+
+            if (startWord == endWord)
+            {
+                target._mask[startWord] |= (firstMask & lastMask);
+                return;
+            }
+
+            target._mask[startWord] |= firstMask;
+            for (int w = startWord + 1; w < endWord; w++)
+            {
+                target._mask[w] = ulong.MaxValue;
+            }
+            target._mask[endWord] |= lastMask;
         }
 
         /// <summary>
@@ -280,7 +406,7 @@ namespace Glacier.Polaris.Memory
         }
 
         /// <summary>
-        /// Constructs a ValidityMask from an Arrow IPC null bitmap via direct little-endian bit blit.
+        /// Constructs a ValidityMask from a Glacier Compact Columnar IPC v1 null bitmap via direct little-endian bit blit.
         /// </summary>
         public static ValidityMask FromNullBitmap(int length, ReadOnlySpan<byte> nullBitmap)
         {
@@ -299,7 +425,7 @@ namespace Glacier.Polaris.Memory
         }
 
         /// <summary>
-        /// Returns a managed ReadOnlyMemory copy of the null bitmap for Arrow IPC streaming without pinning.
+        /// Returns a managed ReadOnlyMemory copy of the null bitmap for Glacier Compact Columnar IPC v1 streaming without pinning.
         /// Returns ReadOnlyMemory.Empty if there are no nulls.
         /// </summary>
         public ReadOnlyMemory<byte> GetNullBitmapMemory()
@@ -320,7 +446,6 @@ namespace Glacier.Polaris.Memory
             int bytesToCopy = Math.Min(destination.Length, requiredBytes);
             if (bytesToCopy > 0)
             {
-                MaskUnusedTailBits();
                 MemoryMarshal.AsBytes(AsSpan())[..bytesToCopy].CopyTo(destination);
                 if (bytesToCopy == requiredBytes)
                 {

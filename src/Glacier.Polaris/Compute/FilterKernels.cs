@@ -24,8 +24,17 @@ namespace Glacier.Polaris.Compute
     /// </summary>
     public static partial class FilterKernels
     {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ValidateOperation(FilterOperation op)
+        {
+            if (op is < FilterOperation.Equal or > FilterOperation.LessThanOrEqual)
+                throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}");
+        }
+
         public static (int[] rentedIndices, int count) Filter<T>(ReadOnlySpan<T> data, T threshold, FilterOperation op) where T : unmanaged, IComparable<T>
         {
+            ValidateOperation(op);
+
             if (typeof(T) == typeof(int) || typeof(T) == typeof(double) ||
                 typeof(T) == typeof(float) || typeof(T) == typeof(long) ||
                 typeof(T) == typeof(ulong) || typeof(T) == typeof(uint) ||
@@ -38,14 +47,22 @@ namespace Glacier.Polaris.Compute
             // Scalar fallback for other non-numeric unmanaged types (if any)
             int[] indices = ArrayPool<int>.Shared.Rent(data.Length > 0 ? data.Length : 1);
             int count = 0;
-            for (int i = 0; i < data.Length; i++)
+            try
             {
-                if (Matches(data[i], threshold, op))
+                for (int i = 0; i < data.Length; i++)
                 {
-                    indices[count++] = i;
+                    if (Matches(data[i], threshold, op))
+                    {
+                        indices[count++] = i;
+                    }
                 }
+                return (indices, count);
             }
-            return (indices, count);
+            catch
+            {
+                ArrayPool<int>.Shared.Return(indices);
+                throw;
+            }
         }
 
         private static unsafe (int[] rentedIndices, int count) FilterGeneric<T>(ReadOnlySpan<T> data, T threshold, FilterOperation op) where T : unmanaged, IComparable<T>
@@ -193,6 +210,9 @@ namespace Glacier.Polaris.Compute
                                             i += 64;
                                         }
                                         break;
+
+                                    default:
+                                        throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}");
                                 }
                             }
                             else if (Vector256.IsHardwareAccelerated && (end - start) >= 64)
@@ -299,6 +319,9 @@ namespace Glacier.Polaris.Compute
                                             i += 64;
                                         }
                                         break;
+
+                                    default:
+                                        throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}");
                                 }
                             }
                             else
@@ -460,67 +483,77 @@ namespace Glacier.Polaris.Compute
 
         private static (int[] rentedIndices, int count) FilterSequential<T>(ReadOnlySpan<T> data, T threshold, FilterOperation op) where T : unmanaged, IComparable<T>
         {
+            ValidateOperation(op);
+
             int[] indices = ArrayPool<int>.Shared.Rent(data.Length > 0 ? data.Length : 1);
             int count = 0;
             int idx = 0;
 
-            if (Vector512.IsHardwareAccelerated && data.Length >= Vector512<T>.Count)
+            try
             {
-                int step = Vector512<T>.Count;
-                var vThreshold = Vector512.Create(threshold);
-                for (; idx <= data.Length - step; idx += step)
+                if (Vector512.IsHardwareAccelerated && data.Length >= Vector512<T>.Count)
                 {
-                    var vData = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(data.Slice(idx)));
-                    Vector512<T> vMask = op switch
+                    int step = Vector512<T>.Count;
+                    var vThreshold = Vector512.Create(threshold);
+                    for (; idx <= data.Length - step; idx += step)
                     {
-                        FilterOperation.Equal => Vector512.Equals(vData, vThreshold),
-                        FilterOperation.NotEqual => ~Vector512.Equals(vData, vThreshold),
-                        FilterOperation.GreaterThan => Vector512.GreaterThan(vData, vThreshold),
-                        FilterOperation.GreaterThanOrEqual => Vector512.GreaterThanOrEqual(vData, vThreshold),
-                        FilterOperation.LessThan => Vector512.LessThan(vData, vThreshold),
-                        FilterOperation.LessThanOrEqual => Vector512.LessThanOrEqual(vData, vThreshold),
-                        _ => throw new NotImplementedException()
-                    };
-                    ulong mask = vMask.ExtractMostSignificantBits();
-                    while (mask != 0)
-                    {
-                        int bit = BitOperations.TrailingZeroCount(mask);
-                        indices[count++] = idx + bit;
-                        mask &= (mask - 1);
+                        var vData = Vector512.LoadUnsafe(ref MemoryMarshal.GetReference(data.Slice(idx)));
+                        Vector512<T> vMask = op switch
+                        {
+                            FilterOperation.Equal => Vector512.Equals(vData, vThreshold),
+                            FilterOperation.NotEqual => ~Vector512.Equals(vData, vThreshold),
+                            FilterOperation.GreaterThan => Vector512.GreaterThan(vData, vThreshold),
+                            FilterOperation.GreaterThanOrEqual => Vector512.GreaterThanOrEqual(vData, vThreshold),
+                            FilterOperation.LessThan => Vector512.LessThan(vData, vThreshold),
+                            FilterOperation.LessThanOrEqual => Vector512.LessThanOrEqual(vData, vThreshold),
+                            _ => throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}")
+                        };
+                        ulong mask = vMask.ExtractMostSignificantBits();
+                        while (mask != 0)
+                        {
+                            int bit = BitOperations.TrailingZeroCount(mask);
+                            indices[count++] = idx + bit;
+                            mask &= (mask - 1);
+                        }
                     }
                 }
-            }
-            else if (Vector256.IsHardwareAccelerated && data.Length >= Vector256<T>.Count)
-            {
-                int step = Vector256<T>.Count;
-                var vThreshold = Vector256.Create(threshold);
-                for (; idx <= data.Length - step; idx += step)
+                else if (Vector256.IsHardwareAccelerated && data.Length >= Vector256<T>.Count)
                 {
-                    var vData = Vector256.LoadUnsafe(ref MemoryMarshal.GetReference(data.Slice(idx)));
-                    Vector256<T> vMask = op switch
+                    int step = Vector256<T>.Count;
+                    var vThreshold = Vector256.Create(threshold);
+                    for (; idx <= data.Length - step; idx += step)
                     {
-                        FilterOperation.Equal => Vector256.Equals(vData, vThreshold),
-                        FilterOperation.NotEqual => ~Vector256.Equals(vData, vThreshold),
-                        FilterOperation.GreaterThan => Vector256.GreaterThan(vData, vThreshold),
-                        FilterOperation.GreaterThanOrEqual => Vector256.GreaterThanOrEqual(vData, vThreshold),
-                        FilterOperation.LessThan => Vector256.LessThan(vData, vThreshold),
-                        FilterOperation.LessThanOrEqual => Vector256.LessThanOrEqual(vData, vThreshold),
-                        _ => throw new NotImplementedException()
-                    };
-                    ulong mask = vMask.ExtractMostSignificantBits();
-                    while (mask != 0)
-                    {
-                        int bit = BitOperations.TrailingZeroCount(mask);
-                        indices[count++] = idx + bit;
-                        mask &= (mask - 1);
+                        var vData = Vector256.LoadUnsafe(ref MemoryMarshal.GetReference(data.Slice(idx)));
+                        Vector256<T> vMask = op switch
+                        {
+                            FilterOperation.Equal => Vector256.Equals(vData, vThreshold),
+                            FilterOperation.NotEqual => ~Vector256.Equals(vData, vThreshold),
+                            FilterOperation.GreaterThan => Vector256.GreaterThan(vData, vThreshold),
+                            FilterOperation.GreaterThanOrEqual => Vector256.GreaterThanOrEqual(vData, vThreshold),
+                            FilterOperation.LessThan => Vector256.LessThan(vData, vThreshold),
+                            FilterOperation.LessThanOrEqual => Vector256.LessThanOrEqual(vData, vThreshold),
+                            _ => throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}")
+                        };
+                        ulong mask = vMask.ExtractMostSignificantBits();
+                        while (mask != 0)
+                        {
+                            int bit = BitOperations.TrailingZeroCount(mask);
+                            indices[count++] = idx + bit;
+                            mask &= (mask - 1);
+                        }
                     }
                 }
+                for (; idx < data.Length; idx++)
+                {
+                    if (Matches(data[idx], threshold, op)) indices[count++] = idx;
+                }
+                return (indices, count);
             }
-            for (; idx < data.Length; idx++)
+            catch
             {
-                if (Matches(data[idx], threshold, op)) indices[count++] = idx;
+                ArrayPool<int>.Shared.Return(indices);
+                throw;
             }
-            return (indices, count);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -535,7 +568,7 @@ namespace Glacier.Polaris.Compute
                 FilterOperation.GreaterThanOrEqual => cmp >= 0,
                 FilterOperation.LessThan => cmp < 0,
                 FilterOperation.LessThanOrEqual => cmp <= 0,
-                _ => false
+                _ => throw new ArgumentOutOfRangeException(nameof(op), op, $"Unsupported FilterOperation: {op}")
             };
         }
     }

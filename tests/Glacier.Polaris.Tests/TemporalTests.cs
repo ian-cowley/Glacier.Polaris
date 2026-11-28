@@ -35,9 +35,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var y = result.GetColumn("y") as Int32Series;
-            var m = result.GetColumn("m") as Int32Series;
-            var d = result.GetColumn("d") as Int32Series;
+            var y = Assert.IsType<Int32Series>(result.GetColumn("y"));
+            var m = Assert.IsType<Int32Series>(result.GetColumn("m"));
+            var d = Assert.IsType<Int32Series>(result.GetColumn("d"));
 
             Assert.Equal(1970, y.Memory.Span[0]);
             Assert.Equal(1, m.Memory.Span[0]);
@@ -70,9 +70,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            Assert.Equal(2026, (result.GetColumn("y") as Int32Series).Memory.Span[0]);
-            Assert.Equal(5, (result.GetColumn("m") as Int32Series).Memory.Span[0]);
-            Assert.Equal(2, (result.GetColumn("d") as Int32Series).Memory.Span[0]);
+            Assert.Equal(2026, Assert.IsType<Int32Series>(result.GetColumn("y")).Memory.Span[0]);
+            Assert.Equal(5, Assert.IsType<Int32Series>(result.GetColumn("m")).Memory.Span[0]);
+            Assert.Equal(2, Assert.IsType<Int32Series>(result.GetColumn("d")).Memory.Span[0]);
         }
 
         #endregion
@@ -96,9 +96,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            Assert.Equal(14, (result.GetColumn("h") as Int32Series).Memory.Span[0]);
-            Assert.Equal(35, (result.GetColumn("min") as Int32Series).Memory.Span[0]);
-            Assert.Equal(20, (result.GetColumn("s") as Int32Series).Memory.Span[0]);
+            Assert.Equal(14, Assert.IsType<Int32Series>(result.GetColumn("h")).Memory.Span[0]);
+            Assert.Equal(35, Assert.IsType<Int32Series>(result.GetColumn("min")).Memory.Span[0]);
+            Assert.Equal(20, Assert.IsType<Int32Series>(result.GetColumn("s")).Memory.Span[0]);
         }
 
         [Fact]
@@ -122,9 +122,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            Assert.Equal(14, (result.GetColumn("h") as Int32Series).Memory.Span[0]);
-            Assert.Equal(35, (result.GetColumn("min") as Int32Series).Memory.Span[0]);
-            Assert.Equal(20, (result.GetColumn("s") as Int32Series).Memory.Span[0]);
+            Assert.Equal(14, Assert.IsType<Int32Series>(result.GetColumn("h")).Memory.Span[0]);
+            Assert.Equal(35, Assert.IsType<Int32Series>(result.GetColumn("min")).Memory.Span[0]);
+            Assert.Equal(20, Assert.IsType<Int32Series>(result.GetColumn("s")).Memory.Span[0]);
         }
 
         #endregion
@@ -145,7 +145,7 @@ namespace Glacier.Polaris.Tests
                 .Select(Expr.Col("dt").Dt().Nanosecond().Alias("ns"))
                 .Collect();
 
-            Assert.Equal(123_456_789, (result.GetColumn("ns") as Int32Series).Memory.Span[0]);
+            Assert.Equal(123_456_789, Assert.IsType<Int32Series>(result.GetColumn("ns")).Memory.Span[0]);
         }
 
         [Fact]
@@ -162,7 +162,7 @@ namespace Glacier.Polaris.Tests
                 .Select(Expr.Col("time").Dt().Nanosecond().Alias("ns"))
                 .Collect();
 
-            var ns = result.GetColumn("ns") as Int32Series;
+            var ns = Assert.IsType<Int32Series>(result.GetColumn("ns"));
             Assert.Equal(987_654_321, ns.Memory.Span[0]);
             Assert.True(ns.ValidityMask.IsNull(1));
         }
@@ -193,12 +193,12 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var dow = result.GetColumn("dow") as Int32Series;
+            var dow = Assert.IsType<Int32Series>(result.GetColumn("dow"));
             // Polars: 1=Monday..7=Sunday; Thu=4, Sat=6
             Assert.Equal(4, dow.Memory.Span[0]); // 1970-01-01 Thursday
             Assert.Equal(6, dow.Memory.Span[1]); // 1970-01-03 Saturday
 
-            var dowDt = result.GetColumn("dow_dt") as Int32Series;
+            var dowDt = Assert.IsType<Int32Series>(result.GetColumn("dow_dt"));
             Assert.Equal(4, dowDt.Memory.Span[0]); // 1970-01-01 Thursday
             Assert.True(dowDt.ValidityMask.IsNull(1)); // null propagated
         }
@@ -218,7 +218,7 @@ namespace Glacier.Polaris.Tests
                 .Select(Expr.Col("date").Dt().Quarter().Alias("q"))
                 .Collect();
 
-            var q = result.GetColumn("q") as Int32Series;
+            var q = Assert.IsType<Int32Series>(result.GetColumn("q"));
             Assert.Equal(1, q.Memory.Span[0]);
             Assert.Equal(2, q.Memory.Span[1]);
             Assert.Equal(3, q.Memory.Span[2]);
@@ -248,13 +248,13 @@ namespace Glacier.Polaris.Tests
                 .Collect();
 
             // plus1d
-            var plus1d = result.GetColumn("plus1d") as DatetimeSeries;
+            var plus1d = Assert.IsType<DatetimeSeries>(result.GetColumn("plus1d"));
             var expected1d = new DateTime(2026, 5, 3, 10, 0, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expected1d), plus1d.Memory.Span[0]);
             Assert.True(plus1d.ValidityMask.IsNull(1));
 
             // plus2h30m
-            var plus2h30m = result.GetColumn("plus2h30m") as DatetimeSeries;
+            var plus2h30m = Assert.IsType<DatetimeSeries>(result.GetColumn("plus2h30m"));
             var expected2h30m = new DateTime(2026, 5, 2, 12, 30, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expected2h30m), plus2h30m.Memory.Span[0]);
         }
@@ -277,12 +277,12 @@ namespace Glacier.Polaris.Tests
                 .Collect();
 
             // Round to nearest hour: 10:17 -> 10:00
-            var roundHour = result.GetColumn("round_hour") as DatetimeSeries;
+            var roundHour = Assert.IsType<DatetimeSeries>(result.GetColumn("round_hour"));
             var expectedHour = new DateTime(2026, 5, 2, 10, 0, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expectedHour), roundHour.Memory.Span[0]);
 
             // Round to nearest day: 10:17 -> 1970-01-01 ... actually 2026-05-02 -> 2026-05-02 (before noon)
-            var roundDay = result.GetColumn("round_day") as DatetimeSeries;
+            var roundDay = Assert.IsType<DatetimeSeries>(result.GetColumn("round_day"));
             var expectedDay = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expectedDay), roundDay.Memory.Span[0]);
         }
@@ -306,16 +306,17 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
+            var epochS = Assert.IsType<Int64Series>(result.GetColumn("epoch_s"));
             long expectedSeconds = dtVal / 1_000_000_000L;
-            Assert.Equal(expectedSeconds, (result.GetColumn("epoch_s") as Int64Series).Memory.Span[0]);
+            Assert.Equal(expectedSeconds, epochS.Memory.Span[0]);
 
             long expectedMs = dtVal / 1_000_000L;
-            Assert.Equal(expectedMs, (result.GetColumn("epoch_ms") as Int64Series).Memory.Span[0]);
+            Assert.Equal(expectedMs, Assert.IsType<Int64Series>(result.GetColumn("epoch_ms")).Memory.Span[0]);
 
-            Assert.Equal(dtVal, (result.GetColumn("epoch_ns") as Int64Series).Memory.Span[0]);
+            Assert.Equal(dtVal, Assert.IsType<Int64Series>(result.GetColumn("epoch_ns")).Memory.Span[0]);
 
             // Null propagation
-            Assert.True((result.GetColumn("epoch_s") as Int64Series).ValidityMask.IsNull(1));
+            Assert.True(epochS.ValidityMask.IsNull(1));
         }
 
         #endregion
@@ -343,7 +344,7 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var plus1h = result.GetColumn("plus1h") as DatetimeSeries;
+            var plus1h = Assert.IsType<DatetimeSeries>(result.GetColumn("plus1h"));
             var expected = new DateTime(2026, 5, 2, 11, 0, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expected), plus1h.Memory.Span[0]);
         }
@@ -373,12 +374,12 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var minus2h = result.GetColumn("minus2h") as DatetimeSeries;
+            var minus2h = Assert.IsType<DatetimeSeries>(result.GetColumn("minus2h"));
             var expected = new DateTime(2026, 5, 2, 8, 0, 0, DateTimeKind.Utc);
             Assert.Equal(ToNanos(expected), minus2h.Memory.Span[0]);
             Assert.True(minus2h.ValidityMask.IsNull(1));
 
-            var hour = result.GetColumn("hour") as Int32Series;
+            var hour = Assert.IsType<Int32Series>(result.GetColumn("hour"));
             Assert.Equal(8, hour.Memory.Span[0]);
         }
 
@@ -406,9 +407,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var days = result.GetColumn("days") as Float64Series;
-            var hours = result.GetColumn("hours") as Float64Series;
-            var seconds = result.GetColumn("seconds") as Float64Series;
+            var days = Assert.IsType<Float64Series>(result.GetColumn("days"));
+            var hours = Assert.IsType<Float64Series>(result.GetColumn("hours"));
+            var seconds = Assert.IsType<Float64Series>(result.GetColumn("seconds"));
 
             Assert.Equal(1.0, days.Memory.Span[0], 5);
             Assert.Equal(24.0, hours.Memory.Span[0], 5);
@@ -438,9 +439,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var days = result.GetColumn("days") as Float64Series;
-            var hours = result.GetColumn("hours") as Float64Series;
-            var seconds = result.GetColumn("seconds") as Float64Series;
+            var days = Assert.IsType<Float64Series>(result.GetColumn("days"));
+            var hours = Assert.IsType<Float64Series>(result.GetColumn("hours"));
+            var seconds = Assert.IsType<Float64Series>(result.GetColumn("seconds"));
 
             Assert.Equal(1.5 / 24, days.Memory.Span[0], 5);
             Assert.Equal(1.5, hours.Memory.Span[0], 5);
@@ -464,7 +465,7 @@ namespace Glacier.Polaris.Tests
                 .Select(Expr.Col("dur").Duration().Alias("identity"))
                 .Collect();
 
-            var identity = result.GetColumn("identity") as DurationSeries;
+            var identity = Assert.IsType<DurationSeries>(result.GetColumn("identity"));
             Assert.Equal(3600L * 1_000_000_000L, identity.Memory.Span[0]);
         }
 
@@ -540,8 +541,8 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var est = result.GetColumn("est") as DatetimeSeries;
-            var hour = result.GetColumn("hour") as Int32Series;
+            var est = Assert.IsType<DatetimeSeries>(result.GetColumn("est"));
+            var hour = Assert.IsType<Int32Series>(result.GetColumn("hour"));
 
             // Hour should be converted to Eastern Daylight Time (EDT, which is UTC-4 in May -> 8)
             Assert.Equal(8, hour.Memory.Span[0]);

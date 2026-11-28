@@ -16,11 +16,34 @@ namespace Glacier.Polaris.IO
 
         public static string[] PeekHeaders(string filePath)
         {
-            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var reader = new StreamReader(stream);
-            var line = reader.ReadLine();
-            if (line == null) return Array.Empty<string>();
-            return line.Split(',').Select(h => h.Trim('\"')).ToArray();
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            int bufSize = 4096;
+            byte[] buffer = new byte[bufSize];
+            int totalRead = 0;
+
+            while (true)
+            {
+                if (totalRead == buffer.Length)
+                {
+                    Array.Resize(ref buffer, buffer.Length * 2);
+                }
+
+                int read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+                totalRead += read;
+                bool isEof = read == 0;
+
+                int start = (totalRead >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) ? 3 : 0;
+                var seq = new ReadOnlySequence<byte>(buffer, start, totalRead - start);
+                if (CsvParser.TryReadLine(ref seq, out ReadOnlySequence<byte> headerLine, isFinalBlock: isEof))
+                {
+                    return CsvParser.ParseHeader(headerLine.FirstSpan).ToArray();
+                }
+
+                if (isEof)
+                {
+                    return Array.Empty<string>();
+                }
+            }
         }
 
         public CsvReader(string filePath, string[]? columns = null, int? nRows = null)
@@ -97,6 +120,7 @@ namespace Glacier.Polaris.IO
 
         private async IAsyncEnumerable<DataFrame> ConsumePipeAsync(PipeReader reader, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            bool bomChecked = false;
             bool headerParsed = false;
             List<string> allHeaders = null!;
             bool schemaInferred = false;
@@ -108,12 +132,21 @@ namespace Glacier.Polaris.IO
                 ReadResult result = await reader.ReadAsync(cancellationToken);
                 ReadOnlySequence<byte> buffer = result.Buffer;
 
+                if (!bomChecked && buffer.Length > 0)
+                {
+                    if (!TryConsumeBom(ref buffer, result.IsCompleted))
+                    {
+                        reader.AdvanceTo(buffer.Start, buffer.End);
+                        continue;
+                    }
+                    bomChecked = true;
+                }
+
                 if (!headerParsed && buffer.Length > 0)
                 {
                     if (CsvParser.TryReadLine(ref buffer, out ReadOnlySequence<byte> line, result.IsCompleted))
                     {
-                        ReadOnlySpan<byte> span = GetSpan(line);
-                        allHeaders = CsvParser.ParseHeader(span);
+                        allHeaders = ParseHeaderFromSequence(line);
                         headerParsed = true;
                     }
                 }
@@ -124,15 +157,14 @@ namespace Glacier.Polaris.IO
                     var tempBuffer = buffer;
                     if (CsvParser.TryReadLine(ref tempBuffer, out ReadOnlySequence<byte> line, result.IsCompleted))
                     {
-                        ReadOnlySpan<byte> span = GetSpan(line);
-                        var firstRowTokens = CsvParser.ParseHeader(span);
-                        
+                        var firstRowTokens = ParseHeaderFromSequence(line);
+
                         allTypes = new Type[allHeaders.Count];
                         for (int i = 0; i < allHeaders.Count; i++)
                         {
                             string token = i < firstRowTokens.Count ? firstRowTokens[i] : "";
                             if (int.TryParse(token, out _)) allTypes[i] = typeof(int);
-                            else if (double.TryParse(token, out _)) allTypes[i] = typeof(double);
+                            else if (double.TryParse(token, System.Globalization.CultureInfo.InvariantCulture, out _)) allTypes[i] = typeof(double);
                             else allTypes[i] = typeof(string);
                         }
                         schemaInferred = true;
@@ -145,8 +177,7 @@ namespace Glacier.Polaris.IO
                     int rowCount = 0;
                     while (CsvParser.TryReadLine(ref buffer, out ReadOnlySequence<byte> line, result.IsCompleted))
                     {
-                        ReadOnlySpan<byte> span = GetSpan(line);
-                        CsvParser.ParseRow(span, builders);
+                        ParseRowFromSequence(line, builders);
                         rowCount++;
                         _totalRowsRead++;
 
@@ -192,18 +223,58 @@ namespace Glacier.Polaris.IO
             }
         }
 
-        private ReadOnlySpan<byte> GetSpan(ReadOnlySequence<byte> sequence)
+        private static bool TryConsumeBom(ref ReadOnlySequence<byte> buffer, bool isCompleted)
         {
-            if (sequence.IsSingleSegment) return sequence.FirstSpan;
-            int length = (int)sequence.Length;
+            if (buffer.Length >= 3)
+            {
+                Span<byte> bom = stackalloc byte[3];
+                buffer.Slice(0, 3).CopyTo(bom);
+                if (bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF)
+                {
+                    buffer = buffer.Slice(3);
+                }
+                return true;
+            }
+            return isCompleted;
+        }
+
+        private static List<string> ParseHeaderFromSequence(ReadOnlySequence<byte> sequence)
+        {
+            if (sequence.IsSingleSegment)
+                return CsvParser.ParseHeader(sequence.FirstSpan);
+
+            int length = checked((int)sequence.Length);
             byte[] rented = ArrayPool<byte>.Shared.Rent(length);
-            sequence.CopyTo(rented);
-            // In a hyper-optimized reader, we wouldn't rent and return immediately if we use the span,
-            // but for simplicity in V1 we will return it. Wait, if we return it immediately, the caller 
-            // uses it and it might be overwritten! So we can't return it here.
-            // Actually, since CsvParser.ParseRow processes it synchronously, we can rent, copy, parse, return.
-            // But GetSpan can't do the return. Let's just allocate an array for the rare split line.
-            return sequence.ToArray();
+            try
+            {
+                sequence.CopyTo(rented);
+                return CsvParser.ParseHeader(rented.AsSpan(0, length));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+
+        private static void ParseRowFromSequence(ReadOnlySequence<byte> sequence, IColumnBuilder?[] builders)
+        {
+            if (sequence.IsSingleSegment)
+            {
+                CsvParser.ParseRow(sequence.FirstSpan, builders);
+                return;
+            }
+
+            int length = checked((int)sequence.Length);
+            byte[] rented = ArrayPool<byte>.Shared.Rent(length);
+            try
+            {
+                sequence.CopyTo(rented);
+                CsvParser.ParseRow(rented.AsSpan(0, length), builders);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
         }
 
         private IColumnBuilder?[] CreateBuilders(List<string> headers, Type[] types, string[]? columns)

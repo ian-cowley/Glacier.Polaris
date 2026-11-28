@@ -1,16 +1,20 @@
 using System;
-using System.Linq;
 using System.Linq.Expressions;
-using System.Collections.Generic;
 
 namespace Glacier.Polaris
 {
     public sealed class LazyGroupBy
     {
-        private readonly Expression _plan;
+        private readonly LogicalPlanNode _plan;
         private readonly string[] _columns;
 
         internal LazyGroupBy(Expression plan, string[] columns)
+        {
+            _plan = LogicalPlanNode.FromLegacyExpression(plan);
+            _columns = columns;
+        }
+
+        internal LazyGroupBy(LogicalPlanNode plan, string[] columns)
         {
             _plan = plan;
             _columns = columns;
@@ -18,22 +22,16 @@ namespace Glacier.Polaris
 
         public LazyFrame Agg(params Expr[] aggregations)
         {
-            var method = typeof(LazyFrame).GetMethod("GroupByAggOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var columnsExpr = Expression.Constant(_columns);
-            var aggExprs = Expression.Constant(aggregations, typeof(Expr[]));
-            var methodCall = Expression.Call(null, method, _plan, columnsExpr, aggExprs);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new AggPlanNode(_plan, _columns, aggregations));
         }
+
         /// <summary>
         /// Returns a LazyFrame that, when collected, produces group keys and a "groups" column with row indices.
         /// Polars API: agg_groups()
         /// </summary>
         public LazyFrame AggGroups()
         {
-            var method = typeof(LazyFrame).GetMethod("AggGroupsOp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var columnsExpr = Expression.Constant(_columns);
-            var methodCall = Expression.Call(null, method, _plan, columnsExpr);
-            return new LazyFrame(methodCall);
+            return new LazyFrame(new AggGroupsPlanNode(_plan, _columns));
         }
     }
 }

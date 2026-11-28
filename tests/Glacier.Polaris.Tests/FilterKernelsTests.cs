@@ -235,5 +235,44 @@ namespace Glacier.Polaris.Tests
             Assert.True(u8Cnt > 0);
             ArrayPool<int>.Shared.Return(u8Idx);
         }
+
+        private readonly struct CustomComparableValue : IComparable<CustomComparableValue>
+        {
+            public readonly int Value;
+            public CustomComparableValue(int value) => Value = value;
+            public int CompareTo(CustomComparableValue other) => Value.CompareTo(other.Value);
+        }
+
+        [Theory]
+        [InlineData((FilterOperation)99)]
+        [InlineData((FilterOperation)(-1))]
+        public void FilterKernels_InvalidOperation_ThrowsArgumentOutOfRange_AcrossAllPaths(FilterOperation invalidOp)
+        {
+            // Remainder path (< Vector256/Vector512 count)
+            int[] smallData = [1, 2, 3];
+            Assert.Throws<ArgumentOutOfRangeException>(() => FilterKernels.Filter<int>(smallData, 2, invalidOp));
+
+            // Sequential SIMD path (Vector256 & Vector512)
+            int[] simdData = new int[64];
+            Assert.Throws<ArgumentOutOfRangeException>(() => FilterKernels.Filter<int>(simdData, 0, invalidOp));
+
+            // Parallel SIMD path (>= ParallelThresholds)
+            int parallelLen = Math.Min(ParallelThresholds.GetFilterParallelThreshold<int>(), 1_000_000);
+            if (parallelLen < int.MaxValue)
+            {
+                int[] largeData = new int[parallelLen];
+                Assert.Throws<ArgumentOutOfRangeException>(() => FilterKernels.Filter<int>(largeData, 0, invalidOp));
+            }
+
+            // Non-SIMD scalar fallback path
+            CustomComparableValue[] customData = [new(1), new(2), new(3)];
+            Assert.Throws<ArgumentOutOfRangeException>(() => FilterKernels.Filter<CustomComparableValue>(customData, new(2), invalidOp));
+
+            // Repeat invalid calls to verify ArrayPool stability
+            for (int i = 0; i < 16; i++)
+            {
+                Assert.Throws<ArgumentOutOfRangeException>(() => FilterKernels.Filter<double>([1.0, 2.0, 3.0], 1.5, invalidOp));
+            }
+        }
     }
 }

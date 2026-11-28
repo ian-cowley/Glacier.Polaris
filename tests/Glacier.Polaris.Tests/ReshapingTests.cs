@@ -24,9 +24,9 @@ namespace Glacier.Polaris.Tests
             // value: [10, 20, 30, 40]
 
             Assert.Equal(4, melted.RowCount);
-            var idCol = melted.GetColumn("id") as Int32Series;
-            var varCol = melted.GetColumn("variable") as Utf8StringSeries;
-            var valCol = melted.GetColumn("value") as Int32Series;
+            var idCol = Assert.IsType<Int32Series>(melted.GetColumn("id"));
+            var varCol = Assert.IsType<Utf8StringSeries>(melted.GetColumn("variable"));
+            var valCol = Assert.IsType<Int32Series>(melted.GetColumn("value"));
 
             Assert.Equal(1, idCol.Memory.Span[0]);
             Assert.Equal(2, idCol.Memory.Span[1]);
@@ -63,8 +63,8 @@ namespace Glacier.Polaris.Tests
             Assert.Equal(4, pivoted.RowCount);
             Assert.Equal(4, pivoted.Columns.Count);
             
-            var aCol = pivoted.GetColumn("A") as Int32Series;
-            var bCol = pivoted.GetColumn("B") as Int32Series;
+            var aCol = Assert.IsType<Int32Series>(pivoted.GetColumn("A"));
+            var bCol = Assert.IsType<Int32Series>(pivoted.GetColumn("B"));
             
             // Note: Order is non-deterministic due to parallel GroupBy.
             // We'll check sums or find rows.

@@ -23,16 +23,6 @@ namespace Glacier.Polaris.Tests
     {
         // ── Helpers ──────────────────────────────────────────────────────────
 
-        private static MethodInfo JoinOpMethod =>
-            typeof(LazyFrame).GetMethod("JoinOp",
-                BindingFlags.NonPublic | BindingFlags.Static)!;
-
-        private static MethodInfo DataFrameOpMethod =>
-            typeof(LazyFrame).GetMethod("DataFrameOp",
-                BindingFlags.NonPublic | BindingFlags.Static)
-            ?? typeof(LazyFrame).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-                                .First(m => m.Name == "DataFrameOp");
-
         /// <summary>Wrap a DataFrame into the plan expression LazyFrame uses internally.</summary>
         private static LazyFrame FromDataFrame(DataFrame df)
             => LazyFrame.FromDataFrame(df);

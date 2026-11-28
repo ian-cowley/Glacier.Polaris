@@ -65,7 +65,7 @@ namespace Glacier.Polaris
         public DataFrame Select(params Expr[] exprs)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            return Lazy().Select(exprs).Collect().GetAwaiter().GetResult();
+            return ExecutionEngine.ExecuteSync(Lazy().Select(exprs).PlanNode);
         }
 
         public DataFrame Select(params string[] columnNames)
@@ -75,7 +75,8 @@ namespace Glacier.Polaris
 
         public DataFrame Filter(Expr predicate)
         {
-            return Lazy().Filter(predicate).Collect().GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return ExecutionEngine.ExecuteSync(Lazy().Filter(predicate).PlanNode);
         }
 
         public DataFrame Drop(params string[] columnNames)
@@ -88,7 +89,8 @@ namespace Glacier.Polaris
 
         public DataFrame WithColumns(params Expr[] exprs)
         {
-            return Lazy().WithColumns(exprs).Collect().GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return ExecutionEngine.ExecuteSync(Lazy().WithColumns(exprs).PlanNode);
         }
 
         public DataFrame VStack(DataFrame other)
@@ -160,12 +162,14 @@ namespace Glacier.Polaris
 
         public DataFrame Sort(string columnName, bool descending = false)
         {
-            return Lazy().Sort(columnName, descending).Collect().GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return ExecutionEngine.ExecuteSync(Lazy().Sort(columnName, descending).PlanNode);
         }
 
         public DataFrame Sort(string[] columnNames, bool[] descending)
         {
-            return Lazy().Sort(columnNames, descending).Collect().GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return ExecutionEngine.ExecuteSync(Lazy().Sort(columnNames, descending).PlanNode);
         }
 
         public DataFrame Sort(params string[] columnNames)
@@ -175,7 +179,8 @@ namespace Glacier.Polaris
 
         public DataFrame Limit(int n)
         {
-            return Lazy().Limit(n).Collect().GetAwaiter().GetResult();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return ExecutionEngine.ExecuteSync(Lazy().Limit(n).PlanNode);
         }
         public DataFrame Transpose(bool include_header = false, string header_name = "column", string[]? column_names = null)
         {
@@ -208,8 +213,8 @@ namespace Glacier.Polaris
         }
 
         /// <summary>
-        /// Writes the DataFrame to Arrow IPC stream format.
-        /// Matching Polars' DataFrame.write_ipc(stream=True) behavior.
+        /// Writes the DataFrame to Glacier Compact Columnar IPC v1 stream format via <c>Glacier.Formats.Arrow</c>
+        /// (custom compact framing; not Apache Arrow FlatBuffers wire-compatible).
         /// </summary>
         public void WriteIpcStream(string filePath)
         {
@@ -248,16 +253,45 @@ namespace Glacier.Polaris
 
         public DataFrame Join(DataFrame other, string on, JoinType type = JoinType.Inner)
         {
-            Data.Int32Series? leftCol = null;
-            Data.Int32Series? rightCol = null;
+            if (type == JoinType.Cross)
+            {
+                return Join(other, Array.Empty<string>(), Array.Empty<string>(), JoinType.Cross);
+            }
+            return Join(other, new[] { on }, new[] { on }, type);
+        }
+
+        public DataFrame Join(DataFrame other, string[] on, JoinType type = JoinType.Inner)
+        {
+            return Join(other, on, on, type);
+        }
+
+        public DataFrame Join(DataFrame other, string[] leftOn, string[] rightOn, JoinType type = JoinType.Inner)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            ISeries[] leftKeys = Array.Empty<ISeries>();
+            ISeries[] rightKeys = Array.Empty<ISeries>();
 
             if (type != JoinType.Cross)
             {
-                leftCol = this.GetColumn(on) as Data.Int32Series;
-                rightCol = other.GetColumn(on) as Data.Int32Series;
+                ArgumentNullException.ThrowIfNull(leftOn);
+                ArgumentNullException.ThrowIfNull(rightOn);
+                if (leftOn.Length == 0)
+                    throw new ArgumentException("At least one join key column is required.", nameof(leftOn));
+                if (leftOn.Length != rightOn.Length)
+                    throw new ArgumentException($"Join key arity mismatch: left has {leftOn.Length} keys, right has {rightOn.Length} keys.");
 
-                if (leftCol == null || rightCol == null)
-                    throw new ArgumentException("Join requires Int32 column on the specified key.");
+                leftKeys = leftOn.Select(GetColumn).ToArray();
+                rightKeys = rightOn.Select(other.GetColumn).ToArray();
+
+                for (int k = 0; k < leftKeys.Length; k++)
+                {
+                    if (leftKeys[k].GetType() != rightKeys[k].GetType() || leftKeys[k].DataType != rightKeys[k].DataType)
+                    {
+                        throw new ArgumentException(
+                            $"Join key type mismatch at '{leftOn[k]}' / '{rightOn[k]}': {leftKeys[k].DataType.Name} vs {rightKeys[k].DataType.Name}.");
+                    }
+                }
             }
 
             Compute.JoinKernels.JoinResult result;
@@ -266,28 +300,42 @@ namespace Glacier.Polaris
             switch (type)
             {
                 case JoinType.Inner:
-                    result = Compute.JoinKernels.InnerJoin(leftCol!, rightCol!);
+                    result = (leftKeys.Length == 1 && leftKeys[0] is Data.Int32Series liInner && rightKeys[0] is Data.Int32Series riInner)
+                        ? Compute.JoinKernels.InnerJoin(liInner, riInner)
+                        : Compute.JoinKernels.InnerJoin(leftKeys, rightKeys);
                     break;
                 case JoinType.Left:
-                    result = Compute.JoinKernels.LeftJoin(leftCol!, rightCol!);
+                    result = (leftKeys.Length == 1 && leftKeys[0] is Data.Int32Series liLeft && rightKeys[0] is Data.Int32Series riLeft)
+                        ? Compute.JoinKernels.LeftJoin(liLeft, riLeft)
+                        : Compute.JoinKernels.LeftJoin(leftKeys, rightKeys);
                     hasNulls = true;
                     break;
                 case JoinType.Outer:
-                    result = Compute.JoinKernels.OuterJoin(leftCol!, rightCol!);
+                    result = (leftKeys.Length == 1 && leftKeys[0] is Data.Int32Series liOuter && rightKeys[0] is Data.Int32Series riOuter)
+                        ? Compute.JoinKernels.OuterJoin(liOuter, riOuter)
+                        : Compute.JoinKernels.OuterJoin(leftKeys, rightKeys);
                     hasNulls = true;
                     break;
                 case JoinType.Cross:
                     result = Compute.JoinKernels.CrossJoin(this.RowCount, other.RowCount);
                     break;
                 case JoinType.AsOf:
-                    result = Compute.JoinKernels.JoinAsof(leftCol!, rightCol!);
+                    if (leftKeys.Length != 1)
+                        throw new ArgumentException("AsOf join requires exactly one key column.");
+                    result = (leftKeys[0] is Data.Int32Series liAsof && rightKeys[0] is Data.Int32Series riAsof && !liAsof.ValidityMask.HasNulls && !riAsof.ValidityMask.HasNulls)
+                        ? Compute.JoinKernels.JoinAsof(liAsof, riAsof)
+                        : Compute.JoinKernels.JoinAsof(leftKeys[0], rightKeys[0]);
                     hasNulls = true;
                     break;
                 case JoinType.Semi:
-                    result = Compute.JoinKernels.SemiJoin(leftCol!, rightCol!);
+                    result = (leftKeys.Length == 1 && leftKeys[0] is Data.Int32Series liSemi && rightKeys[0] is Data.Int32Series riSemi)
+                        ? Compute.JoinKernels.SemiJoin(liSemi, riSemi)
+                        : Compute.JoinKernels.SemiJoin(leftKeys, rightKeys);
                     break;
                 case JoinType.Anti:
-                    result = Compute.JoinKernels.AntiJoin(leftCol!, rightCol!);
+                    result = (leftKeys.Length == 1 && leftKeys[0] is Data.Int32Series liAnti && rightKeys[0] is Data.Int32Series riAnti)
+                        ? Compute.JoinKernels.AntiJoin(liAnti, riAnti)
+                        : Compute.JoinKernels.AntiJoin(leftKeys, rightKeys);
                     break;
                 default:
                     throw new NotSupportedException();
@@ -295,30 +343,30 @@ namespace Glacier.Polaris
 
             var newCols = new List<ISeries>();
 
-            // Materialize Left Dataframe
             foreach (var col in this.Columns)
             {
                 newCols.Add(MaterializeColumn(col, result.LeftIndices, hasNulls));
             }
 
-            // Materialize Right Dataframe
-            // For outer joins, all right columns (including the key) get materialized.
-            // The right key column is renamed if there's a name conflict.
-            // Python Polars behavior: outer join includes both the left key column (from left table,
-            // null for unmatched right rows) and the right key column (renamed, null for unmatched left rows).
-            foreach (var col in other.Columns)
+            if (type != JoinType.Semi && type != JoinType.Anti)
             {
-                // Skip join key for non-outer, non-cross joins
-                if (type != JoinType.Cross && type != JoinType.Outer && col.Name == on) continue;
+                var rightKeySet = type != JoinType.Cross && type != JoinType.Outer
+                    ? new HashSet<string>(rightOn, StringComparer.Ordinal)
+                    : null;
 
-                string rightNewName = col.Name;
-                if (this.Columns.Any(c => c.Name == col.Name))
+                foreach (var col in other.Columns)
                 {
-                    rightNewName += "_right";
-                }
+                    if (rightKeySet != null && rightKeySet.Contains(col.Name)) continue;
 
-                var rightMatCol = MaterializeColumn(col, result.RightIndices, hasNulls);
-                newCols.Add(RenameSeries(rightMatCol, rightNewName));
+                    string rightNewName = col.Name;
+                    if (this.Columns.Any(c => c.Name == col.Name))
+                    {
+                        rightNewName += "_right";
+                    }
+
+                    var rightMatCol = MaterializeColumn(col, result.RightIndices, hasNulls);
+                    newCols.Add(RenameSeries(rightMatCol, rightNewName));
+                }
             }
 
             return new DataFrame(newCols);
@@ -335,10 +383,7 @@ namespace Glacier.Polaris
         private ISeries RenameSeries(ISeries series, string newName)
         {
             if (series.Name == newName) return series;
-            if (series is Data.Int32Series i32) { var n = new Data.Int32Series(newName, i32.Length); i32.Memory.Span.CopyTo(n.Memory.Span); n.ValidityMask.CopyFrom(i32.ValidityMask); return n; }
-            if (series is Data.Float64Series f64) { var n = new Data.Float64Series(newName, f64.Length); f64.Memory.Span.CopyTo(n.Memory.Span); n.ValidityMask.CopyFrom(f64.ValidityMask); return n; }
-            if (series is Data.Utf8StringSeries u8) { var n = new Data.Utf8StringSeries(newName, u8.Length, u8.DataBytes.Length); u8.Offsets.Span.CopyTo(n.Offsets.Span); u8.DataBytes.Span.CopyTo(n.DataBytes.Span); n.ValidityMask.CopyFrom(u8.ValidityMask); return n; }
-            throw new NotSupportedException();
+            return series.CloneWithName(newName);
         }
 
         public DataFrame Pivot(string[] index, string pivot, string values, string agg = "sum")
@@ -860,28 +905,7 @@ namespace Glacier.Polaris
             {
                 if (mapping.TryGetValue(col.Name, out var newName))
                 {
-                    ISeries renamed;
-                    if (col is Data.Utf8StringSeries u8)
-                    {
-                        var target = new Data.Utf8StringSeries(newName, col.Length, u8.DataBytes.Length);
-                        u8.Offsets.Span.CopyTo(target.Offsets.Span);
-                        u8.DataBytes.Span.CopyTo(target.DataBytes.Span);
-                        renamed = target;
-                    }
-                    else if (col is Data.BinarySeries bin)
-                    {
-                        var target = new Data.BinarySeries(newName, col.Length, bin.DataBytes.Length);
-                        bin.Offsets.Span.CopyTo(target.Offsets.Span);
-                        bin.DataBytes.Span.CopyTo(target.DataBytes.Span);
-                        renamed = target;
-                    }
-                    else
-                    {
-                        renamed = Compute.UniqueKernels.CloneWithName(col, newName, col.Length);
-                        col.CopyTo(renamed, 0);
-                    }
-                    renamed.ValidityMask.CopyFrom(col.ValidityMask);
-                    newCols.Add(renamed);
+                    newCols.Add(col.CloneWithName(newName));
                 }
                 else
                 {

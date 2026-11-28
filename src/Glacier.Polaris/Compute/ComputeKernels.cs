@@ -313,7 +313,7 @@ namespace Glacier.Polaris.Compute
                 for (int i = 0; i < length; i++)
                 {
                     int index = idx[i];
-                    if (index == -1)
+                    if (index < 0)
                     {
                         dst[i] = default(T);
                         mask.SetNull(i);

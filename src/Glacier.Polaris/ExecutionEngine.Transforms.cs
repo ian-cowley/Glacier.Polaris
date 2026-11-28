@@ -11,7 +11,6 @@ namespace Glacier.Polaris
     {
         private async IAsyncEnumerable<DataFrame> ApplyPivot(IAsyncEnumerable<DataFrame> source, string[] index, string pivot, string values, string agg)
         {
-            // Pivot is a non-streaming operation. We must materialize the entire source.
             var results = new List<DataFrame>();
             await foreach (var df in source)
             {
@@ -32,56 +31,107 @@ namespace Glacier.Polaris
             }
         }
 
-        private async IAsyncEnumerable<DataFrame> ApplyAgg(IAsyncEnumerable<DataFrame> source, string[] groupColumns, Expression aggregations)
+        private async IAsyncEnumerable<DataFrame> ApplyAgg(IAsyncEnumerable<DataFrame> source, string[] groupColumns, Expr[] aggExprs)
         {
-            // Materialize all chunks
             var chunks = new List<DataFrame>();
             await foreach (var df in source) chunks.Add(df);
             if (chunks.Count == 0) yield break;
 
             var fullDf = chunks.Count == 1 ? chunks[0] : DataFrame.Concat(chunks);
-
-            // Extract group columns from the source
-            var groupCols = groupColumns.Select(c => fullDf.GetColumn(c)).ToArray();
+            var groupCols = groupColumns.Select(fullDf.GetColumn).ToArray();
             var groups = Compute.GroupByKernels.GroupBy(groupCols);
+            var keyCols = BuildGroupKeyColumns(fullDf, groupColumns, groups);
 
-            // Parse aggregations expression to get Expr[]
-            List<Expr> aggExprs = new();
-            if (OptimizerAnalysis.TryExtractExprArray(aggregations, out var extractedAggs))
-            {
-                aggExprs.AddRange(extractedAggs);
-            }
-            else if (aggregations is NewArrayExpression arrExpr)
-            {
-                foreach (var exprNode in arrExpr.Expressions)
-                {
-                    if (exprNode is UnaryExpression ue && ue.NodeType == ExpressionType.Convert)
-                    {
-                        if (ue.Operand is ConstantExpression ce && ce.Value is Expr e)
-                            aggExprs.Add(e);
-                        else if (ue.Operand is MethodCallExpression mce && mce.Method.Name == "LitOp")
-                            aggExprs.Add(Expr.Lit(((ConstantExpression)mce.Arguments[0]).Value!));
-                    }
-                    else if (exprNode is ConstantExpression ce && ce.Value is Expr e)
-                    {
-                        aggExprs.Add(e);
-                    }
-                }
-            }
+            yield return EvaluateGroupAggregations(fullDf, keyCols, groups, aggExprs);
+        }
 
-            // Build group key columns (first element of each group)
-            var groupKeyCols = new List<ISeries>();
+        private async IAsyncEnumerable<DataFrame> ApplyDynamicAgg(IAsyncEnumerable<DataFrame> source, GroupByDynamicPlanNode dyn, Expr[] aggExprs)
+        {
+            var chunks = new List<DataFrame>();
+            await foreach (var df in source) chunks.Add(df);
+            if (chunks.Count == 0) yield break;
+
+            var fullDf = chunks.Count == 1 ? chunks[0] : DataFrame.Concat(chunks);
+            yield return EvaluateDynamicAggSync(fullDf, dyn, aggExprs);
+        }
+
+        private async IAsyncEnumerable<DataFrame> ApplyRollingAgg(IAsyncEnumerable<DataFrame> source, GroupByRollingPlanNode roll, Expr[] aggExprs)
+        {
+            var chunks = new List<DataFrame>();
+            await foreach (var df in source) chunks.Add(df);
+            if (chunks.Count == 0) yield break;
+
+            var fullDf = chunks.Count == 1 ? chunks[0] : DataFrame.Concat(chunks);
+            yield return EvaluateRollingAggSync(fullDf, roll, aggExprs);
+        }
+
+        private DataFrame EvaluateDynamicAggSync(DataFrame fullDf, GroupByDynamicPlanNode dyn, Expr[] aggExprs)
+        {
+            var idxCol = fullDf.GetColumn(dyn.IndexColumn);
+            double parsedEvery = Duration.Parse(dyn.Every, idxCol.DataType);
+            double parsedPeriod = string.IsNullOrEmpty(dyn.Period) ? parsedEvery : Duration.Parse(dyn.Period, idxCol.DataType);
+            double parsedOffset = string.IsNullOrEmpty(dyn.Offset) ? 0 : Duration.Parse(dyn.Offset, idxCol.DataType);
+
+            var (groups, windowKeys) = Compute.GroupByKernels.GenerateDynamicGroups(
+                idxCol, parsedEvery, parsedPeriod, parsedOffset, dyn.Closed, dyn.StartBy);
+            return EvaluateGroupAggregations(fullDf, new[] { windowKeys }, groups, aggExprs);
+        }
+
+        private DataFrame EvaluateRollingAggSync(DataFrame fullDf, GroupByRollingPlanNode roll, Expr[] aggExprs)
+        {
+            var idxCol = fullDf.GetColumn(roll.IndexColumn);
+            double parsedPeriod = Duration.Parse(roll.Period, idxCol.DataType);
+            double parsedOffset = string.IsNullOrEmpty(roll.Offset) ? -parsedPeriod : Duration.Parse(roll.Offset, idxCol.DataType);
+
+            var groups = Compute.GroupByKernels.GenerateRollingGroups(idxCol, parsedPeriod, parsedOffset, roll.Closed);
+            return EvaluateGroupAggregations(fullDf, new[] { idxCol }, groups, aggExprs);
+        }
+
+        internal static DataFrame EvaluateGroupAggregations(
+            DataFrame fullDf,
+            string[] groupColumns,
+            List<List<int>> groups,
+            Expr[] aggExprs)
+        {
+            var keyCols = BuildGroupKeyColumns(fullDf, groupColumns, groups);
+            return new ExecutionEngine().EvaluateGroupAggregations(fullDf, keyCols, groups, aggExprs);
+        }
+
+        internal static DataFrame EvaluateGroupAggregationsStatic(
+            DataFrame fullDf,
+            ISeries[] groupKeyCols,
+            List<List<int>> groups,
+            Expr[] aggExprs)
+        {
+            return new ExecutionEngine().EvaluateGroupAggregations(fullDf, groupKeyCols, groups, aggExprs);
+        }
+
+        private static ISeries[] BuildGroupKeyColumns(DataFrame fullDf, string[] groupColumns, List<List<int>> groups)
+        {
+            var groupKeyCols = new ISeries[groupColumns.Length];
             int[] firstIndices = new int[groups.Count];
             for (int gi = 0; gi < groups.Count; gi++) firstIndices[gi] = groups[gi][0];
-            foreach (var gc in groupColumns)
+
+            for (int c = 0; c < groupColumns.Length; c++)
             {
+                string gc = groupColumns[c];
                 var grpSeries = fullDf.GetColumn(gc);
                 var keyCol = Compute.UniqueKernels.CreateSeriesForTake(grpSeries, firstIndices, gc);
                 grpSeries.Take(keyCol, firstIndices);
-                groupKeyCols.Add(keyCol);
+                groupKeyCols[c] = keyCol;
             }
+            return groupKeyCols;
+        }
 
-            // Evaluate each aggregation expression per group
+        private DataFrame EvaluateGroupAggregations(
+            DataFrame fullDf,
+            ISeries[] groupKeyCols,
+            List<List<int>> groups,
+            Expr[] aggExprs)
+        {
+            var outputCols = new List<ISeries>(groupKeyCols.Length + aggExprs.Length);
+            outputCols.AddRange(groupKeyCols);
+
             var disposables = new List<IDisposable>();
             try
             {
@@ -90,7 +140,6 @@ namespace Glacier.Polaris
                 {
                     var body = aggExpr.Expression;
                     string? alias = null;
-                    // Unwrap AliasOp
                     Expression innerBody = body;
                     if (body is MethodCallExpression mce && mce.Method.Name == "AliasOp")
                     {
@@ -98,7 +147,6 @@ namespace Glacier.Polaris
                         innerBody = mce.Arguments[0];
                     }
 
-                    // Determine if expression is a "simple" single aggregation op that GroupByKernels can handle
                     bool isSimple = innerBody is MethodCallExpression innerMce
                         && innerMce.Arguments.Count == 1
                         && innerMce.Arguments[0] is MethodCallExpression colMce
@@ -106,16 +154,8 @@ namespace Glacier.Polaris
 
                     if (isSimple)
                     {
-                        // Simple case: SumOp(Col("x")), MinOp(Col("x")), etc.
                         var aggMce = (MethodCallExpression)innerBody;
                         string aggType = aggMce.Method.Name.Replace("Op", "").ToLower();
-
-                        // Handle agg type aliases: "std" for "StdOp", "var" for "VarOp", etc.
-                        if (aggType == "std") aggType = "std";
-                        if (aggType == "var") aggType = "var";
-                        if (aggType == "mean") aggType = "mean";
-                        if (aggType == "median") aggType = "median";
-
                         string colName = (string)((ConstantExpression)((MethodCallExpression)aggMce.Arguments[0]).Arguments[0]).Value!;
 
                         var series = fullDf.GetColumn(colName);
@@ -126,58 +166,53 @@ namespace Glacier.Polaris
                     }
                     else
                     {
-                        // Complex case: evaluate expression tree per-group
-                        // First, find all Column references in the expression
                         var colTracker = new ColumnTrackerVisitor();
                         colTracker.Visit(innerBody);
                         var usedCols = colTracker.Columns.ToArray();
 
-                        // For each group, create a sub-DataFrame and evaluate
                         ISeries? firstResult = null;
                         int resultIdx = 0;
                         foreach (var group in groups)
                         {
-                            // Build sub-DataFrame for this group
                             var subCols = new List<ISeries>();
                             foreach (var colName in usedCols)
                             {
                                 var sourceCol = fullDf.GetColumn(colName);
                                 int n = group.Count;
-                                // Efficient Take: create new series and copy values
                                 ISeries subCol;
-                                if (sourceCol is Data.Int32Series i32)
+                                if (sourceCol is Int32Series i32)
                                 {
-                                    subCol = new Data.Int32Series(colName, n);
-                                    for (int i = 0; i < n; i++) ((Data.Int32Series)subCol).Memory.Span[i] = i32.Memory.Span[group[i]];
+                                    subCol = new Int32Series(colName, n);
+                                    for (int i = 0; i < n; i++) ((Int32Series)subCol).Memory.Span[i] = i32.Memory.Span[group[i]];
                                 }
-                                else if (sourceCol is Data.Float64Series f64)
+                                else if (sourceCol is Float64Series f64)
                                 {
-                                    subCol = new Data.Float64Series(colName, n);
-                                    for (int i = 0; i < n; i++) ((Data.Float64Series)subCol).Memory.Span[i] = f64.Memory.Span[group[i]];
+                                    subCol = new Float64Series(colName, n);
+                                    for (int i = 0; i < n; i++) ((Float64Series)subCol).Memory.Span[i] = f64.Memory.Span[group[i]];
                                 }
-                                else if (sourceCol is Data.Utf8StringSeries u8)
+                                else if (sourceCol is Utf8StringSeries u8)
                                 {
                                     int totalBytes = 0;
                                     for (int i = 0; i < n; i++) totalBytes += u8.GetStringSpan(group[i]).Length;
-                                    subCol = new Data.Utf8StringSeries(colName, n, totalBytes);
+                                    subCol = new Utf8StringSeries(colName, n, totalBytes);
                                     int offset = 0;
                                     for (int i = 0; i < n; i++)
                                     {
                                         var span = u8.GetStringSpan(group[i]);
-                                        span.CopyTo(((Data.Utf8StringSeries)subCol).DataBytes.Span.Slice(offset));
+                                        span.CopyTo(((Utf8StringSeries)subCol).DataBytes.Span.Slice(offset));
                                         offset += span.Length;
-                                        ((Data.Utf8StringSeries)subCol).Offsets.Span[i + 1] = offset;
+                                        ((Utf8StringSeries)subCol).Offsets.Span[i + 1] = offset;
                                     }
                                 }
-                                else if (sourceCol is Data.Int64Series i64)
+                                else if (sourceCol is Int64Series i64)
                                 {
-                                    subCol = new Data.Int64Series(colName, n);
-                                    for (int i = 0; i < n; i++) ((Data.Int64Series)subCol).Memory.Span[i] = i64.Memory.Span[group[i]];
+                                    subCol = new Int64Series(colName, n);
+                                    for (int i = 0; i < n; i++) ((Int64Series)subCol).Memory.Span[i] = i64.Memory.Span[group[i]];
                                 }
-                                else if (sourceCol is Data.BooleanSeries bs)
+                                else if (sourceCol is BooleanSeries bs)
                                 {
-                                    subCol = new Data.BooleanSeries(colName, n);
-                                    for (int i = 0; i < n; i++) ((Data.BooleanSeries)subCol).Memory.Span[i] = bs.Memory.Span[group[i]];
+                                    subCol = new BooleanSeries(colName, n);
+                                    for (int i = 0; i < n; i++) ((BooleanSeries)subCol).Memory.Span[i] = bs.Memory.Span[group[i]];
                                 }
                                 else
                                 {
@@ -186,7 +221,6 @@ namespace Glacier.Polaris
                                     sourceCol.Take(subCol, groupSpan);
                                 }
                                 for (int i = 0; i < n; i++)
-
                                 {
                                     if (sourceCol.ValidityMask.IsNull(group[i]))
                                         subCol.ValidityMask.SetNull(i);
@@ -194,61 +228,55 @@ namespace Glacier.Polaris
                                 subCols.Add(subCol);
                             }
                             var subDf = new DataFrame(subCols);
-
-                            // Evaluate expression against sub-DataFrame
                             var groupResult = EvaluateExpression(innerBody, subDf, disposables);
 
-                            // Result should be 1-row (aggregation reduces)
                             if (firstResult == null)
                             {
                                 firstResult = groupResult;
-                                // Create the result series sized for all groups
-                                if (groupResult is Data.Int32Series ri32)
+                                if (groupResult is Int32Series ri32)
                                 {
-                                    var res = new Data.Int32Series(alias ?? "result", groups.Count);
+                                    var res = new Int32Series(alias ?? "result", groups.Count);
                                     res.Memory.Span[0] = ri32.Memory.Span[0];
                                     resultColumns.Add(res);
                                 }
-                                else if (groupResult is Data.Float64Series rf64)
+                                else if (groupResult is Float64Series rf64)
                                 {
-                                    var res = new Data.Float64Series(alias ?? "result", groups.Count);
+                                    var res = new Float64Series(alias ?? "result", groups.Count);
                                     res.Memory.Span[0] = rf64.Memory.Span[0];
                                     resultColumns.Add(res);
                                 }
-                                else if (groupResult is Data.Int64Series ri64)
+                                else if (groupResult is Int64Series ri64)
                                 {
-                                    var res = new Data.Int64Series(alias ?? "result", groups.Count);
+                                    var res = new Int64Series(alias ?? "result", groups.Count);
                                     res.Memory.Span[0] = ri64.Memory.Span[0];
                                     resultColumns.Add(res);
                                 }
-                                else if (groupResult is Data.BooleanSeries rb)
+                                else if (groupResult is BooleanSeries rb)
                                 {
-                                    var res = new Data.BooleanSeries(alias ?? "result", groups.Count);
+                                    var res = new BooleanSeries(alias ?? "result", groups.Count);
                                     res.Memory.Span[0] = rb.Memory.Span[0];
                                     resultColumns.Add(res);
                                 }
                             }
                             else
                             {
-                                // Copy result to the right group index in the last result column
                                 var lastResult = resultColumns[resultColumns.Count - 1];
-                                if (lastResult is Data.Int32Series ri32 && groupResult is Data.Int32Series gi32)
+                                if (lastResult is Int32Series ri32 && groupResult is Int32Series gi32)
                                     ri32.Memory.Span[resultIdx] = gi32.Memory.Span[0];
-                                else if (lastResult is Data.Float64Series rf64 && groupResult is Data.Float64Series gf64)
+                                else if (lastResult is Float64Series rf64 && groupResult is Float64Series gf64)
                                     rf64.Memory.Span[resultIdx] = gf64.Memory.Span[0];
-                                else if (lastResult is Data.Int64Series ri64 && groupResult is Data.Int64Series gi64)
+                                else if (lastResult is Int64Series ri64 && groupResult is Int64Series gi64)
                                     ri64.Memory.Span[resultIdx] = gi64.Memory.Span[0];
-                                else if (lastResult is Data.BooleanSeries rb && groupResult is Data.BooleanSeries gb)
+                                else if (lastResult is BooleanSeries rb && groupResult is BooleanSeries gb)
                                     rb.Memory.Span[resultIdx] = gb.Memory.Span[0];
                             }
                             resultIdx++;
-
                         }
                     }
                 }
 
-                groupKeyCols.AddRange(resultColumns);
-                yield return new DataFrame(groupKeyCols);
+                outputCols.AddRange(resultColumns);
+                return new DataFrame(outputCols);
             }
             finally
             {
@@ -256,10 +284,40 @@ namespace Glacier.Polaris
             }
         }
 
+        private static DataFrame SortDataFrame(DataFrame fullDf, string[] columnNames, bool[] descending)
+        {
+            if (fullDf.Columns.Count == 0 || fullDf.RowCount == 0)
+                return fullDf.Clone();
+
+            var indices = Compute.SortKernels.MultiColumnSort(fullDf, columnNames, descending);
+            var sortedCols = new List<ISeries>(fullDf.Columns.Count);
+            foreach (var col in fullDf.Columns)
+            {
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
+                col.Take(newCol, indices);
+                sortedCols.Add(newCol);
+            }
+            return new DataFrame(sortedCols);
+        }
+
+        private static DataFrame TopKDataFrame(DataFrame fullDf, string[] columnNames, bool[] descending, int k)
+        {
+            if (fullDf.Columns.Count == 0 || fullDf.RowCount == 0)
+                return fullDf.Clone();
+
+            var indices = Compute.SortKernels.TopK(fullDf, columnNames, descending, k);
+            var sortedCols = new List<ISeries>(fullDf.Columns.Count);
+            foreach (var col in fullDf.Columns)
+            {
+                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
+                col.Take(newCol, indices);
+                sortedCols.Add(newCol);
+            }
+            return new DataFrame(sortedCols);
+        }
 
         private async IAsyncEnumerable<DataFrame> ApplyTopK(IAsyncEnumerable<DataFrame> source, string[] columnNames, bool[] descending, int k)
         {
-            // TopK is a blocking operation - we must collect all data
             var chunks = new List<DataFrame>();
             await foreach (var df in source)
             {
@@ -269,21 +327,9 @@ namespace Glacier.Polaris
             if (chunks.Count == 0) yield break;
 
             var fullDf = chunks.Count == 1 ? chunks[0] : DataFrame.Concat(chunks);
-
-            // Perform sort
-            var indices = Compute.SortKernels.TopK(fullDf, columnNames, descending, k);
-
-            // Apply indices to all columns
-            var sortedCols = new List<ISeries>();
-            foreach (var col in fullDf.Columns)
-            {
-                var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
-                col.Take(newCol, indices);
-                sortedCols.Add(newCol);
-            }
-
-            yield return new DataFrame(sortedCols);
+            yield return TopKDataFrame(fullDf, columnNames, descending, k);
         }
+
         private async IAsyncEnumerable<DataFrame> ApplySort(IAsyncEnumerable<DataFrame> source, string[] columnNames, bool[] descending)
         {
             await foreach (var df in Compute.ExternalMergeSort.SortAsync(source, columnNames, descending))
@@ -291,7 +337,13 @@ namespace Glacier.Polaris
                 yield return df;
             }
         }
-        private async IAsyncEnumerable<DataFrame> ApplyJoin(IAsyncEnumerable<DataFrame> leftSource, IAsyncEnumerable<DataFrame> rightSource, string on, JoinType type)
+
+        private async IAsyncEnumerable<DataFrame> ApplyJoin(
+            IAsyncEnumerable<DataFrame> leftSource,
+            IAsyncEnumerable<DataFrame> rightSource,
+            string[] leftOn,
+            string[] rightOn,
+            JoinType type)
         {
             var rightTask = Task.Run(async () =>
             {
@@ -300,7 +352,6 @@ namespace Glacier.Polaris
                 return DataFrame.Concat(rightResults);
             });
 
-            // Use a Channel to allow the left branch to execute in parallel while we build the right-side hash table
             var channel = System.Threading.Channels.Channel.CreateUnbounded<DataFrame>();
             var leftTask = Task.Run(async () =>
             {
@@ -318,9 +369,10 @@ namespace Glacier.Polaris
 
             await foreach (var leftDf in channel.Reader.ReadAllAsync())
             {
-                yield return leftDf.Join(rightDf, on, type);
+                yield return leftDf.Join(rightDf, leftOn, rightOn, type);
             }
         }
+
         private async IAsyncEnumerable<DataFrame> ApplyDelay(IAsyncEnumerable<DataFrame> source, int ms)
         {
             await Task.Delay(ms);
@@ -329,15 +381,74 @@ namespace Glacier.Polaris
                 yield return df;
             }
         }
+
+        private static DataFrame LimitBatch(DataFrame df, int n)
+        {
+            if (n <= 0)
+            {
+                return new DataFrame(df.Columns.Select(col => col.CloneEmpty(0)).ToList());
+            }
+            if (df.RowCount <= n)
+            {
+                return df;
+            }
+
+            var slicedColumns = new List<ISeries>(df.Columns.Count);
+            foreach (var col in df.Columns)
+            {
+                if (col is Int32Series i32)
+                {
+                    var newCol = new Int32Series(col.Name, n);
+                    i32.Memory.Span.Slice(0, n).CopyTo(newCol.Memory.Span);
+                    if (i32.ValidityMask.HasNulls)
+                    {
+                        for (int idx = 0; idx < n; idx++)
+                            if (i32.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                    }
+                    slicedColumns.Add(newCol);
+                }
+                else if (col is Float64Series f64)
+                {
+                    var newCol = new Float64Series(col.Name, n);
+                    f64.Memory.Span.Slice(0, n).CopyTo(newCol.Memory.Span);
+                    if (f64.ValidityMask.HasNulls)
+                    {
+                        for (int idx = 0; idx < n; idx++)
+                            if (f64.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                    }
+                    slicedColumns.Add(newCol);
+                }
+                else if (col is Utf8StringSeries utf8)
+                {
+                    int byteLen = utf8.Offsets.Span[n];
+                    var newCol = new Utf8StringSeries(col.Name, n, byteLen);
+                    utf8.DataBytes.Span.Slice(0, byteLen).CopyTo(newCol.DataBytes.Span);
+                    utf8.Offsets.Span.Slice(0, n + 1).CopyTo(newCol.Offsets.Span);
+                    if (utf8.ValidityMask.HasNulls)
+                    {
+                        for (int idx = 0; idx < n; idx++)
+                            if (utf8.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
+                    }
+                    slicedColumns.Add(newCol);
+                }
+                else
+                {
+                    var indices = Enumerable.Range(0, n).ToArray();
+                    var newCol = Compute.UniqueKernels.CreateSeriesForTake(col, indices);
+                    col.Take(newCol, indices);
+                    slicedColumns.Add(newCol);
+                }
+            }
+            return new DataFrame(slicedColumns);
+        }
+
         private async IAsyncEnumerable<DataFrame> ApplyLimit(IAsyncEnumerable<DataFrame> source, int n)
         {
-            if (n == 0)
+            if (n <= 0)
             {
-                // Yield empty DataFrame with schema preserved from the first chunk
                 await foreach (var df in source)
                 {
-                    var emptyCols = df.Columns.Select(col => col.CloneEmpty(0)).ToList();
-                    yield return new DataFrame(emptyCols);
+                    yield return LimitBatch(df, 0);
                     yield break;
                 }
                 yield break;
@@ -349,56 +460,8 @@ namespace Glacier.Polaris
                 if (count >= n) break;
                 if (count + df.RowCount > n)
                 {
-                    // Slice the last chunk
                     int take = n - count;
-                    var slicedColumns = new List<ISeries>();
-                    foreach (var col in df.Columns)
-                    {
-                        if (col is Data.Int32Series i32)
-                        {
-                            var newCol = new Data.Int32Series(col.Name, take);
-                            i32.Memory.Span.Slice(0, take).CopyTo(newCol.Memory.Span);
-                            if (i32.ValidityMask.HasNulls)
-                            {
-                                for (int idx = 0; idx < take; idx++)
-                                    if (i32.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
-                            }
-                            slicedColumns.Add(newCol);
-                        }
-                        else if (col is Data.Float64Series f64)
-                        {
-                            var newCol = new Data.Float64Series(col.Name, take);
-                            f64.Memory.Span.Slice(0, take).CopyTo(newCol.Memory.Span);
-                            if (f64.ValidityMask.HasNulls)
-                            {
-                                for (int idx = 0; idx < take; idx++)
-                                    if (f64.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
-                            }
-                            slicedColumns.Add(newCol);
-                        }
-                        else if (col is Data.Utf8StringSeries utf8)
-                        {
-                            int byteLen = utf8.Offsets.Span[take];
-                            var newCol = new Data.Utf8StringSeries(col.Name, take, byteLen);
-                            utf8.DataBytes.Span.Slice(0, byteLen).CopyTo(newCol.DataBytes.Span);
-                            utf8.Offsets.Span.Slice(0, take + 1).CopyTo(newCol.Offsets.Span);
-                            if (utf8.ValidityMask.HasNulls)
-                            {
-                                for (int idx = 0; idx < take; idx++)
-                                    if (utf8.ValidityMask.IsNull(idx)) newCol.ValidityMask.SetNull(idx);
-                            }
-                            slicedColumns.Add(newCol);
-                        }
-                        else
-                        {
-                            // Fallback: use CloneEmpty + Take for other types
-                            var newCol = col.CloneEmpty(take);
-                            var indices = Enumerable.Range(0, take).ToArray();
-                            col.Take(newCol, indices);
-                            slicedColumns.Add(newCol);
-                        }
-                    }
-                    yield return new DataFrame(slicedColumns);
+                    yield return LimitBatch(df, take);
                     count = n;
                     break;
                 }
@@ -409,79 +472,82 @@ namespace Glacier.Polaris
                 }
             }
         }
+
         private async IAsyncEnumerable<DataFrame> ToAsyncEnumerable(DataFrame df)
         {
             yield return df;
         }
+
+        private static DataFrame ExplodeBatch(DataFrame df, string columnName)
+        {
+            var col = df.GetColumn(columnName);
+            if (col is not ListSeries listCol) return df;
+
+            var offsets = listCol.Offsets.Memory.Span;
+            int totalNewRows = listCol.Values.Length;
+            if (totalNewRows == 0) return df.Clear();
+
+            int[] expansionIndices = new int[totalNewRows];
+            int currentIdx = 0;
+            for (int i = 0; i < listCol.Length; i++)
+            {
+                int count = offsets[i + 1] - offsets[i];
+                for (int j = 0; j < count; j++)
+                    expansionIndices[currentIdx++] = i;
+            }
+
+            var newColumns = new List<ISeries>(df.Columns.Count);
+            foreach (var c in df.Columns)
+            {
+                if (c.Name == columnName)
+                {
+                    var explodedValues = listCol.Values.CloneWithName(columnName);
+                    newColumns.Add(explodedValues);
+                }
+                else
+                {
+                    newColumns.Add(df.MaterializeColumn(c, expansionIndices, hasNulls: true));
+                }
+            }
+            return new DataFrame(newColumns);
+        }
+
         private async IAsyncEnumerable<DataFrame> ApplyExplode(IAsyncEnumerable<DataFrame> source, string columnName)
         {
             await foreach (var df in source)
             {
                 var col = df.GetColumn(columnName);
-                if (col is Data.ListSeries listCol)
+                if (col is ListSeries listCol && listCol.Values.Length == 0)
                 {
-                    var offsets = listCol.Offsets.Memory.Span;
-                    int totalNewRows = listCol.Values.Length;
+                    continue;
+                }
+                yield return ExplodeBatch(df, columnName);
+            }
+        }
 
-                    if (totalNewRows == 0) continue;
-
-                    // Build the mapping from new row index to old row index
-                    int[] expansionIndices = new int[totalNewRows];
-                    int currentIdx = 0;
-                    for (int i = 0; i < listCol.Length; i++)
-                    {
-                        int count = offsets[i + 1] - offsets[i];
-                        for (int j = 0; j < count; j++)
-                        {
-                            expansionIndices[currentIdx++] = i;
-                        }
-                    }
-
-                    var newColumns = new List<ISeries>();
-                    foreach (var c in df.Columns)
-                    {
-                        if (c.Name == columnName)
-                        {
-                            // Preserve the name of the exploded column
-                            var explodedValues = listCol.Values;
-                            // We might need to clone or rename here, but since it's a new DataFrame, 
-                            // we can just rename it if it's not shared. 
-                            // Polars behavior is to keep the original column name.
-                            explodedValues.Rename(columnName);
-                            newColumns.Add(explodedValues);
-                        }
-                        else
-                        {
-                            newColumns.Add(df.MaterializeColumn(c, expansionIndices, hasNulls: true));
-                        }
-                    }
-                    yield return new DataFrame(newColumns);
+        private static DataFrame UnnestBatch(DataFrame df, string[] columnNames)
+        {
+            var columnNamesSet = new HashSet<string>(columnNames);
+            var newCols = new List<ISeries>();
+            foreach (var c in df.Columns)
+            {
+                if (columnNamesSet.Contains(c.Name) && c is StructSeries structCol)
+                {
+                    newCols.AddRange(structCol.Fields);
                 }
                 else
                 {
-                    yield return df;
+                    newCols.Add(c);
                 }
             }
+            return new DataFrame(newCols);
         }
 
         private async IAsyncEnumerable<DataFrame> ApplyUnnest(IAsyncEnumerable<DataFrame> source, string[] columnNames)
         {
             await foreach (var df in source)
             {
-                var columnNamesSet = new HashSet<string>(columnNames);
-                var newCols = new List<ISeries>();
-                foreach (var c in df.Columns)
-                {
-                    if (columnNamesSet.Contains(c.Name) && c is Data.StructSeries structCol)
-                    {
-                        newCols.AddRange(structCol.Fields);
-                    }
-                    else
-                    {
-                        newCols.Add(c);
-                    }
-                }
-                yield return new DataFrame(newCols);
+                yield return UnnestBatch(df, columnNames);
             }
         }
 
@@ -492,7 +558,6 @@ namespace Glacier.Polaris
             command.CommandText = sql;
             using var reader = command.ExecuteReader();
 
-            // Simplistic chunking for now: read all at once as a single chunk
             var df = DataFrame.FromSqlReader(reader);
             if (df.RowCount > 0) yield return df;
         }
@@ -553,30 +618,33 @@ namespace Glacier.Polaris
 
         private async IAsyncEnumerable<DataFrame> ApplySinkCsv(IAsyncEnumerable<DataFrame> source, string filePath)
         {
-            var df = await CollectAll(source);
-            df.WriteCsv(filePath);
+            await IO.CsvWriter.WriteStreamAsync(source, filePath).ConfigureAwait(false);
             yield break;
         }
 
         private async IAsyncEnumerable<DataFrame> ApplySinkParquet(IAsyncEnumerable<DataFrame> source, string filePath)
         {
-            var df = await CollectAll(source);
-            df.WriteParquet(filePath);
+            await IO.ParquetWriter.WriteStreamAsync(source, filePath).ConfigureAwait(false);
             yield break;
+        }
+
+        private static DataFrame ShiftColumnsBatch(DataFrame df, int n)
+        {
+            var newCols = new List<ISeries>(df.Columns.Count);
+            foreach (var col in df.Columns)
+            {
+                var shifted = Compute.ArrayKernels.Shift(col, n);
+                shifted.Rename(col.Name);
+                newCols.Add(shifted);
+            }
+            return new DataFrame(newCols);
         }
 
         private async IAsyncEnumerable<DataFrame> ApplyShiftColumns(IAsyncEnumerable<DataFrame> source, int n)
         {
             await foreach (var df in source)
             {
-                var newCols = new List<ISeries>();
-                foreach (var col in df.Columns)
-                {
-                    var shifted = Compute.ArrayKernels.Shift(col, n);
-                    shifted.Rename(col.Name);
-                    newCols.Add(shifted);
-                }
-                yield return new DataFrame(newCols);
+                yield return ShiftColumnsBatch(df, n);
             }
         }
 
@@ -594,28 +662,7 @@ namespace Glacier.Polaris
             return mask;
         }
 
-        private static string[] ExtractStringArrayFromExpr(Expression expr)
-        {
-            if (expr is NewArrayExpression arrayExpr)
-            {
-                var result = new string[arrayExpr.Expressions.Count];
-                for (int i = 0; i < arrayExpr.Expressions.Count; i++)
-                {
-                    var element = arrayExpr.Expressions[i];
-                    // May be wrapped in a convert (boxed)
-                    if (element is UnaryExpression ue && ue.NodeType == ExpressionType.Convert)
-                        element = ue.Operand;
-                    result[i] = (string)((ConstantExpression)element).Value!;
-                }
-                return result;
-            }
-            if (expr is ConstantExpression ce && ce.Value is string[] arr)
-                return arr;
-            throw new NotSupportedException($"Cannot extract string[] from expression: {expr}");
-        }
-
-        /// <summary>Copy nulls from the source ListSeries validity mask to the result.</summary>
-        private static void PropagateListNulls(Data.ListSeries list, ISeries result)
+        private static void PropagateListNulls(ListSeries list, ISeries result)
         {
             for (int i = 0; i < list.Length; i++)
             {
@@ -623,18 +670,20 @@ namespace Glacier.Polaris
                     result.ValidityMask.SetNull(i);
             }
         }
+
         private async IAsyncEnumerable<DataFrame> ApplySinkIpc(IAsyncEnumerable<DataFrame> source, string filePath)
         {
-            var df = await CollectAll(source);
-            df.WriteIpc(filePath);
+            await IO.IpcWriter.WriteStreamAsync(source, filePath).ConfigureAwait(false);
             yield break;
         }
+
         private async IAsyncEnumerable<DataFrame> ApplyAggGroups(IAsyncEnumerable<DataFrame> source, string[] columns)
         {
             var df = await CollectAll(source);
             var gb = new GroupByBuilder(df, columns);
             yield return gb.AggGroups();
         }
+
         private async IAsyncEnumerable<DataFrame> ApplyClear(IAsyncEnumerable<DataFrame> source)
         {
             await foreach (var df in source)
@@ -654,7 +703,6 @@ namespace Glacier.Polaris
 
         private async IAsyncEnumerable<DataFrame> ApplyRechunk(IAsyncEnumerable<DataFrame> source)
         {
-            // Rechunk is a no-op for now since columns are single-chunk
             await foreach (var df in source)
             {
                 yield return df;

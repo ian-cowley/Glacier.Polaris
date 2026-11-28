@@ -42,9 +42,9 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var days = result.GetColumn("days") as Float64Series;
-            var hours = result.GetColumn("hours") as Float64Series;
-            var seconds = result.GetColumn("seconds") as Float64Series;
+            var days = Assert.IsType<Float64Series>(result.GetColumn("days"));
+            var hours = Assert.IsType<Float64Series>(result.GetColumn("hours"));
+            var seconds = Assert.IsType<Float64Series>(result.GetColumn("seconds"));
 
             Assert.Equal(1.0, days.Memory.Span[0], 5);
             Assert.Equal(24.0, hours.Memory.Span[0], 5);
@@ -74,7 +74,7 @@ namespace Glacier.Polaris.Tests
                 )
                 .Collect();
 
-            var hour = result.GetColumn("hour") as Int32Series;
+            var hour = Assert.IsType<Int32Series>(result.GetColumn("hour"));
             Assert.Equal(9, hour.Memory.Span[0]);
         }
     }

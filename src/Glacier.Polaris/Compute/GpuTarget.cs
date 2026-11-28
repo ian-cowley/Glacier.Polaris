@@ -22,7 +22,7 @@ public enum GpuTarget
     Amd = 2,
 
     /// <summary>
-    /// Distributes workload across available supported GPU accelerators (falls back to NVIDIA CUDA or CPU).
+    /// Unsupported multi-GPU target. Explicitly selecting <see cref="DualGpu"/> throws <see cref="System.NotSupportedException"/>.
     /// </summary>
     DualGpu = 3,
 

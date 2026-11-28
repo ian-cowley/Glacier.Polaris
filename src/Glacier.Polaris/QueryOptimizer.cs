@@ -12,131 +12,294 @@ namespace Glacier.Polaris
 
         public Expression Optimize(Expression plan)
         {
+            return Optimize(LogicalPlanNode.FromLegacyExpression(plan)).ToLegacyExpression();
+        }
+
+        internal LogicalPlanNode Optimize(LogicalPlanNode plan)
+        {
             // 1. Analyze: Find all columns used in the entire query
-            var tracker = new ColumnTrackerVisitor();
+            var tracker = new LogicalPlanColumnTracker();
             tracker.Visit(plan);
             NestedFieldPaths = tracker.NestedFieldPaths;
 
             // 2. Transform: Sound Predicate & Limit Pushdown
-            var transformed = Visit(plan);
+            var transformed = OptimizeNode(plan);
 
             // 3. Join Reordering: Sound inner-join associative reordering
-            transformed = new JoinReorderingVisitor().Visit(transformed);
+            transformed = ReorderJoins(transformed);
 
             // 4. Inject: Projection Pushdown (tell scanners what columns to load)
             if (tracker.HasGlobalSelect && !tracker.RequiresAllColumns && tracker.Columns.Count > 0)
             {
-                transformed = new ProjectionPushdownVisitor(tracker.Columns).Visit(transformed);
+                transformed = PushdownProjection(transformed, tracker.Columns);
             }
 
             return transformed;
         }
 
-        protected override Expression VisitMethodCall(MethodCallExpression node)
+        private LogicalPlanNode OptimizeNode(LogicalPlanNode node)
         {
-            var visitedNode = (MethodCallExpression)base.VisitMethodCall(node);
-
-            if (visitedNode.Method.Name == nameof(LazyFrame.FilterOp))
+            switch (node)
             {
-                var source = visitedNode.Arguments[0];
-                var predicate = visitedNode.Arguments[1];
+                case DataFramePlanNode or ScanCsvPlanNode or ScanParquetPlanNode or ScanJsonPlanNode or ScanSqlPlanNode or ExternalExpressionPlanNode:
+                    return node;
 
-                if (source is MethodCallExpression sourceCall && sourceCall.Method.Name == nameof(LazyFrame.SelectOp))
+                case FilterPlanNode filter:
                 {
-                    if (TryPushFilterThroughSelect(visitedNode, sourceCall, predicate, out var rewrittenSelect))
-                    {
-                        return rewrittenSelect;
-                    }
-                }
-                else if (source is MethodCallExpression sourceJoin && sourceJoin.Method.Name == nameof(LazyFrame.JoinOp))
-                {
-                    if (TryPushFilterThroughJoin(visitedNode, sourceJoin, predicate, out var rewrittenJoin))
-                    {
-                        return rewrittenJoin;
-                    }
-                }
-                else if (source is MethodCallExpression sourceGroupBy && sourceGroupBy.Method.Name == nameof(LazyFrame.GroupByOp))
-                {
-                    if (OptimizerAnalysis.TryExtractPredicateExpr(predicate, out var predExpr)
-                        && OptimizerAnalysis.IsPureElementwise(predExpr.Expression)
-                        && OptimizerAnalysis.TryExtractStringArray(sourceGroupBy.Arguments[1], out var groupCols))
-                    {
-                        var predCols = new HashSet<string>(StringComparer.Ordinal);
-                        OptimizerAnalysis.CollectReferencedColumns(predExpr.Expression, predCols);
+                    var source = OptimizeNode(filter.Source);
 
-                        if (predCols.Count > 0 && predCols.All(c => groupCols.Contains(c, StringComparer.Ordinal)))
+                    if (source is SelectPlanNode selectNode)
+                    {
+                        if (TryPushFilterThroughSelect(filter, selectNode, out var rewrittenSelect))
                         {
-                            var newFilter = Expression.Call(null, visitedNode.Method, sourceGroupBy.Arguments[0], predicate);
-                            return Expression.Call(null, sourceGroupBy.Method, Visit(newFilter), sourceGroupBy.Arguments[1]);
+                            return rewrittenSelect;
                         }
                     }
-                }
-            }
-            else if (visitedNode.Method.Name == nameof(LazyFrame.LimitOp))
-            {
-                var source = visitedNode.Arguments[0];
-                var n = (int)((ConstantExpression)visitedNode.Arguments[1]).Value!;
-
-                if (source is MethodCallExpression sourceCall)
-                {
-                    if (sourceCall.Method.Name == nameof(LazyFrame.ScanCsvOp))
+                    else if (source is JoinPlanNode joinNode)
                     {
-                        int? existingLimit = (int?)((ConstantExpression)sourceCall.Arguments[2]).Value;
-                        int effectiveLimit = existingLimit.HasValue ? Math.Min(existingLimit.Value, n) : n;
-                        return Expression.Call(null, sourceCall.Method,
-                            sourceCall.Arguments[0],
-                            sourceCall.Arguments[1],
-                            Expression.Constant((int?)effectiveLimit, typeof(int?)));
-                    }
-                    else if (sourceCall.Method.Name == nameof(LazyFrame.SortOp))
-                    {
-                        var method = typeof(LazyFrame).GetMethod(
-                            nameof(LazyFrame.TopKOp),
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-                        return Expression.Call(null, method, sourceCall.Arguments[0], sourceCall.Arguments[1], sourceCall.Arguments[2], visitedNode.Arguments[1]);
-                    }
-                    else if (sourceCall.Method.Name == nameof(LazyFrame.SelectOp))
-                    {
-                        if (OptimizerAnalysis.TryExtractExprArray(sourceCall.Arguments[1], out var selectExprs)
-                            && selectExprs.Length > 0
-                            && selectExprs.All(se => OptimizerAnalysis.IsPureElementwise(se.Expression)))
+                        if (TryPushFilterThroughJoin(filter, joinNode, out var rewrittenJoin))
                         {
-                            var innerSource = sourceCall.Arguments[0];
-                            var newLimit = Expression.Call(null, visitedNode.Method, innerSource, visitedNode.Arguments[1]);
-                            return Expression.Call(null, sourceCall.Method, Visit(newLimit), sourceCall.Arguments[1]);
+                            return rewrittenJoin;
                         }
                     }
-                }
-            }
+                    else if (source is GroupByPlanNode gbNode)
+                    {
+                        if (OptimizerAnalysis.IsPureElementwise(filter.Predicate.Expression))
+                        {
+                            var predCols = new HashSet<string>(StringComparer.Ordinal);
+                            OptimizerAnalysis.CollectReferencedColumns(filter.Predicate.Expression, predCols);
 
-            return visitedNode;
+                            if (predCols.Count > 0 && predCols.All(c => gbNode.Columns.Contains(c, StringComparer.Ordinal)))
+                            {
+                                var pushedFilter = filter with { Source = gbNode.Source };
+                                return gbNode with { Source = OptimizeNode(pushedFilter) };
+                            }
+                        }
+                    }
+
+                    return ReferenceEquals(source, filter.Source) ? filter : filter with { Source = source };
+                }
+
+                case LimitPlanNode limit:
+                {
+                    var source = OptimizeNode(limit.Source);
+                    int n = limit.N;
+
+                    if (source is ScanCsvPlanNode scanCsv)
+                    {
+                        int effectiveLimit = scanCsv.NRows.HasValue ? Math.Min(scanCsv.NRows.Value, n) : n;
+                        return scanCsv with { NRows = effectiveLimit };
+                    }
+                    if (source is SortPlanNode sortNode)
+                    {
+                        return new TopKPlanNode(sortNode.Source, sortNode.ColumnNames, sortNode.Descending, n);
+                    }
+                    if (source is SelectPlanNode selectNode)
+                    {
+                        if (selectNode.Selections.Length > 0 &&
+                            selectNode.Selections.All(se => OptimizerAnalysis.IsPureElementwise(se.Expression)))
+                        {
+                            var newLimit = new LimitPlanNode(selectNode.Source, n);
+                            return selectNode with { Source = OptimizeNode(newLimit) };
+                        }
+                    }
+
+                    return ReferenceEquals(source, limit.Source) ? limit : limit with { Source = source };
+                }
+
+                case SelectPlanNode sel:
+                {
+                    var src = OptimizeNode(sel.Source);
+                    return ReferenceEquals(src, sel.Source) ? sel : sel with { Source = src };
+                }
+                case WithColumnsPlanNode wc:
+                {
+                    var src = OptimizeNode(wc.Source);
+                    return ReferenceEquals(src, wc.Source) ? wc : wc with { Source = src };
+                }
+                case GroupByPlanNode gb:
+                {
+                    var src = OptimizeNode(gb.Source);
+                    return ReferenceEquals(src, gb.Source) ? gb : gb with { Source = src };
+                }
+                case AggPlanNode agg:
+                {
+                    var src = OptimizeNode(agg.Source);
+                    return ReferenceEquals(src, agg.Source) ? agg : agg with { Source = src };
+                }
+                case AggGroupsPlanNode ag:
+                {
+                    var src = OptimizeNode(ag.Source);
+                    return ReferenceEquals(src, ag.Source) ? ag : ag with { Source = src };
+                }
+                case GroupByDynamicPlanNode gbd:
+                {
+                    var src = OptimizeNode(gbd.Source);
+                    return ReferenceEquals(src, gbd.Source) ? gbd : gbd with { Source = src };
+                }
+                case GroupByRollingPlanNode gbr:
+                {
+                    var src = OptimizeNode(gbr.Source);
+                    return ReferenceEquals(src, gbr.Source) ? gbr : gbr with { Source = src };
+                }
+                case JoinPlanNode j:
+                {
+                    var left = OptimizeNode(j.Left);
+                    var right = OptimizeNode(j.Right);
+                    return ReferenceEquals(left, j.Left) && ReferenceEquals(right, j.Right)
+                        ? j
+                        : j with { Left = left, Right = right };
+                }
+                case SortPlanNode s:
+                {
+                    var src = OptimizeNode(s.Source);
+                    return ReferenceEquals(src, s.Source) ? s : s with { Source = src };
+                }
+                case TopKPlanNode tk:
+                {
+                    var src = OptimizeNode(tk.Source);
+                    return ReferenceEquals(src, tk.Source) ? tk : tk with { Source = src };
+                }
+                case FetchPlanNode f:
+                {
+                    var src = OptimizeNode(f.Source);
+                    return ReferenceEquals(src, f.Source) ? f : f with { Source = src };
+                }
+                case DelayPlanNode d:
+                {
+                    var src = OptimizeNode(d.Source);
+                    return ReferenceEquals(src, d.Source) ? d : d with { Source = src };
+                }
+                case ExplodePlanNode ex:
+                {
+                    var src = OptimizeNode(ex.Source);
+                    return ReferenceEquals(src, ex.Source) ? ex : ex with { Source = src };
+                }
+                case UnnestPlanNode un:
+                {
+                    var src = OptimizeNode(un.Source);
+                    return ReferenceEquals(src, un.Source) ? un : un with { Source = src };
+                }
+                case UnpivotPlanNode up:
+                {
+                    var src = OptimizeNode(up.Source);
+                    return ReferenceEquals(src, up.Source) ? up : up with { Source = src };
+                }
+                case PivotPlanNode pv:
+                {
+                    var src = OptimizeNode(pv.Source);
+                    return ReferenceEquals(src, pv.Source) ? pv : pv with { Source = src };
+                }
+                case TransposePlanNode tr:
+                {
+                    var src = OptimizeNode(tr.Source);
+                    return ReferenceEquals(src, tr.Source) ? tr : tr with { Source = src };
+                }
+                case UniquePlanNode uq:
+                {
+                    var src = OptimizeNode(uq.Source);
+                    return ReferenceEquals(src, uq.Source) ? uq : uq with { Source = src };
+                }
+                case SlicePlanNode sl:
+                {
+                    var src = OptimizeNode(sl.Source);
+                    return ReferenceEquals(src, sl.Source) ? sl : sl with { Source = src };
+                }
+                case TailPlanNode tl:
+                {
+                    var src = OptimizeNode(tl.Source);
+                    return ReferenceEquals(src, tl.Source) ? tl : tl with { Source = src };
+                }
+                case DropNullsPlanNode dn:
+                {
+                    var src = OptimizeNode(dn.Source);
+                    return ReferenceEquals(src, dn.Source) ? dn : dn with { Source = src };
+                }
+                case FillNanPlanNode fn:
+                {
+                    var src = OptimizeNode(fn.Source);
+                    return ReferenceEquals(src, fn.Source) ? fn : fn with { Source = src };
+                }
+                case WithRowIndexPlanNode wri:
+                {
+                    var src = OptimizeNode(wri.Source);
+                    return ReferenceEquals(src, wri.Source) ? wri : wri with { Source = src };
+                }
+                case RenamePlanNode rn:
+                {
+                    var src = OptimizeNode(rn.Source);
+                    return ReferenceEquals(src, rn.Source) ? rn : rn with { Source = src };
+                }
+                case NullCountPlanNode nc:
+                {
+                    var src = OptimizeNode(nc.Source);
+                    return ReferenceEquals(src, nc.Source) ? nc : nc with { Source = src };
+                }
+                case ShiftColumnsPlanNode sc:
+                {
+                    var src = OptimizeNode(sc.Source);
+                    return ReferenceEquals(src, sc.Source) ? sc : sc with { Source = src };
+                }
+                case ClearPlanNode cl:
+                {
+                    var src = OptimizeNode(cl.Source);
+                    return ReferenceEquals(src, cl.Source) ? cl : cl with { Source = src };
+                }
+                case ShrinkToFitPlanNode sf:
+                {
+                    var src = OptimizeNode(sf.Source);
+                    return ReferenceEquals(src, sf.Source) ? sf : sf with { Source = src };
+                }
+                case RechunkPlanNode rc:
+                {
+                    var src = OptimizeNode(rc.Source);
+                    return ReferenceEquals(src, rc.Source) ? rc : rc with { Source = src };
+                }
+                case MapPlanNode mp:
+                {
+                    var src = OptimizeNode(mp.Source);
+                    return ReferenceEquals(src, mp.Source) ? mp : mp with { Source = src };
+                }
+                case SinkCsvPlanNode scsv:
+                {
+                    var src = OptimizeNode(scsv.Source);
+                    return ReferenceEquals(src, scsv.Source) ? scsv : scsv with { Source = src };
+                }
+                case SinkParquetPlanNode spq:
+                {
+                    var src = OptimizeNode(spq.Source);
+                    return ReferenceEquals(src, spq.Source) ? spq : spq with { Source = src };
+                }
+                case SinkIpcPlanNode sipc:
+                {
+                    var src = OptimizeNode(sipc.Source);
+                    return ReferenceEquals(src, sipc.Source) ? sipc : sipc with { Source = src };
+                }
+                default:
+                    return node;
+            }
         }
 
         private bool TryPushFilterThroughSelect(
-            MethodCallExpression filterNode,
-            MethodCallExpression selectNode,
-            Expression predicateArg,
-            out Expression result)
+            FilterPlanNode filterNode,
+            SelectPlanNode selectNode,
+            out LogicalPlanNode result)
         {
             result = null!;
 
-            if (!OptimizerAnalysis.TryExtractExprArray(selectNode.Arguments[1], out var selectExprs) || selectExprs.Length == 0)
+            var selectExprs = selectNode.Selections;
+            if (selectExprs.Length == 0)
                 return false;
 
-            // Never push Filter below Select if any projection contains aggregations, window ops, cumulative/positional ops, or length-changing ops.
             for (int i = 0; i < selectExprs.Length; i++)
             {
                 if (!OptimizerAnalysis.IsPureElementwise(selectExprs[i].Expression))
                     return false;
             }
 
-            if (!OptimizerAnalysis.TryExtractPredicateExpr(predicateArg, out var predExpr))
+            if (!OptimizerAnalysis.IsPureElementwise(filterNode.Predicate.Expression))
                 return false;
 
-            if (!OptimizerAnalysis.IsPureElementwise(predExpr.Expression))
-                return false;
-
-            // Build map of output column name -> underlying source column name for pure pass-through projections.
             var passThroughMap = new Dictionary<string, string>(StringComparer.Ordinal);
             var seenOutputNames = new HashSet<string>(StringComparer.Ordinal);
 
@@ -147,14 +310,9 @@ namespace Glacier.Polaris
                     && colCall.Arguments[0] is ConstantExpression colConst && colConst.Value is string colName)
                 {
                     if (!seenOutputNames.Add(colName))
-                    {
-                        // Duplicate output column name: ambiguous, do not push through it
                         passThroughMap.Remove(colName);
-                    }
                     else
-                    {
                         passThroughMap[colName] = colName;
-                    }
                 }
                 else if (body is MethodCallExpression aliasCall && aliasCall.Method.Name == "AliasOp"
                     && aliasCall.Arguments[1] is ConstantExpression aliasConst && aliasConst.Value is string aliasName)
@@ -164,24 +322,18 @@ namespace Glacier.Polaris
                         && innerCol.Arguments[0] is ConstantExpression innerColConst && innerColConst.Value is string srcColName)
                     {
                         if (!seenOutputNames.Add(aliasName))
-                        {
                             passThroughMap.Remove(aliasName);
-                        }
                         else
-                        {
                             passThroughMap[aliasName] = srcColName;
-                        }
                     }
                     else
                     {
-                        // Computed expression aliased as aliasName shadows any pass-through of the same name
                         seenOutputNames.Add(aliasName);
                         passThroughMap.Remove(aliasName);
                     }
                 }
                 else
                 {
-                    // Unaliased computed expression (e.g. arithmetic producing "res" or unary op keeping source name)
                     if (OptimizerAnalysis.TryInferExprOutputName(body, out string? inferredName) && inferredName != null)
                     {
                         seenOutputNames.Add(inferredName);
@@ -189,14 +341,13 @@ namespace Glacier.Polaris
                     }
                     else
                     {
-                        // Cannot determine output name safely -> abort pushdown
                         return false;
                     }
                 }
             }
 
             var predCols = new HashSet<string>(StringComparer.Ordinal);
-            OptimizerAnalysis.CollectReferencedColumns(predExpr.Expression, predCols);
+            OptimizerAnalysis.CollectReferencedColumns(filterNode.Predicate.Expression, predCols);
             if (predCols.Count == 0)
                 return false;
 
@@ -206,79 +357,228 @@ namespace Glacier.Polaris
                     return false;
             }
 
-            Expression rewrittenPredicateArg = predicateArg;
+            Expr rewrittenPredicate = filterNode.Predicate;
+            Expression<Func<Expr, Expr>>? rewrittenRawLambda = filterNode.RawLambda;
             if (predCols.Any(c => !string.Equals(c, passThroughMap[c], StringComparison.Ordinal)))
             {
-                var rewrittenBody = OptimizerAnalysis.RewriteColumns(predExpr.Expression, passThroughMap);
-                var rewrittenExpr = new Expr(rewrittenBody);
-                var param = Expression.Parameter(typeof(Expr), "e");
-                var lambda = Expression.Lambda<Func<Expr, Expr>>(Expression.Constant(rewrittenExpr, typeof(Expr)), param);
-                rewrittenPredicateArg = Expression.Quote(lambda);
+                var rewrittenBody = OptimizerAnalysis.RewriteColumns(filterNode.Predicate.Expression, passThroughMap);
+                rewrittenPredicate = new Expr(rewrittenBody);
+                rewrittenRawLambda = null;
             }
 
-            var innerSource = selectNode.Arguments[0];
-            var newFilter = Expression.Call(null, filterNode.Method, innerSource, rewrittenPredicateArg);
-            result = Expression.Call(null, selectNode.Method, Visit(newFilter), selectNode.Arguments[1]);
+            var newFilter = new FilterPlanNode(selectNode.Source, rewrittenPredicate, rewrittenRawLambda);
+            result = selectNode with { Source = OptimizeNode(newFilter) };
             return true;
         }
 
         private bool TryPushFilterThroughJoin(
-            MethodCallExpression filterNode,
-            MethodCallExpression joinNode,
-            Expression predicateArg,
-            out Expression result)
+            FilterPlanNode filterNode,
+            JoinPlanNode joinNode,
+            out LogicalPlanNode result)
         {
             result = null!;
 
-            if (!OptimizerAnalysis.TryExtractPredicateExpr(predicateArg, out var predExpr))
-                return false;
-
-            if (!OptimizerAnalysis.IsPureElementwise(predExpr.Expression))
+            if (!OptimizerAnalysis.IsPureElementwise(filterNode.Predicate.Expression))
                 return false;
 
             var predCols = new HashSet<string>(StringComparer.Ordinal);
-            OptimizerAnalysis.CollectReferencedColumns(predExpr.Expression, predCols);
-
-            // Never push constant / zero-column predicates into joins (e.g., Left/Outer/Cross joins).
+            OptimizerAnalysis.CollectReferencedColumns(filterNode.Predicate.Expression, predCols);
             if (predCols.Count == 0)
                 return false;
 
-            var left = joinNode.Arguments[0];
-            var right = joinNode.Arguments[1];
-            var on = joinNode.Arguments[2];
-            var type = (JoinType)((ConstantExpression)joinNode.Arguments[3]).Value!;
-            string onCol = on is ConstantExpression onConst && onConst.Value is string s ? s : string.Empty;
-
-            if (!PlanSchemaResolver.TryResolveColumns(left, out var leftCols) ||
-                !PlanSchemaResolver.TryResolveColumns(right, out var rightCols))
+            if (!PlanSchemaResolver.TryResolveColumns(joinNode.Left, out var leftCols) ||
+                !PlanSchemaResolver.TryResolveColumns(joinNode.Right, out var rightCols))
             {
                 return false;
             }
 
             var leftSet = new HashSet<string>(leftCols, StringComparer.Ordinal);
             var rightSet = new HashSet<string>(rightCols, StringComparer.Ordinal);
+            var type = joinNode.JoinType;
 
-            // Left-side pushdown: in DataFrame.Join, all left columns preserve their exact names in the join output
-            // (colliding right columns get renamed with "_right" or dropped if equal to onCol).
             if ((type == JoinType.Inner || type == JoinType.Left || type == JoinType.Semi || type == JoinType.Anti)
                 && predCols.All(c => leftSet.Contains(c)))
             {
-                var newLeft = Expression.Call(null, filterNode.Method, left, predicateArg);
-                result = Expression.Call(null, joinNode.Method, Visit(newLeft), right, on, joinNode.Arguments[3]);
+                var newLeft = new FilterPlanNode(joinNode.Left, filterNode.Predicate, filterNode.RawLambda);
+                result = joinNode with { Left = OptimizeNode(newLeft) };
                 return true;
             }
 
-            // Right-side pushdown: valid ONLY for Inner join, and only when every referenced column unambiguously refers
-            // to a right column (either the shared join key onCol or a right column not shadowed by leftSet).
             if (type == JoinType.Inner
-                && predCols.All(c => (c == onCol && rightSet.Contains(c)) || (rightSet.Contains(c) && !leftSet.Contains(c))))
+                && predCols.All(c => (IsSharedSameNameKey(joinNode.LeftOn, joinNode.RightOn, c) && rightSet.Contains(c))
+                                     || (rightSet.Contains(c) && !leftSet.Contains(c))))
             {
-                var newRight = Expression.Call(null, filterNode.Method, right, predicateArg);
-                result = Expression.Call(null, joinNode.Method, left, Visit(newRight), on, joinNode.Arguments[3]);
+                var newRight = new FilterPlanNode(joinNode.Right, filterNode.Predicate, filterNode.RawLambda);
+                result = joinNode with { Right = OptimizeNode(newRight) };
                 return true;
             }
 
             return false;
+
+            static bool IsSharedSameNameKey(string[] leftOn, string[] rightOn, string col)
+            {
+                for (int i = 0; i < Math.Min(leftOn.Length, rightOn.Length); i++)
+                {
+                    if (string.Equals(leftOn[i], col, StringComparison.Ordinal) &&
+                        string.Equals(rightOn[i], col, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        private static LogicalPlanNode ReorderJoins(LogicalPlanNode node)
+        {
+            switch (node)
+            {
+                case JoinPlanNode joinNode:
+                {
+                    var left = ReorderJoins(joinNode.Left);
+                    var right = ReorderJoins(joinNode.Right);
+
+                    if (joinNode.JoinType == JoinType.Inner
+                        && left is JoinPlanNode leftJoin
+                        && leftJoin.JoinType == JoinType.Inner
+                        && joinNode.LeftOn.Length == 1 && joinNode.RightOn.Length == 1
+                        && leftJoin.LeftOn.Length == 1 && leftJoin.RightOn.Length == 1
+                        && string.Equals(joinNode.LeftOn[0], joinNode.RightOn[0], StringComparison.Ordinal)
+                        && string.Equals(leftJoin.LeftOn[0], leftJoin.RightOn[0], StringComparison.Ordinal)
+                        && string.Equals(joinNode.LeftOn[0], leftJoin.LeftOn[0], StringComparison.Ordinal))
+                    {
+                        var candidateInner = new JoinPlanNode(leftJoin.Right, right, leftJoin.LeftOn, leftJoin.RightOn, JoinType.Inner);
+                        var candidateInnerVisited = ReorderJoins(candidateInner);
+                        var candidatePlan = new JoinPlanNode(leftJoin.Left, candidateInnerVisited, joinNode.LeftOn, joinNode.RightOn, JoinType.Inner);
+                        var originalPlan = new JoinPlanNode(left, right, joinNode.LeftOn, joinNode.RightOn, JoinType.Inner);
+
+                        if (SchemasMatchOrUnresolved(originalPlan, candidatePlan))
+                        {
+                            return candidatePlan;
+                        }
+                    }
+
+                    return ReferenceEquals(left, joinNode.Left) && ReferenceEquals(right, joinNode.Right)
+                        ? joinNode
+                        : joinNode with { Left = left, Right = right };
+                }
+
+                case FilterPlanNode f: return f with { Source = ReorderJoins(f.Source) };
+                case SelectPlanNode s: return s with { Source = ReorderJoins(s.Source) };
+                case WithColumnsPlanNode wc: return wc with { Source = ReorderJoins(wc.Source) };
+                case GroupByPlanNode gb: return gb with { Source = ReorderJoins(gb.Source) };
+                case AggPlanNode ag: return ag with { Source = ReorderJoins(ag.Source) };
+                case AggGroupsPlanNode agg: return agg with { Source = ReorderJoins(agg.Source) };
+                case GroupByDynamicPlanNode gbd: return gbd with { Source = ReorderJoins(gbd.Source) };
+                case GroupByRollingPlanNode gbr: return gbr with { Source = ReorderJoins(gbr.Source) };
+                case SortPlanNode st: return st with { Source = ReorderJoins(st.Source) };
+                case TopKPlanNode tk: return tk with { Source = ReorderJoins(tk.Source) };
+                case LimitPlanNode lm: return lm with { Source = ReorderJoins(lm.Source) };
+                case FetchPlanNode ft: return ft with { Source = ReorderJoins(ft.Source) };
+                case DelayPlanNode dl: return dl with { Source = ReorderJoins(dl.Source) };
+                case ExplodePlanNode ex: return ex with { Source = ReorderJoins(ex.Source) };
+                case UnnestPlanNode un: return un with { Source = ReorderJoins(un.Source) };
+                case UnpivotPlanNode up: return up with { Source = ReorderJoins(up.Source) };
+                case PivotPlanNode pv: return pv with { Source = ReorderJoins(pv.Source) };
+                case TransposePlanNode tr: return tr with { Source = ReorderJoins(tr.Source) };
+                case UniquePlanNode uq: return uq with { Source = ReorderJoins(uq.Source) };
+                case SlicePlanNode sl: return sl with { Source = ReorderJoins(sl.Source) };
+                case TailPlanNode tl: return tl with { Source = ReorderJoins(tl.Source) };
+                case DropNullsPlanNode dn: return dn with { Source = ReorderJoins(dn.Source) };
+                case FillNanPlanNode fn: return fn with { Source = ReorderJoins(fn.Source) };
+                case WithRowIndexPlanNode wri: return wri with { Source = ReorderJoins(wri.Source) };
+                case RenamePlanNode rn: return rn with { Source = ReorderJoins(rn.Source) };
+                case NullCountPlanNode nc: return nc with { Source = ReorderJoins(nc.Source) };
+                case ShiftColumnsPlanNode sc: return sc with { Source = ReorderJoins(sc.Source) };
+                case ClearPlanNode cl: return cl with { Source = ReorderJoins(cl.Source) };
+                case ShrinkToFitPlanNode sf: return sf with { Source = ReorderJoins(sf.Source) };
+                case RechunkPlanNode rc: return rc with { Source = ReorderJoins(rc.Source) };
+                case MapPlanNode mp: return mp with { Source = ReorderJoins(mp.Source) };
+                case SinkCsvPlanNode scsv: return scsv with { Source = ReorderJoins(scsv.Source) };
+                case SinkParquetPlanNode spq: return spq with { Source = ReorderJoins(spq.Source) };
+                case SinkIpcPlanNode sipc: return sipc with { Source = ReorderJoins(sipc.Source) };
+                default: return node;
+            }
+
+            static bool SchemasMatchOrUnresolved(LogicalPlanNode originalPlan, LogicalPlanNode candidatePlan)
+            {
+                if (PlanSchemaResolver.TryResolveColumns(originalPlan, out var origCols)
+                    && PlanSchemaResolver.TryResolveColumns(candidatePlan, out var candCols))
+                {
+                    return origCols.SequenceEqual(candCols, StringComparer.Ordinal);
+                }
+                return true;
+            }
+        }
+
+        private static LogicalPlanNode PushdownProjection(LogicalPlanNode node, HashSet<string> usedColumns)
+        {
+            switch (node)
+            {
+                case ScanCsvPlanNode csv:
+                    try
+                    {
+                        string[] sourceCols = csv.Columns is { Length: > 0 } ? csv.Columns : IO.CsvReader.PeekHeaders(csv.FilePath);
+                        var validColumns = sourceCols.Where(usedColumns.Contains).ToArray();
+                        return validColumns.Length > 0 ? csv with { Columns = validColumns } : csv;
+                    }
+                    catch { return csv; }
+
+                case ScanParquetPlanNode pq:
+                    try
+                    {
+                        string[] sourceCols = pq.Columns is { Length: > 0 } ? pq.Columns : IO.ParquetReader.PeekHeaders(pq.FilePath);
+                        var validColumns = sourceCols.Where(usedColumns.Contains).ToArray();
+                        return validColumns.Length > 0 ? pq with { Columns = validColumns } : pq;
+                    }
+                    catch { return pq; }
+
+                case ScanJsonPlanNode json:
+                    try
+                    {
+                        string[] sourceCols = json.Columns is { Length: > 0 } ? json.Columns : IO.JsonReader.PeekHeaders(json.FilePath);
+                        var validColumns = sourceCols.Where(usedColumns.Contains).ToArray();
+                        return validColumns.Length > 0 ? json with { Columns = validColumns } : json;
+                    }
+                    catch { return json; }
+
+                case FilterPlanNode f: return f with { Source = PushdownProjection(f.Source, usedColumns) };
+                case SelectPlanNode s: return s with { Source = PushdownProjection(s.Source, usedColumns) };
+                case WithColumnsPlanNode wc: return wc with { Source = PushdownProjection(wc.Source, usedColumns) };
+                case GroupByPlanNode gb: return gb with { Source = PushdownProjection(gb.Source, usedColumns) };
+                case AggPlanNode ag: return ag with { Source = PushdownProjection(ag.Source, usedColumns) };
+                case AggGroupsPlanNode agg: return agg with { Source = PushdownProjection(agg.Source, usedColumns) };
+                case GroupByDynamicPlanNode gbd: return gbd with { Source = PushdownProjection(gbd.Source, usedColumns) };
+                case GroupByRollingPlanNode gbr: return gbr with { Source = PushdownProjection(gbr.Source, usedColumns) };
+                case JoinPlanNode j: return j with { Left = PushdownProjection(j.Left, usedColumns), Right = PushdownProjection(j.Right, usedColumns) };
+                case SortPlanNode st: return st with { Source = PushdownProjection(st.Source, usedColumns) };
+                case TopKPlanNode tk: return tk with { Source = PushdownProjection(tk.Source, usedColumns) };
+                case LimitPlanNode lm: return lm with { Source = PushdownProjection(lm.Source, usedColumns) };
+                case FetchPlanNode ft: return ft with { Source = PushdownProjection(ft.Source, usedColumns) };
+                case DelayPlanNode dl: return dl with { Source = PushdownProjection(dl.Source, usedColumns) };
+                case ExplodePlanNode ex: return ex with { Source = PushdownProjection(ex.Source, usedColumns) };
+                case UnnestPlanNode un: return un with { Source = PushdownProjection(un.Source, usedColumns) };
+                case UnpivotPlanNode up: return up with { Source = PushdownProjection(up.Source, usedColumns) };
+                case PivotPlanNode pv: return pv with { Source = PushdownProjection(pv.Source, usedColumns) };
+                case TransposePlanNode tr: return tr with { Source = PushdownProjection(tr.Source, usedColumns) };
+                case UniquePlanNode uq: return uq with { Source = PushdownProjection(uq.Source, usedColumns) };
+                case SlicePlanNode sl: return sl with { Source = PushdownProjection(sl.Source, usedColumns) };
+                case TailPlanNode tl: return tl with { Source = PushdownProjection(tl.Source, usedColumns) };
+                case DropNullsPlanNode dn: return dn with { Source = PushdownProjection(dn.Source, usedColumns) };
+                case FillNanPlanNode fn: return fn with { Source = PushdownProjection(fn.Source, usedColumns) };
+                case WithRowIndexPlanNode wri: return wri with { Source = PushdownProjection(wri.Source, usedColumns) };
+                case RenamePlanNode rn: return rn with { Source = PushdownProjection(rn.Source, usedColumns) };
+                case NullCountPlanNode nc: return nc with { Source = PushdownProjection(nc.Source, usedColumns) };
+                case ShiftColumnsPlanNode sc: return sc with { Source = PushdownProjection(sc.Source, usedColumns) };
+                case ClearPlanNode cl: return cl with { Source = PushdownProjection(cl.Source, usedColumns) };
+                case ShrinkToFitPlanNode sf: return sf with { Source = PushdownProjection(sf.Source, usedColumns) };
+                case RechunkPlanNode rc: return rc with { Source = PushdownProjection(rc.Source, usedColumns) };
+                case MapPlanNode mp: return mp with { Source = PushdownProjection(mp.Source, usedColumns) };
+                case SinkCsvPlanNode scsv: return scsv with { Source = PushdownProjection(scsv.Source, usedColumns) };
+                case SinkParquetPlanNode spq: return spq with { Source = PushdownProjection(spq.Source, usedColumns) };
+                case SinkIpcPlanNode sipc: return sipc with { Source = PushdownProjection(sipc.Source, usedColumns) };
+                default: return node;
+            }
         }
     }
 
@@ -286,13 +586,11 @@ namespace Glacier.Polaris
     {
         private static readonly HashSet<string> NonElementwiseExprMethods = new(StringComparer.Ordinal)
         {
-            // Aggregations / Scalar reductions
             "SumOp", "MeanOp", "MinOp", "MaxOp", "StdOp", "VarOp", "MedianOp",
             "CountOp", "NUniqueOp", "QuantileOp", "FirstOp", "LastOp",
             "AllOp", "AnyOp", "NullCountOp", "ArgMinOp", "ArgMaxOp",
             "DotOp", "EntropyOp", "ApproxNUniqueOp", "ListOp",
 
-            // Window / Rolling / Cumulative / Cross-row / Positional ops
             "OverOp",
             "RollingMeanOp", "RollingSumOp", "RollingMinOp", "RollingMaxOp", "RollingStdOp",
             "EWMMeanOp", "EWMStdOp",
@@ -302,7 +600,6 @@ namespace Glacier.Polaris
             "IsDuplicatedOp", "IsUniqueOp", "IsFirstOp",
             "FillNullOp", "IsInExprOp", "SearchSortedOp",
 
-            // Length-changing ops
             "UniqueOp", "DropNullsOp", "GatherEveryOp", "SliceOp",
             "TopKOp", "BottomKOp", "ValueCountsOp"
         };
@@ -615,106 +912,93 @@ namespace Glacier.Polaris
     {
         public static bool TryResolveColumns(Expression plan, out List<string> columns)
         {
+            return TryResolveColumns(LogicalPlanNode.FromLegacyExpression(plan), out columns);
+        }
+
+        public static bool TryResolveColumns(LogicalPlanNode plan, out List<string> columns)
+        {
             columns = null!;
-            if (plan is not MethodCallExpression mce)
-                return false;
 
-            switch (mce.Method.Name)
+            switch (plan)
             {
-                case nameof(LazyFrame.DataFrameOp):
-                {
-                    if (mce.Arguments[0] is ConstantExpression ce && ce.Value is DataFrame df)
-                    {
-                        columns = df.Columns.Select(c => c.Name).ToList();
-                        return true;
-                    }
-                    return false;
-                }
+                case DataFramePlanNode dfNode:
+                    columns = dfNode.DataFrame.Columns.Select(c => c.Name).ToList();
+                    return true;
 
-                case nameof(LazyFrame.ScanCsvOp):
-                {
-                    if (mce.Arguments.Count > 1 && OptimizerAnalysis.TryExtractStringArray(mce.Arguments[1], out var projCols) && projCols.Length > 0)
+                case ScanCsvPlanNode csv:
+                    if (csv.Columns is { Length: > 0 })
                     {
-                        columns = projCols.ToList();
+                        columns = csv.Columns.ToList();
                         return true;
                     }
-                    if (mce.Arguments[0] is ConstantExpression ce && ce.Value is string path && System.IO.File.Exists(path))
+                    if (System.IO.File.Exists(csv.FilePath))
                     {
                         try
                         {
-                            columns = IO.CsvReader.PeekHeaders(path).ToList();
+                            columns = IO.CsvReader.PeekHeaders(csv.FilePath).ToList();
                             return columns.Count > 0;
                         }
                         catch { return false; }
                     }
                     return false;
-                }
 
-                case nameof(LazyFrame.ScanParquetOp):
-                {
-                    if (mce.Arguments.Count > 1 && OptimizerAnalysis.TryExtractStringArray(mce.Arguments[1], out var projCols) && projCols.Length > 0)
+                case ScanParquetPlanNode pq:
+                    if (pq.Columns is { Length: > 0 })
                     {
-                        columns = projCols.ToList();
+                        columns = pq.Columns.ToList();
                         return true;
                     }
-                    if (mce.Arguments[0] is ConstantExpression ce && ce.Value is string path && System.IO.File.Exists(path))
+                    if (System.IO.File.Exists(pq.FilePath))
                     {
                         try
                         {
-                            columns = IO.ParquetReader.PeekHeaders(path).ToList();
+                            columns = IO.ParquetReader.PeekHeaders(pq.FilePath).ToList();
                             return columns.Count > 0;
                         }
                         catch { return false; }
                     }
                     return false;
-                }
 
-                case nameof(LazyFrame.ScanJsonOp):
-                {
-                    if (mce.Arguments.Count > 1 && OptimizerAnalysis.TryExtractStringArray(mce.Arguments[1], out var projCols) && projCols.Length > 0)
+                case ScanJsonPlanNode json:
+                    if (json.Columns is { Length: > 0 })
                     {
-                        columns = projCols.ToList();
+                        columns = json.Columns.ToList();
                         return true;
                     }
-                    if (mce.Arguments[0] is ConstantExpression ce && ce.Value is string path && System.IO.File.Exists(path))
+                    if (System.IO.File.Exists(json.FilePath))
                     {
                         try
                         {
-                            columns = IO.JsonReader.PeekHeaders(path).ToList();
+                            columns = IO.JsonReader.PeekHeaders(json.FilePath).ToList();
                             return columns.Count > 0;
                         }
                         catch { return false; }
                     }
                     return false;
-                }
 
-                case nameof(LazyFrame.FilterOp):
-                case nameof(LazyFrame.LimitOp):
-                case nameof(LazyFrame.FetchOp):
-                case nameof(LazyFrame.TailOp):
-                case nameof(LazyFrame.SliceOp):
-                case nameof(LazyFrame.SortOp):
-                case nameof(LazyFrame.TopKOp):
-                case nameof(LazyFrame.UniqueOp):
-                case nameof(LazyFrame.DropNullsOp):
-                case nameof(LazyFrame.FillNanOp):
-                case nameof(LazyFrame.DelayOp):
-                case nameof(LazyFrame.ShiftColumnsOp):
-                case nameof(LazyFrame.ClearOp):
-                case nameof(LazyFrame.ShrinkToFitOp):
-                case nameof(LazyFrame.RechunkOp):
-                case nameof(LazyFrame.ExplodeOp):
-                    return TryResolveColumns(mce.Arguments[0], out columns);
+                case FilterPlanNode f: return TryResolveColumns(f.Source, out columns);
+                case LimitPlanNode l: return TryResolveColumns(l.Source, out columns);
+                case FetchPlanNode ft: return TryResolveColumns(ft.Source, out columns);
+                case TailPlanNode tl: return TryResolveColumns(tl.Source, out columns);
+                case SlicePlanNode sl: return TryResolveColumns(sl.Source, out columns);
+                case SortPlanNode st: return TryResolveColumns(st.Source, out columns);
+                case TopKPlanNode tk: return TryResolveColumns(tk.Source, out columns);
+                case UniquePlanNode uq: return TryResolveColumns(uq.Source, out columns);
+                case DropNullsPlanNode dn: return TryResolveColumns(dn.Source, out columns);
+                case FillNanPlanNode fn: return TryResolveColumns(fn.Source, out columns);
+                case DelayPlanNode dl: return TryResolveColumns(dl.Source, out columns);
+                case ShiftColumnsPlanNode sc: return TryResolveColumns(sc.Source, out columns);
+                case ClearPlanNode cl: return TryResolveColumns(cl.Source, out columns);
+                case ShrinkToFitPlanNode sf: return TryResolveColumns(sf.Source, out columns);
+                case RechunkPlanNode rc: return TryResolveColumns(rc.Source, out columns);
+                case ExplodePlanNode ex: return TryResolveColumns(ex.Source, out columns);
 
-                case nameof(LazyFrame.SelectOp):
+                case SelectPlanNode sel:
                 {
-                    if (!OptimizerAnalysis.TryExtractExprArray(mce.Arguments[1], out var exprs))
-                        return false;
-
-                    var outCols = new List<string>(exprs.Length);
-                    for (int i = 0; i < exprs.Length; i++)
+                    var outCols = new List<string>(sel.Selections.Length);
+                    for (int i = 0; i < sel.Selections.Length; i++)
                     {
-                        if (!OptimizerAnalysis.TryInferExprOutputName(exprs[i].Expression, out string? outName) || outName == null)
+                        if (!OptimizerAnalysis.TryInferExprOutputName(sel.Selections[i].Expression, out string? outName) || outName == null)
                             return false;
                         outCols.Add(outName);
                     }
@@ -722,61 +1006,47 @@ namespace Glacier.Polaris
                     return true;
                 }
 
-                case nameof(LazyFrame.WithColumnsOp):
+                case WithColumnsPlanNode wc:
                 {
-                    if (!TryResolveColumns(mce.Arguments[0], out var baseCols))
+                    if (!TryResolveColumns(wc.Source, out var baseCols))
                         return false;
-                    if (!OptimizerAnalysis.TryExtractExprArray(mce.Arguments[1], out var exprs))
-                        return false;
-
                     var outCols = new List<string>(baseCols);
-                    for (int i = 0; i < exprs.Length; i++)
+                    for (int i = 0; i < wc.Columns.Length; i++)
                     {
-                        if (!OptimizerAnalysis.TryInferExprOutputName(exprs[i].Expression, out string? outName) || outName == null)
+                        if (!OptimizerAnalysis.TryInferExprOutputName(wc.Columns[i].Expression, out string? outName) || outName == null)
                             return false;
-                        int existing = outCols.IndexOf(outName);
-                        if (existing < 0) outCols.Add(outName);
+                        if (!outCols.Contains(outName))
+                            outCols.Add(outName);
                     }
                     columns = outCols;
                     return true;
                 }
 
-                case nameof(LazyFrame.RenameOp):
+                case RenamePlanNode rn:
                 {
-                    if (!TryResolveColumns(mce.Arguments[0], out var baseCols))
+                    if (!TryResolveColumns(rn.Source, out var baseCols))
                         return false;
-                    if (mce.Arguments[1] is ConstantExpression ce && ce.Value is Dictionary<string, string> map)
-                    {
-                        columns = baseCols.Select(c => map.TryGetValue(c, out var renamed) ? renamed : c).ToList();
-                        return true;
-                    }
-                    return false;
+                    columns = baseCols.Select(c => rn.Mapping.TryGetValue(c, out var renamed) ? renamed : c).ToList();
+                    return true;
                 }
 
-                case nameof(LazyFrame.WithRowIndexOp):
+                case WithRowIndexPlanNode wri:
                 {
-                    if (!TryResolveColumns(mce.Arguments[0], out var baseCols))
+                    if (!TryResolveColumns(wri.Source, out var baseCols))
                         return false;
-                    if (mce.Arguments[1] is ConstantExpression ce && ce.Value is string idxName)
-                    {
-                        var outCols = new List<string>(baseCols.Count + 1) { idxName };
-                        outCols.AddRange(baseCols);
-                        columns = outCols;
-                        return true;
-                    }
-                    return false;
+                    var outCols = new List<string>(baseCols.Count + 1) { wri.Name };
+                    outCols.AddRange(baseCols);
+                    columns = outCols;
+                    return true;
                 }
 
-                case nameof(LazyFrame.JoinOp):
+                case JoinPlanNode j:
                 {
-                    if (!TryResolveColumns(mce.Arguments[0], out var leftCols) ||
-                        !TryResolveColumns(mce.Arguments[1], out var rightCols))
+                    if (!TryResolveColumns(j.Left, out var leftCols) ||
+                        !TryResolveColumns(j.Right, out var rightCols))
                         return false;
 
-                    string onCol = mce.Arguments[2] is ConstantExpression onCe && onCe.Value is string s ? s : string.Empty;
-                    var joinType = (JoinType)((ConstantExpression)mce.Arguments[3]).Value!;
-
-                    if (joinType == JoinType.Semi || joinType == JoinType.Anti)
+                    if (j.JoinType == JoinType.Semi || j.JoinType == JoinType.Anti)
                     {
                         columns = new List<string>(leftCols);
                         return true;
@@ -784,12 +1054,12 @@ namespace Glacier.Polaris
 
                     var outCols = new List<string>(leftCols);
                     var leftSet = new HashSet<string>(leftCols, StringComparer.Ordinal);
+                    var rightKeySet = new HashSet<string>(j.RightOn, StringComparer.Ordinal);
                     foreach (var rc in rightCols)
                     {
-                        if (joinType != JoinType.Cross && joinType != JoinType.Outer && rc == onCol)
+                        if (j.JoinType != JoinType.Cross && j.JoinType != JoinType.Outer && rightKeySet.Contains(rc))
                             continue;
-                        string outName = leftSet.Contains(rc) ? rc + "_right" : rc;
-                        outCols.Add(outName);
+                        outCols.Add(leftSet.Contains(rc) ? rc + "_right" : rc);
                     }
                     columns = outCols;
                     return true;
@@ -797,6 +1067,200 @@ namespace Glacier.Polaris
 
                 default:
                     return false;
+            }
+        }
+    }
+
+    internal sealed class LogicalPlanColumnTracker
+    {
+        public HashSet<string> Columns { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, HashSet<string>> NestedFieldPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public bool HasGlobalSelect { get; private set; }
+        public bool RequiresAllColumns { get; private set; }
+
+        public void Visit(LogicalPlanNode node)
+        {
+            switch (node)
+            {
+                case FilterPlanNode f:
+                    VisitExpr(f.Predicate.Expression);
+                    Visit(f.Source);
+                    break;
+
+                case SelectPlanNode sel:
+                    HasGlobalSelect = true;
+                    foreach (var e in sel.Selections) VisitExpr(e.Expression);
+                    Visit(sel.Source);
+                    break;
+
+                case WithColumnsPlanNode wc:
+                    foreach (var e in wc.Columns) VisitExpr(e.Expression);
+                    Visit(wc.Source);
+                    break;
+
+                case AggPlanNode ag:
+                    if (ag.GroupColumns != null)
+                        foreach (var c in ag.GroupColumns) Columns.Add(c);
+                    foreach (var e in ag.Aggregations) VisitExpr(e.Expression);
+                    Visit(ag.Source);
+                    break;
+
+                case JoinPlanNode j:
+                    if (j.JoinType != JoinType.Cross)
+                    {
+                        foreach (var c in j.LeftOn) Columns.Add(c);
+                        foreach (var c in j.RightOn) Columns.Add(c);
+                    }
+                    Visit(j.Left);
+                    Visit(j.Right);
+                    break;
+
+                case SortPlanNode st:
+                    foreach (var c in st.ColumnNames) Columns.Add(c);
+                    Visit(st.Source);
+                    break;
+
+                case TopKPlanNode tk:
+                    foreach (var c in tk.ColumnNames) Columns.Add(c);
+                    Visit(tk.Source);
+                    break;
+
+                case GroupByPlanNode gb:
+                    foreach (var c in gb.Columns) Columns.Add(c);
+                    Visit(gb.Source);
+                    break;
+
+                case AggGroupsPlanNode agp:
+                    foreach (var c in agp.Columns) Columns.Add(c);
+                    Visit(agp.Source);
+                    break;
+
+                case UnnestPlanNode un:
+                    foreach (var c in un.Columns) Columns.Add(c);
+                    Visit(un.Source);
+                    break;
+
+                case GroupByDynamicPlanNode gbd:
+                    Columns.Add(gbd.IndexColumn);
+                    Visit(gbd.Source);
+                    break;
+
+                case GroupByRollingPlanNode gbr:
+                    Columns.Add(gbr.IndexColumn);
+                    Visit(gbr.Source);
+                    break;
+
+                case ExplodePlanNode ex:
+                    Columns.Add(ex.Column);
+                    Visit(ex.Source);
+                    break;
+
+                case UnpivotPlanNode up:
+                    foreach (var c in up.On) Columns.Add(c);
+                    foreach (var c in up.Index) Columns.Add(c);
+                    Visit(up.Source);
+                    break;
+
+                case PivotPlanNode pv:
+                    foreach (var c in pv.Index) Columns.Add(c);
+                    foreach (var c in pv.Pivot) Columns.Add(c);
+                    foreach (var c in pv.Values) Columns.Add(c);
+                    Visit(pv.Source);
+                    break;
+
+                case DropNullsPlanNode dn:
+                    if (dn.Subset is { Length: > 0 })
+                        foreach (var c in dn.Subset) Columns.Add(c);
+                    else
+                        RequiresAllColumns = true;
+                    Visit(dn.Source);
+                    break;
+
+                case UniquePlanNode uq:
+                    if (uq.Subset is { Length: > 0 })
+                        foreach (var c in uq.Subset) Columns.Add(c);
+                    else
+                        RequiresAllColumns = true;
+                    Visit(uq.Source);
+                    break;
+
+                case RenamePlanNode rn:
+                    RequiresAllColumns = true;
+                    Visit(rn.Source);
+                    break;
+
+                case TransposePlanNode tr:
+                    RequiresAllColumns = true;
+                    Visit(tr.Source);
+                    break;
+
+                case NullCountPlanNode nc:
+                    RequiresAllColumns = true;
+                    Visit(nc.Source);
+                    break;
+
+                case ShiftColumnsPlanNode sc:
+                    RequiresAllColumns = true;
+                    Visit(sc.Source);
+                    break;
+
+                case FillNanPlanNode fn:
+                    RequiresAllColumns = true;
+                    Visit(fn.Source);
+                    break;
+
+                case MapPlanNode mp:
+                    RequiresAllColumns = true;
+                    Visit(mp.Source);
+                    break;
+
+                case LimitPlanNode lm: Visit(lm.Source); break;
+                case FetchPlanNode ft: Visit(ft.Source); break;
+                case DelayPlanNode dl: Visit(dl.Source); break;
+                case SlicePlanNode sl: Visit(sl.Source); break;
+                case TailPlanNode tl: Visit(tl.Source); break;
+                case WithRowIndexPlanNode wri: Visit(wri.Source); break;
+                case ClearPlanNode cl: Visit(cl.Source); break;
+                case ShrinkToFitPlanNode sf: Visit(sf.Source); break;
+                case RechunkPlanNode rc: Visit(rc.Source); break;
+                case SinkCsvPlanNode scsv: Visit(scsv.Source); break;
+                case SinkParquetPlanNode spq: Visit(spq.Source); break;
+                case SinkIpcPlanNode sipc: Visit(sipc.Source); break;
+
+                case ExternalExpressionPlanNode ext:
+                {
+                    var exprTracker = new ColumnTrackerVisitor();
+                    exprTracker.Visit(ext.Expression);
+                    foreach (var c in exprTracker.Columns) Columns.Add(c);
+                    foreach (var kv in exprTracker.NestedFieldPaths)
+                    {
+                        if (!NestedFieldPaths.TryGetValue(kv.Key, out var set))
+                        {
+                            set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            NestedFieldPaths[kv.Key] = set;
+                        }
+                        foreach (var p in kv.Value) set.Add(p);
+                    }
+                    if (exprTracker.HasGlobalSelect) HasGlobalSelect = true;
+                    if (exprTracker.RequiresAllColumns) RequiresAllColumns = true;
+                    break;
+                }
+            }
+        }
+
+        private void VisitExpr(Expression expr)
+        {
+            var exprTracker = new ColumnTrackerVisitor();
+            exprTracker.Visit(expr);
+            foreach (var c in exprTracker.Columns) Columns.Add(c);
+            foreach (var kv in exprTracker.NestedFieldPaths)
+            {
+                if (!NestedFieldPaths.TryGetValue(kv.Key, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    NestedFieldPaths[kv.Key] = set;
+                }
+                foreach (var p in kv.Value) set.Add(p);
             }
         }
     }
@@ -859,105 +1323,6 @@ namespace Glacier.Polaris
                     }
                     break;
                 }
-
-                case nameof(LazyFrame.JoinOp):
-                {
-                    var joinType = (JoinType)((ConstantExpression)node.Arguments[3]).Value!;
-                    if (joinType != JoinType.Cross && node.Arguments[2] is ConstantExpression onCe && onCe.Value is string onCol)
-                    {
-                        Columns.Add(onCol);
-                    }
-                    break;
-                }
-
-                case nameof(LazyFrame.SelectOp):
-                    HasGlobalSelect = true;
-                    break;
-
-                case nameof(LazyFrame.SortOp):
-                case nameof(LazyFrame.TopKOp):
-                case nameof(LazyFrame.GroupByOp):
-                case nameof(LazyFrame.AggGroupsOp):
-                case nameof(LazyFrame.UnnestOp):
-                    if (OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var usedCols))
-                    {
-                        foreach (var c in usedCols) Columns.Add(c);
-                    }
-                    else
-                    {
-                        RequiresAllColumns = true;
-                    }
-                    break;
-
-                case nameof(LazyFrame.GroupByDynamicOp):
-                case nameof(LazyFrame.GroupByRollingOp):
-                case nameof(LazyFrame.ExplodeOp):
-                    if (node.Arguments[1] is ConstantExpression singleColCe && singleColCe.Value is string singleCol)
-                    {
-                        Columns.Add(singleCol);
-                    }
-                    else
-                    {
-                        RequiresAllColumns = true;
-                    }
-                    break;
-
-                case nameof(LazyFrame.UnpivotOp):
-                    if (OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var unpivotOn)
-                        && OptimizerAnalysis.TryExtractStringArray(node.Arguments[2], out var unpivotIdx))
-                    {
-                        foreach (var c in unpivotOn) Columns.Add(c);
-                        foreach (var c in unpivotIdx) Columns.Add(c);
-                    }
-                    else
-                    {
-                        RequiresAllColumns = true;
-                    }
-                    break;
-
-                case nameof(LazyFrame.PivotOp):
-                    if (OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var pivIdx)
-                        && OptimizerAnalysis.TryExtractStringArray(node.Arguments[2], out var pivCol)
-                        && OptimizerAnalysis.TryExtractStringArray(node.Arguments[3], out var pivVal))
-                    {
-                        foreach (var c in pivIdx) Columns.Add(c);
-                        foreach (var c in pivCol) Columns.Add(c);
-                        foreach (var c in pivVal) Columns.Add(c);
-                    }
-                    else
-                    {
-                        RequiresAllColumns = true;
-                    }
-                    break;
-
-                case nameof(LazyFrame.DropNullsOp):
-                case nameof(LazyFrame.UniqueOp):
-                    // Note: Expr.UniqueOp / Expr.DropNullsOp take 1 Expr argument; LazyFrame.UniqueOp / LazyFrame.DropNullsOp take LazyFrame as Arguments[0].
-                    if (node.Method.DeclaringType == typeof(LazyFrame))
-                    {
-                        if (node.Arguments.Count > 1 && OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var subsetCols) && subsetCols.Length > 0)
-                        {
-                            foreach (var c in subsetCols) Columns.Add(c);
-                        }
-                        else
-                        {
-                            // Null/empty subset deduplicates or drops nulls across ALL columns!
-                            RequiresAllColumns = true;
-                        }
-                    }
-                    break;
-
-                case nameof(LazyFrame.RenameOp):
-                case nameof(LazyFrame.TransposeOp):
-                case nameof(LazyFrame.NullCountOp):
-                case nameof(LazyFrame.ShiftColumnsOp):
-                case nameof(LazyFrame.FillNanOp):
-                case nameof(LazyFrame.MapOp):
-                    if (node.Method.DeclaringType == typeof(LazyFrame))
-                    {
-                        RequiresAllColumns = true;
-                    }
-                    break;
             }
 
             return base.VisitMethodCall(node);
@@ -994,143 +1359,6 @@ namespace Glacier.Polaris
                 }
             }
             return base.VisitLambda(node);
-        }
-    }
-
-    internal class ProjectionPushdownVisitor : ExpressionVisitor
-    {
-        private readonly HashSet<string> _usedColumns;
-        public ProjectionPushdownVisitor(IEnumerable<string> columns)
-        {
-            _usedColumns = new HashSet<string>(columns, StringComparer.Ordinal);
-        }
-
-        protected override Expression VisitMethodCall(MethodCallExpression node)
-        {
-            if (node.Method.Name == nameof(LazyFrame.ScanCsvOp))
-            {
-                var filePath = (string)((ConstantExpression)node.Arguments[0]).Value!;
-                try
-                {
-                    string[] sourceCols = OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var existing) && existing.Length > 0
-                        ? existing
-                        : IO.CsvReader.PeekHeaders(filePath);
-                    var validColumns = sourceCols.Where(h => _usedColumns.Contains(h)).ToArray();
-                    if (validColumns.Length > 0)
-                    {
-                        return Expression.Call(null, node.Method, node.Arguments[0], Expression.Constant(validColumns, typeof(string[])), node.Arguments[2]);
-                    }
-                    return node;
-                }
-                catch
-                {
-                    return node;
-                }
-            }
-            else if (node.Method.Name == nameof(LazyFrame.ScanParquetOp))
-            {
-                var filePath = (string)((ConstantExpression)node.Arguments[0]).Value!;
-                try
-                {
-                    string[] sourceCols = OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var existing) && existing.Length > 0
-                        ? existing
-                        : IO.ParquetReader.PeekHeaders(filePath);
-                    var validColumns = sourceCols.Where(h => _usedColumns.Contains(h)).ToArray();
-                    if (validColumns.Length > 0)
-                    {
-                        return Expression.Call(null, node.Method, node.Arguments[0], Expression.Constant(validColumns, typeof(string[])));
-                    }
-                    return node;
-                }
-                catch
-                {
-                    return node;
-                }
-            }
-            else if (node.Method.Name == nameof(LazyFrame.ScanJsonOp))
-            {
-                var filePath = (string)((ConstantExpression)node.Arguments[0]).Value!;
-                try
-                {
-                    string[] sourceCols = OptimizerAnalysis.TryExtractStringArray(node.Arguments[1], out var existing) && existing.Length > 0
-                        ? existing
-                        : IO.JsonReader.PeekHeaders(filePath);
-                    var validColumns = sourceCols.Where(h => _usedColumns.Contains(h)).ToArray();
-                    if (validColumns.Length > 0)
-                    {
-                        return Expression.Call(null, node.Method, node.Arguments[0], Expression.Constant(validColumns, typeof(string[])));
-                    }
-                    return node;
-                }
-                catch
-                {
-                    return node;
-                }
-            }
-            return base.VisitMethodCall(node);
-        }
-    }
-
-    /// <summary>
-    /// Applies sound associative inner-join reordering while strictly preserving output column names and order.
-    /// </summary>
-    internal class JoinReorderingVisitor : ExpressionVisitor
-    {
-        protected override Expression VisitMethodCall(MethodCallExpression node)
-        {
-            if (node.Method.Name == nameof(LazyFrame.JoinOp))
-            {
-                var left = Visit(node.Arguments[0]);
-                var right = Visit(node.Arguments[1]);
-                var on = node.Arguments[2];
-                var typeExpr = node.Arguments[3];
-                var outerType = (JoinType)((ConstantExpression)typeExpr).Value!;
-
-                if (outerType == JoinType.Inner
-                    && left is MethodCallExpression leftMethodCall
-                    && leftMethodCall.Method.Name == nameof(LazyFrame.JoinOp))
-                {
-                    var innerTypeExpr = leftMethodCall.Arguments[3];
-                    var innerType = (JoinType)((ConstantExpression)innerTypeExpr).Value!;
-                    string outerKey = on is ConstantExpression outerOnCe && outerOnCe.Value is string ok ? ok : string.Empty;
-                    string innerKey = leftMethodCall.Arguments[2] is ConstantExpression innerOnCe && innerOnCe.Value is string ik ? ik : string.Empty;
-
-                    if (innerType == JoinType.Inner
-                        && !string.IsNullOrEmpty(outerKey)
-                        && string.Equals(outerKey, innerKey, StringComparison.Ordinal))
-                    {
-                        var a = leftMethodCall.Arguments[0];
-                        var b = leftMethodCall.Arguments[1];
-                        var innerOn = leftMethodCall.Arguments[2];
-
-                        var candidateInnerJoin = Expression.Call(null, node.Method, b, right, innerOn, innerTypeExpr);
-                        var candidateInnerVisited = Visit(candidateInnerJoin);
-                        var candidatePlan = Expression.Call(null, node.Method, a, candidateInnerVisited, on, typeExpr);
-
-                        var originalPlan = Expression.Call(null, node.Method, left, right, on, typeExpr);
-
-                        // Verify output column names and order are strictly preserved before accepting associative rewrite.
-                        if (SchemasMatchOrUnresolved(originalPlan, candidatePlan))
-                        {
-                            return candidatePlan;
-                        }
-                    }
-                }
-
-                return Expression.Call(null, node.Method, left, right, on, typeExpr);
-            }
-
-            return base.VisitMethodCall(node);
-        }
-
-        private static bool SchemasMatchOrUnresolved(Expression originalPlan, Expression candidatePlan)
-        {
-            if (PlanSchemaResolver.TryResolveColumns(originalPlan, out var origCols)
-                && PlanSchemaResolver.TryResolveColumns(candidatePlan, out var candCols))
-            {
-                return origCols.SequenceEqual(candCols, StringComparer.Ordinal);
-            }
-            return true;
         }
     }
 }

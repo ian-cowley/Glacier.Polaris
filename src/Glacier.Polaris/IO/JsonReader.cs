@@ -133,79 +133,213 @@ namespace Glacier.Polaris.IO
         }
 
         /// <summary>
-        /// Reads the entire JSON or NDJSON file eagerly into a single <see cref="DataFrame"/>.
+        /// Reads the entire JSON or NDJSON file via <see cref="HybridIoDispatcher"/> (&lt; 1 MB pooled RandomAccess, &gt;= 1 MB sliding MMF views).
         /// </summary>
         public static DataFrame Read(string filePath, string[]? columns = null)
         {
-            byte[] bytes = File.ReadAllBytes(filePath);
-            ReadOnlySpan<byte> span = bytes;
-            if (span.Length >= 3 && span[0] == 0xEF && span[1] == 0xBB && span[2] == 0xBF)
-            {
-                span = span.Slice(3);
-            }
-            span = TrimLeadingAsciiWhitespace(span);
-
             HashSet<string>? projSet = columns != null ? new HashSet<string>(columns, StringComparer.Ordinal) : null;
             var batch = new ChunkAccumulator(256, columns, projSet, null);
-            if (span.IsEmpty)
-            {
-                return batch.RowCount == 0 && columns == null ? new DataFrame() : batch.Build();
-            }
-
             var rowScratch = new List<ParsedCell>(16);
-            if (span[0] == (byte)'[')
+
+            bool bomChecked = false;
+            bool formatDetected = false;
+            bool isJsonArray = false;
+            bool arrayStarted = false;
+            bool arrayCompleted = false;
+            JsonReaderState jsonState = default;
+
+            byte[]? carryOver = null;
+            int carryOverLength = 0;
+
+            try
             {
-                var reader = new Utf8JsonReader(span, isFinalBlock: true, state: default);
-                if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
-                    throw new JsonException("Expected top-level JSON array.");
-
-                while (reader.Read())
+                HybridIoDispatcher.ProcessFile(filePath, (chunk, isLastChunk) =>
                 {
-                    if (reader.TokenType == JsonTokenType.EndArray && reader.CurrentDepth == 0)
-                        break;
-                    if (reader.TokenType != JsonTokenType.StartObject)
-                        throw new JsonException($"Expected JSON object inside array, found {reader.TokenType}.");
+                    byte[]? rentedCombined = null;
+                    try
+                    {
+                        ReadOnlySpan<byte> span;
+                        if (carryOverLength > 0)
+                        {
+                            int totalLen = checked(carryOverLength + chunk.Length);
+                            rentedCombined = ArrayPool<byte>.Shared.Rent(totalLen);
+                            carryOver.AsSpan(0, carryOverLength).CopyTo(rentedCombined);
+                            chunk.CopyTo(rentedCombined.AsSpan(carryOverLength));
+                            span = rentedCombined.AsSpan(0, totalLen);
+                            carryOverLength = 0;
+                        }
+                        else
+                        {
+                            span = chunk;
+                        }
 
-                    rowScratch.Clear();
-                    if (!TryParseObjectFields(ref reader, targetDepth: 1, projSet, rowScratch))
-                        throw new JsonException("Incomplete JSON object in array.");
-                    batch.AppendRow(rowScratch);
-                }
+                        if (!bomChecked)
+                        {
+                            if (span.Length >= 3)
+                            {
+                                if (span[0] == 0xEF && span[1] == 0xBB && span[2] == 0xBF)
+                                    span = span.Slice(3);
+                                bomChecked = true;
+                            }
+                            else if (isLastChunk)
+                            {
+                                bomChecked = true;
+                            }
+                            else
+                            {
+                                SaveCarryOver(span, ref carryOver, ref carryOverLength);
+                                return;
+                            }
+                        }
+
+                        if (!formatDetected)
+                        {
+                            span = TrimLeadingAsciiWhitespace(span);
+                            if (span.IsEmpty)
+                            {
+                                return;
+                            }
+                            isJsonArray = span[0] == (byte)'[';
+                            formatDetected = true;
+                        }
+
+                        if (isJsonArray)
+                        {
+                            if (arrayCompleted || span.IsEmpty)
+                            {
+                                return;
+                            }
+
+                            var reader = new Utf8JsonReader(span, isFinalBlock: isLastChunk, state: jsonState);
+                            if (!arrayStarted)
+                            {
+                                if (!reader.Read())
+                                {
+                                    if (isLastChunk)
+                                        throw new JsonException("Expected top-level JSON array.");
+                                    SaveCarryOver(span, ref carryOver, ref carryOverLength);
+                                    return;
+                                }
+                                if (reader.TokenType != JsonTokenType.StartArray)
+                                    throw new JsonException("Expected top-level JSON array.");
+                                arrayStarted = true;
+                            }
+
+                            long committedBytes = reader.BytesConsumed;
+                            JsonReaderState committedState = reader.CurrentState;
+
+                            while (true)
+                            {
+                                if (!reader.Read())
+                                {
+                                    break;
+                                }
+
+                                if (reader.TokenType == JsonTokenType.EndArray && reader.CurrentDepth == 0)
+                                {
+                                    committedBytes = reader.BytesConsumed;
+                                    committedState = reader.CurrentState;
+                                    arrayCompleted = true;
+                                    break;
+                                }
+
+                                if (reader.TokenType != JsonTokenType.StartObject)
+                                    throw new JsonException($"Expected JSON object inside array, found {reader.TokenType}.");
+
+                                rowScratch.Clear();
+                                if (!TryParseObjectFields(ref reader, targetDepth: 1, projSet, rowScratch))
+                                {
+                                    if (isLastChunk)
+                                        throw new JsonException("Incomplete JSON object in array.");
+                                    break;
+                                }
+
+                                batch.AppendRow(rowScratch);
+                                committedBytes = reader.BytesConsumed;
+                                committedState = reader.CurrentState;
+                            }
+
+                            if (!isLastChunk && !arrayCompleted)
+                            {
+                                jsonState = committedState;
+                                if (committedBytes < span.Length)
+                                {
+                                    SaveCarryOver(span.Slice((int)committedBytes), ref carryOver, ref carryOverLength);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            while (!span.IsEmpty)
+                            {
+                                int nl = span.IndexOf((byte)'\n');
+                                ReadOnlySpan<byte> line;
+                                if (nl >= 0)
+                                {
+                                    line = span.Slice(0, nl);
+                                    span = span.Slice(nl + 1);
+                                }
+                                else
+                                {
+                                    if (!isLastChunk)
+                                    {
+                                        SaveCarryOver(span, ref carryOver, ref carryOverLength);
+                                        break;
+                                    }
+                                    line = span;
+                                    span = ReadOnlySpan<byte>.Empty;
+                                }
+
+                                line = TrimAsciiWhitespace(line);
+                                if (line.IsEmpty) continue;
+
+                                var reader = new Utf8JsonReader(line, isFinalBlock: true, state: default);
+                                if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                                    throw new JsonException("Expected JSON object on NDJSON line.");
+
+                                rowScratch.Clear();
+                                if (!TryParseObjectFields(ref reader, targetDepth: 0, projSet, rowScratch))
+                                    throw new JsonException("Incomplete JSON object on NDJSON line.");
+                                batch.AppendRow(rowScratch);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (rentedCombined != null)
+                        {
+                            ArrayPool<byte>.Shared.Return(rentedCombined);
+                        }
+                    }
+                });
             }
-            else
+            finally
             {
-                while (!span.IsEmpty)
+                if (carryOver != null)
                 {
-                    int nl = span.IndexOf((byte)'\n');
-                    ReadOnlySpan<byte> line;
-                    if (nl >= 0)
-                    {
-                        line = span.Slice(0, nl);
-                        span = span.Slice(nl + 1);
-                    }
-                    else
-                    {
-                        line = span;
-                        span = ReadOnlySpan<byte>.Empty;
-                    }
-
-                    line = TrimAsciiWhitespace(line);
-                    if (line.IsEmpty) continue;
-
-                    var reader = new Utf8JsonReader(line, isFinalBlock: true, state: default);
-                    if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-                        throw new JsonException("Expected JSON object on NDJSON line.");
-
-                    rowScratch.Clear();
-                    if (!TryParseObjectFields(ref reader, targetDepth: 0, projSet, rowScratch))
-                        throw new JsonException("Incomplete JSON object on NDJSON line.");
-                    batch.AppendRow(rowScratch);
+                    ArrayPool<byte>.Shared.Return(carryOver);
                 }
             }
 
             if (batch.RowCount == 0 && columns == null)
                 return new DataFrame();
             return batch.Build();
+
+            static void SaveCarryOver(ReadOnlySpan<byte> tail, ref byte[]? buffer, ref int length)
+            {
+                if (tail.IsEmpty)
+                {
+                    length = 0;
+                    return;
+                }
+                if (buffer == null || buffer.Length < tail.Length)
+                {
+                    if (buffer != null) ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = ArrayPool<byte>.Shared.Rent(tail.Length);
+                }
+                tail.CopyTo(buffer);
+                length = tail.Length;
+            }
         }
 
         public IAsyncEnumerable<DataFrame> ReadAsync(CancellationToken cancellationToken = default)

@@ -47,8 +47,8 @@ namespace Glacier.Polaris.Tests
                 .CollectAsync()
                 .FirstAsync();
 
-            var minCol = result.GetColumn("val_rolling_min") as Int32Series;
-            var maxCol = result.GetColumn("val_rolling_max") as Int32Series;
+            var minCol = Assert.IsType<Int32Series>(result.GetColumn("val_rolling_min"));
+            var maxCol = Assert.IsType<Int32Series>(result.GetColumn("val_rolling_max"));
 
             Assert.Equal(5, minCol.Memory.Span[1]); // min(10, 5)
             Assert.Equal(5, minCol.Memory.Span[2]); // min(5, 15)
@@ -70,7 +70,7 @@ namespace Glacier.Polaris.Tests
                 .CollectAsync()
                 .FirstAsync();
 
-            var sumCol = result.GetColumn("val_expanding_sum") as Int32Series;
+            var sumCol = Assert.IsType<Int32Series>(result.GetColumn("val_expanding_sum"));
             Assert.Equal(1, sumCol.Memory.Span[0]);
             Assert.Equal(3, sumCol.Memory.Span[1]);
             Assert.Equal(6, sumCol.Memory.Span[2]);
@@ -88,7 +88,7 @@ namespace Glacier.Polaris.Tests
                 .CollectAsync()
                 .FirstAsync();
 
-            var meanCol = result.GetColumn("val_expanding_mean") as Float64Series;
+            var meanCol = Assert.IsType<Float64Series>(result.GetColumn("val_expanding_mean"));
             Assert.Equal(1.0, meanCol.Memory.Span[0]);
             Assert.Equal(2.0, meanCol.Memory.Span[1]);
             Assert.Equal(2.0, meanCol.Memory.Span[2]); // (1+3+2)/3 = 2
@@ -108,7 +108,7 @@ namespace Glacier.Polaris.Tests
                 .CollectAsync()
                 .FirstAsync();
 
-            var ewmCol = result.GetColumn("val_ewm_mean") as Float64Series;
+            var ewmCol = Assert.IsType<Float64Series>(result.GetColumn("val_ewm_mean"));
             Assert.Equal(1.0, ewmCol.Memory.Span[0]);
             Assert.Equal(1.5, ewmCol.Memory.Span[1]);
             Assert.Equal(2.25, ewmCol.Memory.Span[2]);
@@ -128,8 +128,8 @@ namespace Glacier.Polaris.Tests
                 .CollectAsync()
                 .FirstAsync();
 
-            var minCol = result.GetColumn("val_expanding_min") as Int32Series;
-            var maxCol = result.GetColumn("val_expanding_max") as Int32Series;
+            var minCol = Assert.IsType<Int32Series>(result.GetColumn("val_expanding_min"));
+            var maxCol = Assert.IsType<Int32Series>(result.GetColumn("val_expanding_max"));
 
             Assert.Equal(10, minCol.Memory.Span[0]);
             Assert.Equal(5, minCol.Memory.Span[1]);

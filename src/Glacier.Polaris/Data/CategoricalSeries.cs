@@ -19,7 +19,7 @@ namespace Glacier.Polaris.Data
             RevMap = revMap;
         }
 
-        public static CategoricalSeries FromStrings(string name, ReadOnlySpan<string> strings)
+        public static CategoricalSeries FromStrings(string name, ReadOnlySpan<string?> strings)
         {
             if (StringCache.IsEnabled)
             {
@@ -42,7 +42,7 @@ namespace Glacier.Polaris.Data
 
             for (int i = 0; i < strings.Length; i++)
             {
-                string s = strings[i];
+                string? s = strings[i];
                 if (s == null)
                 {
                     codesLocal[i] = uint.MaxValue;
