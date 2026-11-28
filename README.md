@@ -8,9 +8,9 @@
 [![NuGet Version](https://img.shields.io/nuget/v/Glacier.Polaris.svg)](https://www.nuget.org/packages/Glacier.Polaris/)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Glacier.Polaris.svg)](https://www.nuget.org/packages/Glacier.Polaris/)
 
-`Glacier.Polaris` is a pure C#, Native AOT-compatible (`IsAotCompatible=true`) columnar DataFrame and lazy relational query engine for .NET 10. It stores typed columns in 64-byte aligned unmanaged buffers (`NativeMemoryOwner<T>`), tracks missing values with Arrow-style little-endian bit-packed `ValidityMask` bitmaps and three-valued `KleeneBool` logic, and executes queries via `Vector512` / `Vector256` CPU SIMD kernels with optional NVIDIA CUDA offload (`GpuPolarisAccelerator`).
+`Glacier.Polaris` is a fast, in-process DataFrame library for C# and .NET 10, inspired by [Polars](https://github.com/pola-rs/polars).
 
-*(Framing caveat: Glacier Compact Columnar IPC v1 uses `Glacier.Formats.Arrow` compact binary framing and is not wire-compatible with Apache Arrow FlatBuffers IPC. GPU offload supports NVIDIA CUDA via `nvcuda.dll` with automatic CPU SIMD fallback; `GpuTarget.Amd` throws `PlatformNotSupportedException` and `GpuTarget.DualGpu` throws `NotSupportedException`.)*
+If you work with tabular data in .NET—filtering millions of rows, joining tables, running rolling windows, or transforming CSV, Parquet, and JSON files—Polaris gives you a strongly typed columnar query engine without leaving C# or shelling out to Python. Write lazy pipelines that optimize themselves before executing, or run eager operations directly in memory and ship everything inside a single Native AOT executable with no C++ runtime attached.
 
 Read the background write-up: [I built a native C# DataFrame engine to rival Python Polars](https://dev.to/iancowley/i-built-a-native-c-dataframe-engine-to-rival-python-polars-its-actually-faster-on-some-things-opg).
 
@@ -22,7 +22,7 @@ dotnet add package Glacier.Polaris
 
 ## Quick Start
 
-### Lazy Query With Filter & Projection Pushdown
+### Filter and Transform a CSV File Lazily
 
 ```csharp
 using Glacier.Polaris;
@@ -40,7 +40,7 @@ DataFrame result = await LazyFrame.ScanCsv("employees.csv")
     .Collect();
 ```
 
-### Eager Sort, Null-Aware Deduplication & GroupBy
+### Deduplicate, Sort, and Aggregate In Memory
 
 ```csharp
 using Glacier.Polaris;
@@ -58,26 +58,32 @@ DataFrame sorted = df.SortByEager(new[] { "StoreId", "Sales" }, new[] { false, t
 DataFrame grouped = df.GroupBy("StoreId").Agg(("Sales", "sum"), ("Sales", "count"));
 ```
 
-## Key Capabilities
+## What You Can Do
 
-- **Native AOT & Warning-Free Execution:** Evaluates `Expression<Func<Expr, Expr>>` lambdas through `ExprLambdaEvaluator` (no `LambdaExpression.Compile()`, `Activator.CreateInstance`, or reflection-based JSON serialization).
-- **Columnar Types & Null Semantics:** Supports `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Decimal`, `Boolean`, `Utf8String`, `Binary`, `Date`, `Datetime`, `Duration`, `Time`, `Categorical`, `Enum`, `List`, `Struct`, and `Array`, with `ValidityMask` tail-bit masking (`0 <= NullCount <= Length`) and three-valued `KleeneBool` algebra.
-- **Query Optimizer & Out-of-Core Operations:** Applies `Filter`, `Select` (projection), and `Limit` pushdown plus cardinality-aware inner-join reordering, alongside memory-mapped columns (`FromMmf`), K-way external merge sort, and stable multi-column LSD radix sorting.
-- **Streaming I/O:** Reads and writes CSV, Parquet, NDJSON / JSON arrays (`Utf8JsonReader`), and Compact Columnar IPC v1, with streaming `SinkCsv`, `SinkParquet`, and `SinkIpc` targets.
+- **Query files without loading everything at once:** Stream and filter CSV, Parquet, NDJSON, and JSON arrays lazily; Polaris pushes filters, column selections, and row limits down to the reader so unused data is skipped.
+- **Run analytical workloads natively in C#:** Multi-column joins (`Inner`, `Left`, `Outer`, `Cross`, `AsOf`, `Semi`, `Anti`), hash grouping, stable multi-column sorting, null-aware deduplication, pivots, and rolling/expanding/exponentially weighted windows—all vectorized across your CPU cores.
+- **Handle datasets larger than RAM:** Back columns with memory-mapped files (`FromMmf`), stream batches with `CollectStreaming`, sink straight to CSV/Parquet/IPC, and spill large sorts to disk.
+- **Ship anywhere .NET 10 runs:** Written in pure C# with full Native AOT compatibility and no runtime reflection or dynamic code generation.
 
-## Measured Benchmarks
+## Platform & Compatibility
+
+- Runs on Windows, Linux, and macOS (.NET 10).
+- Optional GPU vector math offload uses NVIDIA CUDA drivers (`nvcuda.dll` / `libcuda.so.1`) and falls back automatically to multi-threaded CPU SIMD; AMD ROCm and multi-GPU targets are not supported.
+- Columnar IPC files use Glacier's compact binary framing (`Glacier.Formats`) and are not wire-compatible with Apache Arrow FlatBuffers IPC; use Parquet for cross-tool interchange.
+
+## Benchmarks
 
 Measured in Release on **AMD Ryzen AI 9 HX 370 (12C/24T Zen 5, AVX-512), 31 GB RAM, Windows 11, .NET 10.0.15 (.NET SDK 11.0.100)**:
 
 | Workload | Scope | Mean Latency | Notes |
 | :--- | :--- | ---: | :--- |
-| `ArgSort_Int32` (8-bit LSD radix) | 1M / 10M rows | **6.91 ms** / **59.28 ms** | vs `ArgSortSys_Int32` (`Array.Sort`): 60.52 ms / 606.29 ms |
+| `ArgSort_Int32` (8-bit LSD radix) | 1M / 10M rows | **6.91 ms** / **59.28 ms** | vs `Array.Sort`: 60.52 ms / 606.29 ms |
 | `Filter_Int32` (AVX-512 bitmask) | 1M / 10M rows | **0.70 ms** / **1.58 ms** | — |
 | `GroupBy_Hash_Int32Sum` (1,000 keys) | 1M / 10M rows | **0.59 ms** / **2.07 ms** | — |
 | `Join_Inner_SmallRight` (1,000 right keys) | 1M / 10M rows | **0.78 ms** / **5.17 ms** | Left join (`N=1M`): **0.64 ms** |
 | `RollingMean` (window = 5) | 1M / 10M rows | **0.78 ms** / **9.45 ms** | — |
 | Compact IPC v1 Write / Read | 100k x 3 cols | **5.97 ms** / **0.74 ms** | Parquet write/collect: **34.95 ms** / **7.31 ms** |
-| `GpuPolarisAccelerator.VectorAdd` | 1M `float` | **0.41 ms** (CPU) / **1.09 ms** (CUDA `Auto`) | Uncached 4 MB PCIe transfer makes CPU SIMD faster at 1M |
+| `GpuPolarisAccelerator.VectorAdd` | 1M `float` | **0.41 ms** (CPU) / **1.09 ms** (CUDA `Auto`) | Uncached 4 MB PCIe copy makes CPU faster at 1M |
 
 Reproduce locally:
 
@@ -87,9 +93,9 @@ dotnet run --project benchmarks/Glacier.Polaris.Benchmarks/Glacier.Polaris.Bench
 
 ## Documentation
 
-- [Usage Guide](docs/usage.md) — streaming JSON, memory-mapped columns, analytics, joins, and build/test commands
-- [Architecture](docs/architecture.md) — memory ownership, `ValidityMask` invariants, Native AOT design, and `QueryOptimizer` rules
-- [Benchmarks](docs/benchmarks.md) — full 62-operation benchmark output and I/O + GPU measurements
+- [User Manual](docs/manual.md) — full API reference: data types, I/O readers/sinks, `Expr` catalog, joins, windows, memory-mapped columns, and GPU math
+- [Architecture](docs/architecture.md) — memory ownership, null bitmaps, Native AOT design, and optimizer soundness rules
+- [Benchmarks](docs/benchmarks.md) — full 62-operation benchmark results, I/O round-trips, and GPU measurements
 - [Technical Audit Report](docs/REPORT.md) — ecosystem hardening & correctness report
 - [Changelog](CHANGELOG.md) — release notes
 
