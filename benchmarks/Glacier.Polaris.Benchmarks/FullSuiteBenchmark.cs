@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Diagnostics;
 using System.Buffers;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
 using Glacier.Polaris.Compute;
+using Glacier.Polaris.IO;
 
 namespace Glacier.Polaris.Benchmarks
 {
@@ -314,6 +316,62 @@ namespace Glacier.Polaris.Benchmarks
             Time("ExpandingSum(N=10M)", () => WindowKernels.ExpandingSum(s_f64Large));
             Time("ExpandingStd(N=10M)", () => WindowKernels.ExpandingStd(s_f64Large));
             Time("EWMMean(N=10M)", () => WindowKernels.EWMMean(s_f64Large, 0.5));
+
+            // ── Streaming & File I/O Round-Trip (N=100k) ──
+            const int ioN = 100_000;
+            var ioIds = new int[ioN];
+            var ioVals = new double[ioN];
+            var ioCats = new string[ioN];
+            var catsIo = new[] { "alpha", "beta", "gamma", "delta" };
+            var rngIo = new Random(Seed);
+            for (int i = 0; i < ioN; i++)
+            {
+                ioIds[i] = i;
+                ioVals[i] = rngIo.NextDouble() * 1000.0;
+                ioCats[i] = catsIo[i & 3];
+            }
+            using var ioDf = new DataFrame(new ISeries[]
+            {
+                new Int32Series("id", ioIds),
+                new Float64Series("val", ioVals),
+                Utf8StringSeries.FromStrings("cat", ioCats)
+            });
+            string ioDir = Path.Combine(Path.GetTempPath(), $"polaris_bench_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(ioDir);
+            try
+            {
+                string csvPath = Path.Combine(ioDir, "bench.csv");
+                string pqPath = Path.Combine(ioDir, "bench.parquet");
+                string jsonPath = Path.Combine(ioDir, "bench.ndjson");
+                string ipcPath = Path.Combine(ioDir, "bench.glipc");
+
+                Time("IO_Csv_Write(N=100k)", () => ioDf.WriteCsv(csvPath));
+                Time("IO_Csv_ScanCollect(N=100k)", () => { using var r = LazyFrame.ScanCsv(csvPath).Collect().GetAwaiter().GetResult(); });
+
+                Time("IO_Parquet_Write(N=100k)", () => ioDf.WriteParquet(pqPath));
+                Time("IO_Parquet_ScanCollect(N=100k)", () => { using var r = LazyFrame.ScanParquet(pqPath).Collect().GetAwaiter().GetResult(); });
+
+                Time("IO_Ndjson_Write(N=100k)", () => ioDf.WriteJson(jsonPath, ndjson: true));
+                Time("IO_Ndjson_Read(N=100k)", () => { using var r = DataFrame.ReadJson(jsonPath); });
+
+                Time("IO_CompactIpc_Write(N=100k)", () => ioDf.WriteIpc(ipcPath));
+                Time("IO_CompactIpc_Read(N=100k)", () => { using var r = DataFrame.FromArrowIpc(ipcPath); });
+            }
+            finally
+            {
+                try { Directory.Delete(ioDir, recursive: true); } catch { }
+            }
+
+            // ── FP32 Math (CPU SIMD vs CUDA Auto) ─────────
+            var fa = new float[SmallN];
+            var fb = new float[SmallN];
+            var fc = new float[SmallN];
+            for (int i = 0; i < SmallN; i++) { fa[i] = (i % 97) * 0.1f; fb[i] = (i % 53) * 0.2f; }
+            Console.WriteLine($"  GpuPolarisAccelerator.IsNvidiaAvailable = {GpuPolarisAccelerator.IsNvidiaAvailable}");
+            Time("GpuAccel_VectorAdd_Cpu(N=1M)", () => GpuPolarisAccelerator.VectorAdd(fa, fb, fc, GpuTarget.Cpu));
+            Time("GpuAccel_VectorAdd_Auto(N=1M)", () => GpuPolarisAccelerator.VectorAdd(fa, fb, fc, GpuTarget.Auto));
+            Time("GpuAccel_VectorSum_Cpu(N=1M)", () => GpuPolarisAccelerator.VectorSum(fa, GpuTarget.Cpu));
+            Time("GpuAccel_VectorSum_Auto(N=1M)", () => GpuPolarisAccelerator.VectorSum(fa, GpuTarget.Auto));
         }
     }
 }
