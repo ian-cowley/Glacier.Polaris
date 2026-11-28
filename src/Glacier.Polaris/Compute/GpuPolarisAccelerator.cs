@@ -53,8 +53,25 @@ public static unsafe class GpuPolarisAccelerator
     {
         AppDomain.CurrentDomain.ProcessExit += static (_, _) =>
         {
-            try { ReleaseGpuResources(); } catch { }
+            try { ReleaseGpuResources(); }
+            catch (Exception ex)
+            {
+                // Best-effort cleanup during CLR ProcessExit teardown
+                _ = ex;
+            }
         };
+    }
+
+    private static void TryCudaCleanup(Action op, string opName)
+    {
+        try
+        {
+            op();
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            System.Diagnostics.Trace.TraceWarning($"[GpuPolarisAccelerator] {opName} warning: {ex.Message}");
+        }
     }
 
     internal static int PooledContextCount
@@ -108,7 +125,7 @@ public static unsafe class GpuPolarisAccelerator
                 IntPtr oldPtr = devicePtr;
                 devicePtr = IntPtr.Zero;
                 capacity = 0;
-                try { CuDriver.MemFree(oldPtr); } catch { }
+                TryCudaCleanup(() => CuDriver.MemFree(oldPtr), "MemFree");
             }
 
             if (CuDriver.MemAlloc(out IntPtr ptr, requiredBytes) != 0 || ptr == IntPtr.Zero)
@@ -129,13 +146,13 @@ public static unsafe class GpuPolarisAccelerator
             {
                 IntPtr stream = Stream;
                 Stream = IntPtr.Zero;
-                try { CuDriver.StreamSynchronize(stream); } catch { }
-                try { CuDriver.StreamDestroy(stream); } catch { }
+                TryCudaCleanup(() => CuDriver.StreamSynchronize(stream), "StreamSynchronize");
+                TryCudaCleanup(() => CuDriver.StreamDestroy(stream), "StreamDestroy");
             }
-            if (DIn1 != IntPtr.Zero) { IntPtr p = DIn1; DIn1 = IntPtr.Zero; CapIn1 = 0; try { CuDriver.MemFree(p); } catch { } }
-            if (DIn2 != IntPtr.Zero) { IntPtr p = DIn2; DIn2 = IntPtr.Zero; CapIn2 = 0; try { CuDriver.MemFree(p); } catch { } }
-            if (DIn3 != IntPtr.Zero) { IntPtr p = DIn3; DIn3 = IntPtr.Zero; CapIn3 = 0; try { CuDriver.MemFree(p); } catch { } }
-            if (DOut != IntPtr.Zero) { IntPtr p = DOut; DOut = IntPtr.Zero; CapOut = 0; try { CuDriver.MemFree(p); } catch { } }
+            if (DIn1 != IntPtr.Zero) { IntPtr p = DIn1; DIn1 = IntPtr.Zero; CapIn1 = 0; TryCudaCleanup(() => CuDriver.MemFree(p), "MemFree DIn1"); }
+            if (DIn2 != IntPtr.Zero) { IntPtr p = DIn2; DIn2 = IntPtr.Zero; CapIn2 = 0; TryCudaCleanup(() => CuDriver.MemFree(p), "MemFree DIn2"); }
+            if (DIn3 != IntPtr.Zero) { IntPtr p = DIn3; DIn3 = IntPtr.Zero; CapIn3 = 0; TryCudaCleanup(() => CuDriver.MemFree(p), "MemFree DIn3"); }
+            if (DOut != IntPtr.Zero) { IntPtr p = DOut; DOut = IntPtr.Zero; CapOut = 0; TryCudaCleanup(() => CuDriver.MemFree(p), "MemFree DOut"); }
         }
     }
 
@@ -357,13 +374,13 @@ public static unsafe class GpuPolarisAccelerator
         {
             IntPtr mod = s_cuModule;
             s_cuModule = IntPtr.Zero;
-            try { CuDriver.ModuleUnload(mod); } catch { }
+            TryCudaCleanup(() => CuDriver.ModuleUnload(mod), "ModuleUnload");
         }
         if (s_cuContext != IntPtr.Zero)
         {
             IntPtr ctx = s_cuContext;
             s_cuContext = IntPtr.Zero;
-            try { CuDriver.CtxDestroy(ctx); } catch { }
+            TryCudaCleanup(() => CuDriver.CtxDestroy(ctx), "CtxDestroy");
         }
     }
 
@@ -392,7 +409,8 @@ public static unsafe class GpuPolarisAccelerator
 
                 if (s_cuContext != IntPtr.Zero)
                 {
-                    try { CuDriver.CtxSetCurrent(s_cuContext); } catch { }
+                    IntPtr ctx = s_cuContext;
+                    TryCudaCleanup(() => CuDriver.CtxSetCurrent(ctx), "CtxSetCurrent");
                 }
 
                 foreach (var ctx in toDispose)

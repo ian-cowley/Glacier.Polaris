@@ -262,8 +262,9 @@ namespace Glacier.Polaris.Compute
                         propertyNames.Add(prop.Name);
                     }
                 }
-                catch
+                catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)
                 {
+                    System.Diagnostics.Trace.TraceWarning($"[StringKernels.Parsing] Skipping non-object JSON row {i}: {ex.Message}");
                 }
             }
 
