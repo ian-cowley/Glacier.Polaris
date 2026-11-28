@@ -12,6 +12,11 @@
 8. [Analytics Helpers](#8-analytics-helpers)
 9. [Building & Testing](#9-building--testing)
 
+### Topic Manuals
+
+- [Expressions, Series Extensions & I/O Helpers](manual/expressions-and-namespaces.md) — `SeriesExtensions`, string/temporal/list/binary/struct/predicate/math kernels, `StringCache`, `SqlDialect`, and `GlacierStorageBridge`
+- [Direct Compute Kernels & Unmanaged Memory](manual/compute-kernels.md) — low-level SIMD compute kernel catalog (`FilterKernels`, `SortKernels`, `GroupByKernels`, `JoinKernels`, `WindowKernels`, `UniqueKernels`) and unmanaged memory owners
+
 ---
 
 ## 1. Getting Started & Data Types
