@@ -55,7 +55,7 @@ jobs:
         run: dotnet build Glacier.Polaris.slnx --configuration Release --no-restore
 
       - name: Run tests
-        run: dotnet test tests/Glacier.Polaris.Tests/Glacier.Polaris.Tests.csproj --configuration Release --no-restore --no-build --blame-hang --blame-hang-dump-type none --blame-hang-timeout 60s
+        run: dotnet test tests/Glacier.Polaris.Tests/Glacier.Polaris.Tests.csproj --configuration Release --no-restore --no-build --filter "Hardware!=Gpu" --blame-hang --blame-hang-dump-type none --blame-hang-timeout 60s
 
       - name: Pack Glacier.Polaris
         run: dotnet pack src/Glacier.Polaris/Glacier.Polaris.csproj --configuration Release --no-build --output packages
